@@ -10,7 +10,7 @@ Handles memory promotion/demotion from reflection cycles,
 memory inheritance for offspring, and memory retrieval for context assembly.
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 import json
 import logging

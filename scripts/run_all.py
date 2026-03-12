@@ -8,7 +8,7 @@ This is the "turn the system on" script for development.
 Usage: python scripts/run_all.py
 """
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 import argparse
 import os
@@ -77,10 +77,13 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Start all Syndicate processes")
     parser.add_argument("--with-web", action="store_true", help="Also start the web dashboard")
+    parser.add_argument("--with-trading", action="store_true", help="Also start trading monitors")
     args = parser.parse_args()
 
     if args.with_web:
         PROCESSES["web"] = [PYTHON, os.path.join(PROJECT_ROOT, "scripts", "run_web.py")]
+    if args.with_trading:
+        PROCESSES["trading"] = [PYTHON, os.path.join(PROJECT_ROOT, "scripts", "run_trading.py")]
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)

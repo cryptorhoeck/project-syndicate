@@ -5,7 +5,7 @@ All system configuration in one place, loaded from .env with sensible defaults.
 Uses pydantic-settings for validation and type coercion.
 """
 
-__version__ = "0.8.0"
+__version__ = "1.0.0"
 
 from pydantic_settings import BaseSettings
 
@@ -100,6 +100,51 @@ class SyndicateConfig(BaseSettings):
     opportunity_ttl_hours: int = 6
     health_check_day: int = 10
     orientation_token_budget_multiplier: float = 1.5
+
+    # Phase 3C: Paper Trading
+    trading_mode: str = "paper"  # "paper" or "live"
+    default_exchange: str = "kraken"
+    price_cache_ticker_ttl: int = 10
+    price_cache_orderbook_ttl: int = 10
+    stale_price_threshold: int = 60
+    position_monitor_interval: int = 10
+    limit_order_monitor_interval: int = 10
+    sanity_check_interval: int = 300
+    equity_snapshot_interval: int = 300
+    default_limit_order_expiry_hours: int = 24
+    min_slippage_pct: float = 0.0001  # 0.01%
+    slippage_noise_range: float = 0.2  # +/-20%
+    book_depth_penalty_pct: float = 0.005  # 0.5%
+    concentration_warning_threshold: float = 0.40  # 40%
+
+    # Phase 3D — Evaluation cycle
+    first_eval_leniency: bool = True
+    probation_grace_cycles: int = 3
+    post_mortem_publish_delay_hours: int = 6
+    portfolio_concentration_hard_limit: float = 0.50
+    portfolio_concentration_warning: float = 0.35
+    top_performer_budget_increase: float = 0.50
+    second_performer_budget_increase: float = 0.25
+    probation_budget_decrease: float = 0.25
+
+    # Normalization ranges (Phase 3D)
+    norm_operator_sharpe_range: list = [-1.0, 3.0]
+    norm_operator_pnl_range: list = [-20.0, 30.0]
+    norm_operator_efficiency_range: list = [0.0, 5.0]
+    norm_scout_conversion_range: list = [0.0, 0.50]
+    norm_scout_profitability_range: list = [-5.0, 10.0]
+    norm_strategist_approval_range: list = [0.0, 0.80]
+    norm_critic_rejection_range: list = [-1.0, 1.0]
+    norm_critic_throughput_range: list = [0.0, 3.0]
+
+    # Attribution shares (Phase 3D)
+    attribution_scout_share: float = 0.25
+    attribution_strategist_share: float = 0.25
+    attribution_critic_share: float = 0.50
+
+    # Critic rubber-stamp detection (Phase 3D)
+    critic_rubber_stamp_threshold: float = 0.90
+    critic_rubber_stamp_penalty: float = 0.50
 
     # Logging
     log_level: str = "INFO"

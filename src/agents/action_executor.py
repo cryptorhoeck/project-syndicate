@@ -10,7 +10,7 @@ Routes validated actions to the appropriate system:
   Universal → go_idle (log only)
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 import json
 import logging
@@ -36,16 +36,18 @@ class ActionResult:
 class ActionExecutor:
     """Executes validated agent actions by routing to the correct subsystem."""
 
-    def __init__(self, db_session: Session, agora_service=None, warden=None):
+    def __init__(self, db_session: Session, agora_service=None, warden=None, trading_service=None):
         """
         Args:
             db_session: SQLAlchemy session.
             agora_service: Optional AgoraService for posting messages.
             warden: Optional Warden for trade gate processing.
+            trading_service: Optional TradeExecutionService (Phase 3C).
         """
         self.db = db_session
         self.agora = agora_service
         self.warden = warden
+        self.trading = trading_service
 
     async def execute(self, agent: Agent, parsed_output: dict) -> ActionResult:
         """Execute a validated action.
@@ -90,11 +92,11 @@ class ActionExecutor:
             "reject_plan": self._handle_critic_verdict,
             "request_revision": self._handle_critic_verdict,
             "flag_risk": self._handle_flag_risk,
-            # Operator
-            "execute_trade": self._handle_trade_placeholder,
-            "adjust_position": self._handle_trade_placeholder,
-            "close_position": self._handle_trade_placeholder,
-            "hedge": self._handle_trade_placeholder,
+            # Operator — routes through TradeExecutionService (Phase 3C)
+            "execute_trade": self._handle_execute_trade,
+            "adjust_position": self._handle_adjust_position,
+            "close_position": self._handle_close_position,
+            "hedge": self._handle_execute_trade,
             # Universal
             "go_idle": self._handle_go_idle,
         }
@@ -301,44 +303,128 @@ class ActionExecutor:
             details=f"Risk flag: {severity} — {desc[:100]}",
         )
 
-    async def _handle_trade_placeholder(
+    async def _handle_execute_trade(
         self, agent: Agent, action_type: str, params: dict
     ) -> ActionResult:
-        """Placeholder for trade actions — logs the request.
+        """Handle trade execution via TradeExecutionService."""
+        if not self.trading:
+            # Fallback: log-only mode when no trading service configured
+            logger.info("trade_no_service", extra={"agent_id": agent.id, "action": action_type})
+            summary = self._summarize_action(action_type, params)
+            await self._post_to_agora(agent, "trade-signals", f"[NO SERVICE] {summary}", action_type, params)
+            return ActionResult(success=False, action_type=action_type, details="No trading service configured")
 
-        Real Paper Trading engine is Phase 3C. For now, log and return mock result.
-        """
-        logger.info(
-            "trade_action_placeholder",
-            extra={"agent_id": agent.id, "action": action_type, "params": params},
-        )
+        symbol = params.get("market", params.get("symbol", ""))
+        side = params.get("direction", params.get("side", "buy"))
+        if side == "long":
+            side = "buy"
+        elif side == "short":
+            side = "sell"
 
-        # Post the intent to Agora
-        summary = self._summarize_action(action_type, params)
-        if self.agora:
-            try:
-                await self.agora.post_message(
-                    agent_id=agent.id,
-                    agent_name=agent.name,
-                    channel="trade-signals",
-                    content=f"[PAPER] {summary}",
-                    message_type="trade",
-                    metadata={"action_type": action_type, "params": params, "paper": True},
-                )
-            except Exception:
-                self._write_message_directly(
-                    agent, "trade-signals", f"[PAPER] {summary}", action_type, params
-                )
+        size_usd = float(params.get("position_size_usd", params.get("size_usd", 0)))
+        order_type = params.get("order_type", "market")
+        stop_loss = params.get("stop_loss")
+        take_profit = params.get("take_profit")
+        source_plan_id = params.get("plan_id")
+
+        if stop_loss is not None:
+            stop_loss = float(stop_loss)
+        if take_profit is not None:
+            take_profit = float(take_profit)
+        if source_plan_id is not None:
+            source_plan_id = int(source_plan_id)
+
+        if order_type == "limit":
+            price = float(params.get("limit_price", params.get("price", 0)))
+            result = await self.trading.execute_limit_order(
+                agent_id=agent.id, symbol=symbol, side=side, size_usd=size_usd,
+                price=price, source_plan_id=source_plan_id,
+                stop_loss=stop_loss, take_profit=take_profit,
+            )
         else:
-            self._write_message_directly(
-                agent, "trade-signals", f"[PAPER] {summary}", action_type, params
+            result = await self.trading.execute_market_order(
+                agent_id=agent.id, symbol=symbol, side=side, size_usd=size_usd,
+                source_plan_id=source_plan_id,
+                stop_loss=stop_loss, take_profit=take_profit,
             )
 
-        return ActionResult(
-            success=True,
-            action_type=action_type,
-            details=f"Trade placeholder: {action_type} — queued for Phase 3C",
+        # Broadcast to Agora
+        summary = self._summarize_action(action_type, params)
+        status_text = "FILLED" if result.success else "REJECTED"
+        await self._post_to_agora(
+            agent, "trades", f"[{status_text}] {summary}", action_type, params
         )
+
+        if result.success:
+            return ActionResult(
+                success=True, action_type=action_type,
+                details=f"Order #{result.order_id}: {symbol} {side} ${size_usd:.2f} @ ${result.fill_price or 'pending'}",
+            )
+        else:
+            return ActionResult(
+                success=False, action_type=action_type,
+                details=f"Trade rejected: {result.error}",
+            )
+
+    async def _handle_adjust_position(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Handle position adjustments (stop-loss/take-profit updates)."""
+        position_id = params.get("position_id")
+        if not position_id:
+            return ActionResult(success=False, action_type=action_type, details="No position_id")
+
+        from src.common.models import Position as PositionModel
+        position = self.db.query(PositionModel).filter(PositionModel.id == int(position_id)).first()
+        if not position:
+            return ActionResult(success=False, action_type=action_type, details=f"Position {position_id} not found")
+
+        # Update stop-loss and take-profit
+        new_sl = params.get("stop_loss")
+        new_tp = params.get("take_profit")
+        changes = []
+
+        if new_sl is not None:
+            position.stop_loss = float(new_sl)
+            changes.append(f"SL=${new_sl}")
+        if new_tp is not None:
+            position.take_profit = float(new_tp)
+            changes.append(f"TP=${new_tp}")
+
+        self.db.add(position)
+        self.db.flush()
+
+        summary = f"Position #{position_id} adjusted: {', '.join(changes)}"
+        await self._post_to_agora(agent, "trades", summary, action_type, params)
+
+        return ActionResult(success=True, action_type=action_type, details=summary)
+
+    async def _handle_close_position(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Handle position close via TradeExecutionService."""
+        position_id = params.get("position_id")
+        if not position_id:
+            return ActionResult(success=False, action_type=action_type, details="No position_id")
+
+        if not self.trading:
+            return ActionResult(success=False, action_type=action_type, details="No trading service")
+
+        result = await self.trading.close_position(int(position_id), reason="manual")
+
+        summary = self._summarize_action(action_type, params)
+        await self._post_to_agora(agent, "trades", summary, action_type, params)
+
+        if result.success:
+            return ActionResult(
+                success=True, action_type=action_type,
+                details=f"Position #{position_id} closed: P&L=${result.realized_pnl:.4f}",
+            )
+        else:
+            return ActionResult(
+                success=False, action_type=action_type,
+                details=f"Close failed: {result.error}",
+            )
 
     async def _handle_go_idle(
         self, agent: Agent, action_type: str, params: dict

@@ -6,7 +6,7 @@ spawning, evaluating, killing agents, capital allocation,
 market regime detection, and daily reporting.
 """
 
-__version__ = "0.5.0"
+__version__ = "1.0.0"
 
 import json
 from datetime import date, datetime, timedelta, timezone
@@ -29,7 +29,10 @@ from src.common.models import (
     Message,
     SystemState,
 )
+from src.genesis.ecosystem_contribution import EcosystemContributionCalculator
+from src.genesis.evaluation_engine import EvaluationEngine
 from src.genesis.regime_detector import RegimeDetector
+from src.genesis.rejection_tracker import RejectionTracker
 from src.genesis.treasury import TreasuryManager
 from src.risk.accountant import Accountant
 
@@ -324,11 +327,16 @@ class GenesisAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def _run_evaluations(self) -> list[dict]:
-        """Evaluate agents whose survival clocks have expired."""
+        """Evaluate agents whose survival clocks have expired.
+
+        Uses the Phase 3D EvaluationEngine for role-specific metrics,
+        pre-filter, Genesis AI judgment, and decision execution.
+        """
         now = datetime.now(timezone.utc)
         results = []
 
         with self.db_session_factory() as session:
+            # Find agents due for evaluation
             due_agents = session.execute(
                 select(Agent).where(
                     Agent.status == "active",
@@ -336,15 +344,90 @@ class GenesisAgent(BaseAgent):
                     Agent.survival_clock_paused == False,
                 )
             ).scalars().all()
-            due_ids = [(a.id, a.name) for a in due_agents]
 
-        for agent_id, agent_name in due_ids:
+            # Also include agents flagged for pending evaluation
+            pending_agents = session.execute(
+                select(Agent).where(
+                    Agent.status == "active",
+                    Agent.pending_evaluation == True,
+                )
+            ).scalars().all()
+
+            # Deduplicate
+            all_due = {a.id: a for a in due_agents}
+            for a in pending_agents:
+                all_due[a.id] = a
+
+            if not all_due:
+                return results
+
+            agents_to_eval = list(all_due.values())
+
+            # Determine evaluation period
+            period_end = now
+            period_start = now - timedelta(days=config.default_survival_clock_days)
+
+            # Run evaluation engine
+            engine = EvaluationEngine(
+                db_session_factory=self.db_session_factory,
+                agora_service=self.agora,
+            )
+
             try:
-                result = await self._evaluate_agent(agent_id, agent_name)
-                results.append(result)
+                eval_results = await engine.evaluate_batch(
+                    session, agents_to_eval, period_start, period_end
+                )
             except Exception as exc:
-                self.log.error("evaluation_error", agent_id=agent_id, error=str(exc))
-                results.append({"agent_id": agent_id, "error": str(exc)})
+                self.log.error("evaluation_batch_error", error=str(exc))
+                return results
+
+            # Decrement probation grace cycles for all active probation agents
+            probation_agents = session.execute(
+                select(Agent).where(
+                    Agent.status == "active",
+                    Agent.probation == True,
+                    Agent.probation_grace_cycles > 0,
+                )
+            ).scalars().all()
+            for pa in probation_agents:
+                pa.probation_grace_cycles -= 1
+                session.add(pa)
+
+            session.commit()
+
+            # Convert to result dicts and post to Agora
+            for er in eval_results:
+                result_dict = {
+                    "agent_id": er.agent_id,
+                    "name": er.agent_name,
+                    "role": er.agent_role,
+                    "pre_filter": er.pre_filter_result,
+                    "genesis_decision": er.genesis_decision,
+                    "evaluation_id": er.evaluation_id,
+                    "composite_score": er.package.metrics.composite_score if er.package and er.package.metrics else 0,
+                }
+                results.append(result_dict)
+
+                # Post to Agora
+                decision = er.genesis_decision or er.pre_filter_result
+                await self.post_to_agora(
+                    "genesis-log",
+                    f"Evaluation: {er.agent_name} ({er.agent_role}) — {decision} "
+                    f"(score: {result_dict['composite_score']:.4f})",
+                    message_type=MessageType.EVALUATION,
+                    metadata=result_dict,
+                )
+
+            # Role gap detection — log if any critical role has no agents
+            role_gaps = engine._detect_role_gaps(session)
+            if role_gaps:
+                self.log.warning("role_gaps_detected", gaps=role_gaps)
+                await self.post_to_agora(
+                    "genesis-log",
+                    f"ROLE GAP ALERT: No active agents for: {', '.join(role_gaps)}",
+                    message_type=MessageType.ALERT,
+                    importance=2,
+                )
 
         return results
 
@@ -665,6 +748,54 @@ class GenesisAgent(BaseAgent):
                     self.log.info("economy_maintenance", expired_reviews=expired, overdue_assignments=overdue)
             except Exception as exc:
                 self.log.warning("economy_maintenance_failed", error=str(exc))
+
+        # Phase 3D: Rejection tracker monitoring (counterfactual simulation)
+        try:
+            from src.common.models import PostMortem
+            tracker = RejectionTracker()
+            with self.db_session_factory() as session:
+                tracking_result = await tracker.monitor_tracked_rejections(session)
+                if tracking_result.get("completed", 0) > 0:
+                    self.log.info("rejection_tracker", **tracking_result)
+                session.commit()
+        except Exception as exc:
+            self.log.warning("rejection_tracker_maintenance_failed", error=str(exc))
+
+        # Phase 3D: Post-mortem publication (publish after 6-hour delay)
+        try:
+            from src.common.models import PostMortem, LibraryEntry
+            with self.db_session_factory() as session:
+                unpublished = session.execute(
+                    select(PostMortem).where(
+                        PostMortem.published == False,
+                        PostMortem.publish_at <= now,
+                    )
+                ).scalars().all()
+                for pm in unpublished:
+                    # Create library entry
+                    if self.library is not None:
+                        entry = LibraryEntry(
+                            category="post_mortem",
+                            title=pm.title,
+                            content=f"{pm.summary}\n\n{pm.lesson}\n\n{pm.recommendation}",
+                            summary=pm.summary,
+                            tags=["post_mortem", pm.agent_role, f"gen{pm.generation}"],
+                            source_agent_id=pm.agent_id,
+                            source_agent_name=pm.agent_name,
+                            related_evaluation_id=pm.evaluation_id,
+                            is_published=True,
+                            published_at=now,
+                        )
+                        session.add(entry)
+                        session.flush()
+                        pm.library_entry_id = entry.id
+                    pm.published = True
+                    session.add(pm)
+                if unpublished:
+                    session.commit()
+                    self.log.info("post_mortems_published", count=len(unpublished))
+        except Exception as exc:
+            self.log.warning("post_mortem_publication_failed", error=str(exc))
 
     # ------------------------------------------------------------------
     # Daily Report

@@ -7,7 +7,7 @@ Syndicate Improvement Proposals (SIPs), system state, lineage tracking,
 inherited positions, market regimes, and daily reports.
 """
 
-__version__ = "0.8.0"
+__version__ = "1.0.0"
 
 import os
 from datetime import date, datetime
@@ -113,6 +113,24 @@ class Agent(Base):
     health_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     initial_watchlist: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
+    # Phase 3C additions — paper trading
+    cash_balance: Mapped[float] = mapped_column(Float, default=0.0)
+    reserved_cash: Mapped[float] = mapped_column(Float, default=0.0)
+    total_equity: Mapped[float] = mapped_column(Float, default=0.0)
+    realized_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    unrealized_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    total_fees_paid: Mapped[float] = mapped_column(Float, default=0.0)
+    position_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Phase 3D additions — evaluation cycle
+    pending_evaluation: Mapped[bool] = mapped_column(Boolean, default=False)
+    probation: Mapped[bool] = mapped_column(Boolean, default=False)
+    probation_grace_cycles: Mapped[int] = mapped_column(Integer, default=0)
+    ecosystem_contribution: Mapped[float] = mapped_column(Float, default=0.0)
+    role_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_evaluation_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("evaluations.id"), nullable=True)
+    evaluation_scorecard: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     # Relationships
     parent: Mapped["Agent | None"] = relationship(
         "Agent",
@@ -134,6 +152,7 @@ class Agent(Base):
     evaluations: Mapped[list["Evaluation"]] = relationship(
         "Evaluation",
         back_populates="agent",
+        foreign_keys="[Evaluation.agent_id]",
     )
 
     def __repr__(self) -> str:
@@ -201,6 +220,9 @@ class Message(Base):
 
 class Evaluation(Base):
     __tablename__ = "evaluations"
+    __table_args__ = (
+        Index("ix_evaluations_agent_evaluated", "agent_id", "evaluated_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
@@ -214,8 +236,41 @@ class Evaluation(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
+    # Phase 3D additions — role-specific evaluation
+    agent_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    agent_role: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evaluation_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evaluation_period_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    evaluation_period_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    composite_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metric_breakdown: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    role_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    role_rank_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ecosystem_contribution_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ecosystem_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pre_filter_result: Mapped[str | None] = mapped_column(String(20), nullable=True)  # survive, probation, terminate
+    genesis_decision: Mapped[str | None] = mapped_column(String(30), nullable=True)  # survive_probation, terminate
+    genesis_reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    survival_clock_new_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    capital_adjustment: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    thinking_budget_adjustment: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    warning_to_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    market_regime: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    alert_hours_during_period: Mapped[float | None] = mapped_column(Float, nullable=True)
+    regime_adjustment_applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    first_evaluation: Mapped[bool] = mapped_column(Boolean, default=False)
+    prestige_before: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    prestige_after: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    capital_before: Mapped[float | None] = mapped_column(Float, nullable=True)
+    capital_after: Mapped[float | None] = mapped_column(Float, nullable=True)
+    thinking_budget_before: Mapped[float | None] = mapped_column(Float, nullable=True)
+    thinking_budget_after: Mapped[float | None] = mapped_column(Float, nullable=True)
+    api_cost_for_evaluation: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     # Relationships
-    agent: Mapped["Agent"] = relationship("Agent", back_populates="evaluations")
+    agent: Mapped["Agent"] = relationship("Agent", back_populates="evaluations", foreign_keys=[agent_id])
 
     def __repr__(self) -> str:
         return f"<Evaluation(id={self.id}, agent_id={self.agent_id}, type={self.evaluation_type!r}, result={self.result!r})>"
@@ -953,3 +1008,205 @@ class BootSequenceLog(Base):
 
     def __repr__(self) -> str:
         return f"<BootSequenceLog(id={self.id}, wave={self.wave_number}, event={self.event_type!r})>"
+
+
+# ---------------------------------------------------------------------------
+# Position — Phase 3C (Paper Trading)
+# ---------------------------------------------------------------------------
+
+class Position(Base):
+    __tablename__ = "positions"
+    __table_args__ = (
+        Index("ix_positions_agent_status", "agent_id", "status"),
+        Index("ix_positions_symbol_status", "symbol", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(30), nullable=False)
+    side: Mapped[str] = mapped_column(String(10), nullable=False)  # long, short
+    entry_price: Mapped[float] = mapped_column(Float, nullable=False)
+    current_price: Mapped[float] = mapped_column(Float, nullable=False)
+    quantity: Mapped[float] = mapped_column(Float, nullable=False)
+    size_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    unrealized_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    unrealized_pnl_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    fees_entry: Mapped[float] = mapped_column(Float, default=0.0)
+    fees_exit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_plan_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("plans.id"), nullable=True)
+    source_opp_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("opportunities.id"), nullable=True)
+    source_cycle_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("agent_cycles.id"), nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    status: Mapped[str] = mapped_column(String(20), default="open")  # open, closed, stopped_out, take_profit_hit
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    close_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close_reason: Mapped[str | None] = mapped_column(String(30), nullable=True)  # manual, stop_loss, take_profit, agent_death
+    execution_venue: Mapped[str] = mapped_column(String(20), default="paper")  # paper, kraken, binance
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relationships
+    agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_id])
+    source_plan: Mapped["Plan | None"] = relationship("Plan", foreign_keys=[source_plan_id])
+    source_opp: Mapped["Opportunity | None"] = relationship("Opportunity", foreign_keys=[source_opp_id])
+    source_cycle: Mapped["AgentCycle | None"] = relationship("AgentCycle", foreign_keys=[source_cycle_id])
+
+    def __repr__(self) -> str:
+        return f"<Position(id={self.id}, symbol={self.symbol!r}, side={self.side!r}, status={self.status!r})>"
+
+
+# ---------------------------------------------------------------------------
+# Order — Phase 3C (Paper Trading)
+# ---------------------------------------------------------------------------
+
+class Order(Base):
+    __tablename__ = "orders"
+    __table_args__ = (
+        Index("ix_orders_agent_status", "agent_id", "status"),
+        Index("ix_orders_symbol_status", "symbol", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    order_type: Mapped[str] = mapped_column(String(20), nullable=False)  # market, limit, stop_loss, take_profit
+    symbol: Mapped[str] = mapped_column(String(30), nullable=False)
+    side: Mapped[str] = mapped_column(String(10), nullable=False)  # buy, sell
+    requested_size_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    requested_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # limit price; null for market
+    fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fill_quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fill_value_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    slippage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fee_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fee_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_bid: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_ask: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_spread_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_volume_24h: Mapped[float | None] = mapped_column(Float, nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    filled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    processing_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reserved_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reservation_released: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, filled, cancelled, expired, rejected
+    rejection_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source_plan_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("plans.id"), nullable=True)
+    source_cycle_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("agent_cycles.id"), nullable=True)
+    warden_request_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    position_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("positions.id"), nullable=True)
+    execution_venue: Mapped[str] = mapped_column(String(20), default="paper")  # paper, kraken, binance
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relationships
+    agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_id])
+    source_plan: Mapped["Plan | None"] = relationship("Plan", foreign_keys=[source_plan_id])
+    source_cycle: Mapped["AgentCycle | None"] = relationship("AgentCycle", foreign_keys=[source_cycle_id])
+    position: Mapped["Position | None"] = relationship("Position", foreign_keys=[position_id])
+
+    def __repr__(self) -> str:
+        return f"<Order(id={self.id}, type={self.order_type!r}, symbol={self.symbol!r}, status={self.status!r})>"
+
+
+# ---------------------------------------------------------------------------
+# AgentEquitySnapshot — Phase 3C (Paper Trading)
+# ---------------------------------------------------------------------------
+
+class AgentEquitySnapshot(Base):
+    __tablename__ = "agent_equity_snapshots"
+    __table_args__ = (
+        Index("ix_equity_snapshots_agent_time", "agent_id", "snapshot_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    equity: Mapped[float] = mapped_column(Float, nullable=False)
+    cash_balance: Mapped[float] = mapped_column(Float, nullable=False)
+    position_value: Mapped[float] = mapped_column(Float, nullable=False)
+    snapshot_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relationships
+    agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_id])
+
+    def __repr__(self) -> str:
+        return f"<AgentEquitySnapshot(id={self.id}, agent_id={self.agent_id}, equity={self.equity})>"
+
+
+# ---------------------------------------------------------------------------
+# RejectionTracking — Phase 3D (Counterfactual Simulation)
+# ---------------------------------------------------------------------------
+
+class RejectionTracking(Base):
+    __tablename__ = "rejection_tracking"
+    __table_args__ = (
+        Index("ix_rejection_tracking_status", "status"),
+        Index("ix_rejection_tracking_critic", "critic_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    plan_id: Mapped[int] = mapped_column(Integer, ForeignKey("plans.id"), nullable=False)
+    critic_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    market: Mapped[str] = mapped_column(String(30), nullable=False)
+    direction: Mapped[str] = mapped_column(String(10), nullable=False)  # long, short
+    entry_price: Mapped[float] = mapped_column(Float, nullable=False)
+    stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    timeframe: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    rejected_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    check_until: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="tracking")  # tracking, completed
+    outcome: Mapped[str | None] = mapped_column(String(30), nullable=True)  # stop_loss_hit, take_profit_hit, timeframe_expired
+    outcome_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    outcome_pnl_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    critic_correct: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Relationships
+    plan: Mapped["Plan"] = relationship("Plan", foreign_keys=[plan_id])
+    critic: Mapped["Agent"] = relationship("Agent", foreign_keys=[critic_id])
+
+    def __repr__(self) -> str:
+        return f"<RejectionTracking(id={self.id}, plan_id={self.plan_id}, status={self.status!r})>"
+
+
+# ---------------------------------------------------------------------------
+# PostMortem — Phase 3D (Agent Death Analysis)
+# ---------------------------------------------------------------------------
+
+class PostMortem(Base):
+    __tablename__ = "post_mortems"
+    __table_args__ = (
+        Index("ix_post_mortems_published", "published"),
+        Index("ix_post_mortems_publish_at", "publish_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    agent_role: Mapped[str] = mapped_column(String(50), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    evaluation_id: Mapped[int] = mapped_column(Integer, ForeignKey("evaluations.id"), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    what_went_wrong: Mapped[str] = mapped_column(Text, nullable=False)
+    what_went_right: Mapped[str] = mapped_column(Text, nullable=False)
+    lesson: Mapped[str] = mapped_column(Text, nullable=False)
+    market_context: Mapped[str] = mapped_column(Text, nullable=False)
+    recommendation: Mapped[str] = mapped_column(Text, nullable=False)
+    genesis_visible: Mapped[bool] = mapped_column(Boolean, default=True)
+    published: Mapped[bool] = mapped_column(Boolean, default=False)
+    publish_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    library_entry_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("library_entries.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relationships
+    agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_id])
+    evaluation: Mapped["Evaluation"] = relationship("Evaluation", foreign_keys=[evaluation_id])
+    library_entry: Mapped["LibraryEntry | None"] = relationship("LibraryEntry", foreign_keys=[library_entry_id])
+
+    def __repr__(self) -> str:
+        return f"<PostMortem(id={self.id}, agent={self.agent_name!r}, published={self.published})>"

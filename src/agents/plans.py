@@ -8,7 +8,7 @@ Manages the plan lifecycle in the Strategist → Critic → Operator pipeline:
   - Approved plans are picked up by Operators for execution
 """
 
-__version__ = "0.8.0"
+__version__ = "1.0.0"
 
 import logging
 from datetime import datetime, timezone
@@ -167,6 +167,11 @@ class PlanManager:
 
         self.db.add(plan)
         self.db.flush()
+
+        # Phase 3D: Track rejected plans for counterfactual simulation
+        if verdict == "rejected":
+            self._track_rejection(plan)
+
         logger.info(f"Plan {plan_id}: verdict = {verdict}")
         return plan
 
@@ -313,6 +318,47 @@ class PlanManager:
                 lines.append(f"    Critic: {plan.critic_verdict} — {(plan.critic_reasoning or '')[:100]}")
 
         return "\n".join(lines)
+
+    def _track_rejection(self, plan: Plan) -> None:
+        """Track a rejected plan for counterfactual simulation."""
+        try:
+            from src.common.models import RejectionTracking
+            from datetime import timedelta
+
+            now = datetime.now(timezone.utc)
+
+            # Parse timeframe
+            timeframe_hours = {"1h": 1, "4h": 4, "1d": 24, "1w": 168}
+            hours = timeframe_hours.get(plan.timeframe or "1d", 24)
+
+            # Try to extract stop/TP from exit conditions
+            stop_loss = take_profit = None
+            try:
+                import json
+                exit_data = json.loads(plan.exit_conditions) if plan.exit_conditions else {}
+                stop_loss = exit_data.get("stop_loss")
+                take_profit = exit_data.get("take_profit")
+            except Exception:
+                pass
+
+            tracking = RejectionTracking(
+                plan_id=plan.id,
+                critic_id=plan.critic_agent_id,
+                market=plan.market,
+                direction=plan.direction,
+                entry_price=0.0,  # Will be populated by price cache if available
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                timeframe=plan.timeframe or "1d",
+                rejected_at=now,
+                check_until=now + timedelta(hours=hours),
+                status="tracking",
+            )
+            self.db.add(tracking)
+            self.db.flush()
+            logger.info(f"Rejection tracking created for plan {plan.id}")
+        except Exception as e:
+            logger.warning(f"Failed to track rejection for plan {plan.id}: {e}")
 
     def _get_and_validate_transition(
         self, plan_id: int, target_status: str

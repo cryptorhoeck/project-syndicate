@@ -6,7 +6,7 @@ Builds the agent's "mind" for each cycle — pure deterministic code, no AI.
 Assembles mandatory, priority, and long-term memory context within a token budget.
 """
 
-__version__ = "0.8.0"
+__version__ = "1.0.0"
 
 import enum
 import logging
@@ -18,7 +18,7 @@ import tiktoken
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
-from src.common.models import Agent, AgentCycle, AgentLongTermMemory, Message, Opportunity, Plan, SystemState
+from src.common.models import Agent, AgentCycle, AgentLongTermMemory, Message, Opportunity, Plan, Position, SystemState
 from src.agents.budget_gate import BudgetStatus
 from src.agents.roles import (
     format_actions_for_prompt,
@@ -236,7 +236,81 @@ Idle rate: {agent.idle_rate:.1%} | Validation fail rate: {agent.validation_fail_
 
 === SYSTEM STATE ===
 Market regime: {regime} | Alert level: {alert}
-Watched markets: {agent.watched_markets or []}"""
+Watched markets: {agent.watched_markets or []}""" + self._build_evaluation_feedback(agent) + self._build_portfolio_awareness(agent)
+
+    def _build_evaluation_feedback(self, agent: Agent) -> str:
+        """Inject evaluation scorecard and warnings (one-time delivery)."""
+        parts = []
+
+        if agent.evaluation_scorecard:
+            scorecard = agent.evaluation_scorecard
+            parts.append("\n=== EVALUATION FEEDBACK ===")
+            result = scorecard.get("result", "unknown")
+            score = scorecard.get("composite_score", 0)
+            parts.append(f"Last evaluation result: {result} (score: {score:.3f})")
+
+            if scorecard.get("rank"):
+                parts.append(f"Role rank: #{scorecard['rank']}")
+
+            warning = scorecard.get("warning")
+            if warning:
+                parts.append(f"⚠ WARNING FROM GENESIS: {warning}")
+
+            metrics = scorecard.get("metrics", {})
+            if metrics:
+                parts.append("Metric breakdown:")
+                for name, data in metrics.items():
+                    if isinstance(data, dict) and "raw" in data:
+                        parts.append(f"  {name}: {data['raw']:.4f} (norm={data['normalized']:.3f})")
+
+            # Clear after injection (one-time delivery)
+            agent.evaluation_scorecard = None
+            self.db.add(agent)
+
+        return "\n".join(parts) if parts else ""
+
+    def _build_portfolio_awareness(self, agent: Agent) -> str:
+        """Add portfolio awareness for Operator agents."""
+        if agent.type != "operator":
+            return ""
+
+        parts = ["\n=== PORTFOLIO STATUS ==="]
+        parts.append(
+            f"Cash: ${agent.cash_balance:.2f} | "
+            f"Reserved: ${agent.reserved_cash:.2f} | "
+            f"Available: ${agent.cash_balance - agent.reserved_cash:.2f}"
+        )
+
+        # Open positions
+        positions = (
+            self.db.query(Position)
+            .filter(Position.agent_id == agent.id, Position.status == "open")
+            .all()
+        )
+
+        if positions:
+            parts.append(f"Open positions ({len(positions)}):")
+            total_exposure = 0
+            for pos in positions:
+                pnl_sign = "+" if pos.unrealized_pnl >= 0 else ""
+                parts.append(
+                    f"  {pos.symbol} {pos.side} ${pos.size_usd:.2f} "
+                    f"P&L: {pnl_sign}${pos.unrealized_pnl:.2f} ({pnl_sign}{pos.unrealized_pnl_pct:.1f}%)"
+                )
+                total_exposure += pos.size_usd
+
+            # Concentration warnings
+            if agent.capital_allocated > 0:
+                for pos in positions:
+                    concentration = pos.size_usd / agent.capital_allocated
+                    if concentration >= 0.35:
+                        parts.append(f"  ⚠ HIGH CONCENTRATION: {pos.symbol} = {concentration:.0%} of capital")
+        else:
+            parts.append("No open positions.")
+
+        parts.append(f"Realized P&L: ${agent.realized_pnl:.2f} | Fees paid: ${agent.total_fees_paid:.2f}")
+
+        return "\n".join(parts)
 
     def _build_priority_context(self, agent: Agent, token_budget: int) -> str:
         """Build priority context: Agora messages, recent cycle history."""

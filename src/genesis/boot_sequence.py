@@ -10,7 +10,7 @@ Each agent goes through orientation before the next wave can spawn.
 21-day survival clock for Gen 1.
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 import logging
 from datetime import datetime, timedelta, timezone

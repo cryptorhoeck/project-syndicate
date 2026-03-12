@@ -6,7 +6,7 @@ Handles P&L tracking, Sharpe ratio, composite scoring, leaderboard,
 thinking tax collection, and system-wide financial summaries.
 """
 
-__version__ = "0.2.0"
+__version__ = "1.0.0"
 
 import math
 from datetime import datetime, timedelta, timezone
@@ -96,9 +96,16 @@ class Accountant:
     # Sharpe Ratio
     # ------------------------------------------------------------------
 
-    async def calculate_sharpe_ratio(self, agent_id: int, period_days: int = 14) -> float:
-        """Calculate annualized Sharpe ratio from daily returns."""
+    async def calculate_sharpe_ratio(self, agent_id: int, period_days: int = 14) -> float | None:
+        """Calculate annualized Sharpe ratio from daily returns.
+
+        Returns None for non-Operator roles (they don't trade directly).
+        """
         with self.db_session_factory() as session:
+            agent = session.get(Agent, agent_id)
+            if agent and agent.type not in ("operator", "genesis"):
+                return None
+
             cutoff = datetime.now(timezone.utc) - timedelta(days=period_days)
             trades = session.execute(
                 select(Transaction).where(

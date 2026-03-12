@@ -7,7 +7,7 @@ Runs the OODA loop: Budget → Observe → Orient+Decide → Validate → Act �
 This is the single most important piece of code in the entire project.
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 import logging
 import time

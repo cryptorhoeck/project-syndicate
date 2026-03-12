@@ -2,25 +2,38 @@
 
 ## Last Updated: 2026-03-12
 
-## Phase: 3B — COMPLETE (The Cold Start Boot Sequence)
+## Phase: 3D — COMPLETE (Natural Selection — The First Evaluation Cycle)
 
-### Completed This Session (Phase 3B — The Cold Start Boot Sequence)
-- [x] Phase 3A verification: 286 tests passing, backup created
-- [x] Textbook condensed summaries: thinking_efficiently, market_mechanics, risk_management
-- [x] Database schema: 3 new tables (opportunities, plans, boot_sequence_log) + 6 new agent columns
-- [x] Market Data Service: exchange wrapper with mock fallback, caching, context formatting
-- [x] Opportunities Manager: create/claim/expire/convert lifecycle, market/urgency filtering
-- [x] Plans Manager: full lifecycle with status transition validation (draft→submitted→under_review→approved/rejected→executing→completed)
-- [x] Orientation Protocol: textbook injection at 150% budget, role-specific prompts, watchlist extraction
-- [x] Boot Sequence Orchestrator: 3 condition-based spawn waves, 21-day survival clocks
-- [x] Day-10 Health Check: cycle count, idle rate, validation fail, cost checks with clock adjustments
-- [x] Context Assembler: pipeline-aware context (opportunities for strategists, plans for critics, etc.)
-- [x] Action Executor: pipeline-integrated (broadcast_opportunity creates Opportunity, propose_plan creates Plan, critic verdicts update Plan)
-- [x] Cycle Scheduler: orientation-aware (skips un-oriented agents), new interrupt triggers
-- [x] Maintenance Service: expire opportunities, clean stale plans, reset budgets, prune memory
-- [x] 4 new config variables in SyndicateConfig and .env.example
-- [x] 94 new tests (380 total), all passing
-- [x] CHANGELOG.md, CURRENT_STATUS.md updated
+### Completed This Session (Phase 3D — Natural Selection)
+- [x] Role-specific composite formulas: Operator, Scout, Strategist, Critic metrics
+- [x] Normalization helper with configurable min/max ranges
+- [x] 3-stage evaluation engine: pre-filter → Genesis AI judgment → execute decisions
+- [x] Evaluation assembler: builds full evaluation packages from all analyzers
+- [x] Pipeline analyzer: conversion rates at each stage, bottleneck detection
+- [x] Rejection tracker: counterfactual simulation for critic rejections
+- [x] Idle analyzer: post_loss_caution, no_input, strategic_patience, paralysis
+- [x] Honesty scorer: confidence calibration, self-note accuracy, reflection specificity
+- [x] Ecosystem contribution calculator: role-specific attribution
+- [x] Post-mortem generation: genesis_visible immediately, 6-hour Library delay
+- [x] Prestige milestones: Apprentice/Journeyman/Expert/Master/Grandmaster
+- [x] Probation mechanics: shortened clock, budget cut, 3-cycle grace
+- [x] First-evaluation leniency: no termination on first eval
+- [x] Regime adjustment: leniency when alert hours > 50%
+- [x] Rubber-stamp penalty: critic approval rate > 90% → accuracy × 0.50
+- [x] Portfolio concentration: Warden hard limit 50%, warning at 35%
+- [x] Context assembler: portfolio awareness for operators, evaluation feedback injection
+- [x] Plans manager: rejection tracking on critic rejection
+- [x] Genesis integration: EvaluationEngine, rejection monitoring, post-mortem publication
+- [x] Database: 7 new Agent columns, expanded Evaluation, RejectionTracking, PostMortem tables
+- [x] Config: 22 new Phase 3D variables
+- [x] 47 new tests (496 total), all passing (2 pre-existing library textbook failures)
+- [x] CLAUDE.md, CHANGELOG.md, CURRENT_STATUS.md updated
+
+### Previously Completed (Phase 3C)
+- [x] Paper Trading: PriceCache, FeeSchedule, SlippageModel, PaperTradingService, PositionMonitor, LimitOrderMonitor, EquitySnapshots, SanityChecker
+
+### Previously Completed (Phase 3B)
+- [x] Boot Sequence: spawn waves, orientation protocol, pipeline handoffs, health checks, maintenance
 
 ### Previously Completed (Phase 3A)
 - [x] Thinking Cycle Engine: OODA loop, Budget Gate, Context Assembler, Output Validator, Action Executor, Cycle Recorder, Memory Manager, Cycle Scheduler, Role Definitions, Claude API Client
@@ -43,20 +56,20 @@
 ### Previously Completed (Phase 0)
 - [x] Full project scaffold, PostgreSQL, Redis, base agent, backup, heartbeat
 
-### What's Next — Phase 3C: Paper Trading Engine
-- [ ] Real paper trading execution (replace placeholders)
-- [ ] Position tracking and P&L calculation
-- [ ] Stop loss / take profit monitoring
-- [ ] Trade history and performance metrics
+### What's Next — Phase 4: The Arena (Full Paper Trading Validation)
+- [ ] End-to-end system integration test (all agents running together)
+- [ ] Paper trading validation with real market data
+- [ ] Performance benchmarking and tuning
+- [ ] Generation 2+ lifecycle validation
 
 ### Important Notes
-- **Boot sequence is condition-based** — each wave waits for the previous wave's agents to complete orientation
-- **Orientation is a single special cycle** — 150% token budget, textbook injection, must produce valid first output
-- **Pipeline is fully connected** — Scout broadcasts create Opportunity records, Strategist plans create Plan records, Critic verdicts update Plan status
-- **Day-10 health check** — Genesis evaluates Gen 1 progress, can extend/shorten survival clocks
-- **Opportunities expire** — 6-hour TTL by default, maintenance task handles cleanup
-- **Plans have state machine** — invalid transitions are rejected (can't approve a draft, can't execute unapproved)
-- **Cycle scheduler skips un-oriented agents** — agents in "initializing" status with no orientation are excluded from scheduling
+- **All module versions bumped to 1.0.0** for Phase 3D components
+- **Dead code cleanup needed**: `_evaluate_agent` and `_claude_probation_decision` methods in genesis.py are now unused (replaced by EvaluationEngine)
+- **Evaluation is role-aware**: each role has its own composite formula, pre-filter thresholds, and pipeline metrics
+- **Rejection tracker runs in hourly maintenance**: monitors rejected plans against market prices
+- **Post-mortems publish after 6 hours**: genesis_visible=True immediately for internal use
+- **Prestige is cumulative**: milestones checked after each evaluation based on evaluation_count
+- **Probation grace period**: 3 cycles before probation status can trigger termination
 
 ### Known Issues
 - PostgreSQL binaries not in system PATH (located at C:/ProDesk/pgsql/bin/)
@@ -67,6 +80,7 @@
 - RuntimeWarning in tests from mock Redis pipeline coroutines (cosmetic only)
 - DeprecationWarning from Starlette TemplateResponse parameter order (cosmetic only)
 - LegacyAPIWarning from Query.get() usage in tests (cosmetic only)
+- 2 pre-existing test_library_textbooks failures (unrelated to Phase 3D)
 
 ### Environment Notes
 - Python venv: E:\project syndicate\.venv

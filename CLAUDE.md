@@ -10,8 +10,8 @@ Project Syndicate is an autonomous, self-evolving multi-agent AI financial ecosy
 
 ## Current Status
 
-**Phase:** 3B — COMPLETE (The Cold Start Boot Sequence)
-**Focus:** Boot sequence, orientation, inter-agent pipeline, health checks. Next: Phase 3C (Paper Trading)
+**Phase:** 3D — COMPLETE (Natural Selection — The First Evaluation Cycle)
+**Focus:** Role-specific evaluation, Darwinian selection, rejection tracking, post-mortems, capital reallocation. Next: Phase 4 (The Arena)
 **Last Updated:** 2026-03-12
 
 See `CURRENT_STATUS.md` for detailed session-by-session progress.
@@ -90,6 +90,21 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **Design:** "Mission Control for AI Colony" — JetBrains Mono + IBM Plex Sans, agent-type color coding
 - **App factory:** `src/web/app.py`, runner: `python scripts/run_web.py` (port 8000)
 - **No auth in Phase 2D** — running on localhost. Auth comes in Phase 6
+
+### Natural Selection (Phase 3D)
+- **Role Metrics** (`src/genesis/role_metrics.py`) — role-specific composite scoring: Operator (Sharpe/P&L/Efficiency/Consistency), Scout (Conversion/Profitability/Signal Quality/Efficiency/Activity), Strategist (Approval/Profitability/Efficiency/Revision/Thinking), Critic (Rejection Value/Approval Accuracy/Risk Flags/Throughput/Thinking). Normalization helper with configurable ranges.
+- **Evaluation Engine** (`src/genesis/evaluation_engine.py`) — 3-stage Darwinian selection: quantitative pre-filter → Genesis AI judgment (probation only) → execute decisions. First-eval leniency, regime adjustment. Handles termination (cancel orders, close positions, post-mortem), probation (shortened clock, budget cut, 3-cycle grace), survival (prestige check, clock reset).
+- **Evaluation Assembler** (`src/genesis/evaluation_assembler.py`) — builds full evaluation package from all analyzers: financial data, behavioral data, ecosystem contribution, pipeline analysis, idle analysis, honesty scoring. Produces compressed text summary (<1000 tokens).
+- **Pipeline Analyzer** (`src/genesis/pipeline_analyzer.py`) — tracks conversion rates at each pipeline stage (opportunity → plan → approved → executed → profitable), identifies bottleneck.
+- **Rejection Tracker** (`src/genesis/rejection_tracker.py`) — counterfactual simulation for critic rejections. Monitors if rejected plans would have hit stop-loss or take-profit. Calculates critic accuracy scores.
+- **Idle Analyzer** (`src/genesis/idle_analyzer.py`) — classifies idle periods: post_loss_caution, no_input, strategic_patience, paralysis. Priority-ordered classification.
+- **Honesty Scorer** (`src/genesis/honesty_scorer.py`) — supplementary metric: confidence calibration (Pearson), self-note accuracy, reflection specificity. NOT in composites.
+- **Ecosystem Contribution** (`src/genesis/ecosystem_contribution.py`) — role-specific contribution: Operators = true_pnl, Scouts/Strategists = attributed_pnl × 0.25, Critics = money_saved × 0.50.
+- **Post-Mortems** — auto-generated on termination, genesis_visible=True immediately, 6-hour delay for Library publication.
+- **Prestige Milestones** — 3=Apprentice, 5=Journeyman, 10=Expert, 15=Master, 20=Grandmaster.
+- **Warden** updated — portfolio concentration checks: hard limit 50% (REJECT), warning at 35% (APPROVE with flag).
+- **Context Assembler** updated — portfolio awareness for Operators, one-time evaluation feedback injection.
+- **Models** updated — 7 new Agent columns, expanded Evaluation model (~25 new columns), RejectionTracking table, PostMortem table.
 
 ### Thinking Cycle (Phase 3A)
 - **OODA Loop Engine** (`src/agents/thinking_cycle.py`) — master orchestrator: Budget → Observe → Orient+Decide → Validate → Act → Record
@@ -208,8 +223,9 @@ At the beginning of every script or module, include (or call) standard boilerpla
 | 2D | Web Frontend (dashboard) | **COMPLETE** |
 | 3A | Agent Thinking Cycle (OODA loop, memory, scheduling) | **COMPLETE** |
 | 3B | Cold Start Boot Sequence (spawn waves, orientation, pipeline) | **COMPLETE** |
-| 3C-3F | Paper trading, evaluation, evolution | Pending |
-| 4 | Natural Selection (evolution loop) | Pending |
+| 3C | Paper Trading Infrastructure | **COMPLETE** |
+| 3D | Natural Selection (evaluation, survival, reproduction) | **COMPLETE** |
+| 4 | The Arena (full paper trading validation) | Pending |
 | 5 | Social Presence + Solana | Pending |
 | 6 | Owner Console + Polish | Pending |
 | 7 | The Arena (full paper trading validation) | Pending |

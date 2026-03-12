@@ -6,7 +6,7 @@ Checks cycle count, idle rate, validation failures, and API efficiency.
 Can extend/shorten survival clock, reallocate capital, or flag for termination.
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 import logging
 from dataclasses import dataclass

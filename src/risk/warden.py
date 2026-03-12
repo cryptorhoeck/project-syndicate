@@ -12,7 +12,7 @@ Responsibilities:
   - Alert escalation with email notifications
 """
 
-__version__ = "0.3.0"
+__version__ = "1.0.0"
 
 import asyncio
 import json
@@ -27,7 +27,7 @@ from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.common.config import config
-from src.common.models import Agent, InheritedPosition, SystemState
+from src.common.models import Agent, InheritedPosition, Position, SystemState
 
 if TYPE_CHECKING:
     from src.agora.agora_service import AgoraService
@@ -199,6 +199,10 @@ class Warden:
             return result
 
         agent_capital = agent.capital_current or agent.capital_allocated or 0
+        # Phase 3C: use buying power (cash - reservations) when available
+        buying_power = getattr(agent, "cash_balance", 0) - getattr(agent, "reserved_cash", 0)
+        effective_capital = buying_power if buying_power > 0 else agent_capital
+
         if agent_capital > 0 and trade_value > agent_capital * self.PER_AGENT_MAX_POSITION_PCT:
             result["status"] = "rejected"
             result["reason"] = (
@@ -208,23 +212,98 @@ class Warden:
             self.log.warning("trade_rejected_position_limit", **result)
             return result
 
-        # 5. Large trade — hold for review
+        # 5. Portfolio concentration check (before size approval)
+        symbol = trade_request.get("symbol")
+        if symbol and agent_capital > 0:
+            concentration_result = self._check_concentration(
+                agent_id, symbol, trade_value, agent_capital
+            )
+            if concentration_result:
+                result.update(concentration_result)
+                return result
+
+        # 6. Large trade — hold for review
         if agent_capital > 0 and trade_value > agent_capital * self.TRADE_GATE_THRESHOLD:
-            # Check: does agent have enough capital?
-            if trade_value > agent_capital:
+            # Check: does agent have enough buying power?
+            if trade_value > effective_capital:
                 result["status"] = "rejected"
-                result["reason"] = f"Trade value ({trade_value:.2f}) exceeds agent capital ({agent_capital:.2f})"
+                result["reason"] = (
+                    f"Trade value ({trade_value:.2f}) exceeds buying power ({effective_capital:.2f})"
+                )
                 return result
             result["status"] = "approved"
             result["reason"] = "Large trade — passed size review"
             self.log.info("trade_approved_large", **result)
             return result
 
-        # 6. Small trade, no alerts — auto-approve
+        # 7. Small trade, no alerts — auto-approve
         result["status"] = "approved"
         result["reason"] = "Auto-approved (small trade, no alerts)"
         self.log.debug("trade_auto_approved", **result)
         return result
+
+    def _check_concentration(
+        self, agent_id: int, symbol: str,
+        trade_value: float, agent_capital: float,
+    ) -> dict | None:
+        """Check portfolio concentration for a trade.
+
+        Returns rejection/warning dict if threshold exceeded, None if OK.
+        Hard limit: 50% in one position → REJECT.
+        Warning: 35% → APPROVE with flag.
+        """
+        # Get existing exposure in this symbol
+        existing_exposure = 0.0
+        try:
+            with self.db_session_factory() as session:
+                positions = session.execute(
+                    select(Position).where(
+                        Position.agent_id == agent_id,
+                        Position.symbol == symbol,
+                        Position.status == "open",
+                    )
+                ).scalars().all()
+                existing_exposure = sum(p.size_usd for p in positions)
+        except Exception:
+            pass
+
+        total_deployed = existing_exposure
+        projected = total_deployed + trade_value
+        concentration_pct = projected / (agent_capital + trade_value) if (agent_capital + trade_value) > 0 else 0
+
+        hard_limit = config.portfolio_concentration_hard_limit
+        warning_threshold = config.portfolio_concentration_warning
+
+        if concentration_pct >= hard_limit:
+            self.log.warning(
+                "trade_rejected_concentration",
+                agent_id=agent_id, symbol=symbol,
+                concentration=f"{concentration_pct:.1%}",
+            )
+            return {
+                "status": "rejected",
+                "reason": (
+                    f"Portfolio concentration {concentration_pct:.1%} exceeds "
+                    f"hard limit ({hard_limit:.0%}) for {symbol}"
+                ),
+            }
+
+        if concentration_pct >= warning_threshold:
+            self.log.info(
+                "trade_approved_concentration_warning",
+                agent_id=agent_id, symbol=symbol,
+                concentration=f"{concentration_pct:.1%}",
+            )
+            return {
+                "status": "approved",
+                "reason": (
+                    f"WARNING: concentration {concentration_pct:.1%} "
+                    f"in {symbol} (threshold: {warning_threshold:.0%})"
+                ),
+                "concentration_warning": True,
+            }
+
+        return None  # No concentration issue
 
     # ------------------------------------------------------------------
     # Alert Escalation

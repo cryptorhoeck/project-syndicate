@@ -5,7 +5,7 @@ Defines each agent role with its action space, default temperature,
 cycle interval, description, and output schema.
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 from dataclasses import dataclass, field
 

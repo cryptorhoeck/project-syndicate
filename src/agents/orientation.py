@@ -7,7 +7,7 @@ Validates the agent can produce a coherent first output.
 Sets initial watchlist based on role and first-cycle output.
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 import logging
 import os

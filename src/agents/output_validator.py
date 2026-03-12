@@ -6,7 +6,7 @@ Validates agent output: JSON parsing, schema check, action space check,
 Warden pre-check, sanity checks. One retry for malformed JSON (double tax).
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 import enum
 import json

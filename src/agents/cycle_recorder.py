@@ -9,7 +9,7 @@ Writes everything from a cycle to permanent storage:
   4. Agent running stats
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 import json
 import logging

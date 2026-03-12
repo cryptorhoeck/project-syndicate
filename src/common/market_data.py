@@ -5,7 +5,7 @@ Lightweight market data wrapper providing summary data for agent context.
 Uses the exchange service when available, mock/cached data as fallback.
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 import logging
 import time

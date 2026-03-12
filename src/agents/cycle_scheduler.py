@@ -9,7 +9,7 @@ Manages agent thinking cycle scheduling:
   - Sequential cycle processing (one at a time for Phase 3A)
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 import enum
 import json

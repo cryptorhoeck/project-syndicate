@@ -2,6 +2,102 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [1.0.0] - 2026-03-12
+
+### Added — Phase 3D: Natural Selection (The First Evaluation Cycle)
+
+#### Evaluation Engine
+- **Role Metrics** (`src/genesis/role_metrics.py`) — 4 role-specific composite calculators (Operator, Scout, Strategist, Critic) with configurable normalization ranges. Operator: 0.40 Sharpe + 0.25 True P&L% + 0.20 Thinking Efficiency + 0.15 Consistency. Scout: 0.30 Intel Conversion + 0.30 Profitability + 0.15 Signal Quality + 0.15 Efficiency + 0.10 Activity. Strategist: 0.25 Approval + 0.30 Profitability + 0.15 Efficiency + 0.15 Revision + 0.15 Thinking. Critic: 0.30 Rejection Value + 0.25 Approval Accuracy + 0.15 Risk Flag + 0.15 Throughput + 0.15 Thinking.
+- **Evaluation Engine** (`src/genesis/evaluation_engine.py`) — 3-stage Darwinian selection: quantitative pre-filter → Genesis AI judgment (probation cases only) → execute decisions. Pre-filter thresholds per role. First-evaluation leniency (no termination). Regime adjustment when alert hours > 50% of period. Handles termination (cancel orders, close positions, post-mortem generation), probation (shortened survival clock, 25% budget cut, 3-cycle grace period), survival (update counters, reset clock, prestige milestone check).
+- **Evaluation Assembler** (`src/genesis/evaluation_assembler.py`) — builds full evaluation package from all analyzers: financial data, behavioral data, ecosystem contribution, pipeline analysis, idle analysis, honesty scoring. Produces compressed text summary (<1000 tokens) for Genesis AI review.
+
+#### Pipeline & Attribution
+- **Pipeline Analyzer** (`src/genesis/pipeline_analyzer.py`) — tracks conversion rates at each pipeline stage (opportunity → plan → approved → executed → profitable), identifies bottleneck stage. Special case: approved-but-not-executed detection.
+- **Ecosystem Contribution** (`src/genesis/ecosystem_contribution.py`) — role-specific contribution calculation: Operators = true_pnl, Scouts = attributed_pnl × 0.25, Strategists = attributed_pnl × 0.25, Critics = money_saved × 0.50.
+
+#### Behavioral Analysis
+- **Rejection Tracker** (`src/genesis/rejection_tracker.py`) — counterfactual simulation for critic rejections. Monitors rejected plans against market data to determine if stop-loss or take-profit would have been hit. Calculates per-critic accuracy scores. Direction-aware (long/short). Timeframe parsing for monitoring duration.
+- **Idle Analyzer** (`src/genesis/idle_analyzer.py`) — classifies idle cycles in priority order: post_loss_caution → no_input → strategic_patience → paralysis. Checks pipeline availability per role.
+- **Honesty Scorer** (`src/genesis/honesty_scorer.py`) — supplementary metric (NOT in composites): confidence calibration via Pearson correlation (0.40 weight), self-note accuracy via prediction tracking (0.30), reflection specificity via regex scoring (0.30). Requires ≥5 data points.
+
+#### Post-Mortems & Prestige
+- Auto-generated post-mortems on agent termination: genesis_visible=True immediately, 6-hour delay for Library publication
+- Prestige milestones: 3=Apprentice, 5=Journeyman, 10=Expert, 15=Master, 20=Grandmaster
+- Probation mechanics: shortened survival clock (half), budget cut (25%), 3-cycle grace period
+
+#### Database
+- 7 new Agent columns: pending_evaluation, probation, probation_grace_cycles, ecosystem_contribution, role_rank, last_evaluation_id (FK), evaluation_scorecard (JSON)
+- Expanded Evaluation model with ~25 new Phase 3D columns (composite_score, metric_breakdown, pre_filter_result, genesis_decision, prestige_before/after, capital_before/after, etc.)
+- New table: `rejection_tracking` — counterfactual simulation tracking for critic rejections
+- New table: `post_mortems` — agent death analysis with Library publication workflow
+
+#### Configuration
+- 22 new config variables: normalization ranges, attribution shares, probation settings, concentration limits, budget adjustments, rubber-stamp penalties
+
+#### Cross-Agent Awareness
+- **Warden** updated: portfolio concentration checks — hard limit 50% (REJECT), warning at 35% (APPROVE with flag)
+- **Context Assembler** updated: portfolio awareness for Operator agents (cash, positions, concentration), one-time evaluation feedback injection (scorecard cleared after delivery)
+- **Plans Manager** updated: rejection tracking on critic rejection
+
+#### Tests (47 new, 496 total — all passing)
+- test_role_metrics.py (12): normalize, operator/scout/strategist/critic composites, rubber stamp penalty, factory
+- test_pipeline_analyzer.py (4): empty pipeline, scout bottleneck, approved-not-executed, conversion rates
+- test_rejection_tracker.py (6): tracking creation, stop-loss/take-profit/timeframe outcomes, score calculation, no-data neutral
+- test_idle_analyzer.py (5): post_loss_caution, no_input, strategic_patience, paralysis, idle rate
+- test_honesty_scorer.py (5): correlated/uncorrelated confidence, specific/vague reflections, insufficient data
+- test_evaluation_engine.py (7): profitable survives, deep loss terminated, borderline probation, first-eval leniency, probation mechanics, role gap detection, prestige milestone
+- test_post_mortem.py (3): creation, 6-hour publish delay, API failure graceful handling
+- test_cross_agent.py (5): concentration reject/warn, portfolio awareness, scout exclusion, feedback injection
+
+### Changed
+- **models.py** bumped to v1.0.0: Agent/Evaluation model expansions, new FK relationships with explicit foreign_keys
+- **config.py** bumped to v1.0.0: 22 new evaluation/selection config variables
+- **warden.py** bumped to v1.0.0: concentration check before large trade approval
+- **accountant.py** bumped to v1.0.0: Sharpe returns None for non-operator roles
+- **context_assembler.py** bumped to v1.0.0: portfolio awareness, evaluation feedback injection
+- **plans.py** bumped to v1.0.0: rejection tracking on critic rejection
+- **genesis.py** bumped to v1.0.0: new EvaluationEngine integration, rejection tracker monitoring, post-mortem publication in maintenance
+
+## [0.9.0] - 2026-03-12
+
+### Added — Phase 3C: Paper Trading Infrastructure
+- **Database Schema**: 3 new tables (`positions`, `orders`, `agent_equity_snapshots`) + 7 new Agent columns (`cash_balance`, `reserved_cash`, `total_equity`, `realized_pnl`, `unrealized_pnl`, `total_fees_paid`, `position_count`)
+- **PriceCache** (`src/common/price_cache.py`): Redis-backed ticker and order book cache with 10s TTL, 60s stale threshold, batch fetch
+- **FeeSchedule** (`src/trading/fee_schedule.py`): Kraken (0.16%/0.26%) and Binance (0.10%/0.10%) fee rates, maker/taker distinction
+- **SlippageModel** (`src/trading/slippage_model.py`): Order-book VWAP walk with ±20% noise, minimum 0.01% floor, depth penalty
+- **TradeExecutionService** (`src/trading/execution_service.py`): Abstract interface + PaperTradingService implementation
+  - Market orders with slippage and fees
+  - Limit orders with cash reservation
+  - Position close with Redis lock (double-close prevention)
+  - Warden integration for trade gate checks
+  - Transaction records for Accountant bridge
+  - Factory function `get_trading_service()` for paper/live switch
+- **PositionMonitor** (`src/trading/position_monitor.py`): 10s loop monitoring all open positions
+  - Stop-loss fills at BID price + slippage (realistic)
+  - Take-profit fills at TP price (maker fee)
+  - Stale price detection pauses stop/TP triggers
+  - Redis heartbeat for Dead Man's Switch
+- **LimitOrderMonitor** (`src/trading/limit_order_monitor.py`): 10s loop monitoring pending limit orders
+  - Price improvement (buy at min(limit, ask))
+  - 24h expiry with automatic cash reservation release
+  - No fills on stale prices
+- **EquitySnapshotService** (`src/trading/equity_snapshots.py`): 5-minute equity snapshots for Sharpe ratio calculation
+- **SanityChecker** (`src/trading/sanity_checker.py`): 5-minute health checks
+  - Negative cash balance detection (CRITICAL)
+  - Equity reconciliation auto-correction
+  - Orphaned position detection
+  - Stale reservation cleanup
+  - ConcentrationMonitor (40% threshold warning)
+- **Process runner** (`scripts/run_trading.py`): Starts PositionMonitor + LimitOrderMonitor as async tasks
+- 14 new config variables for Phase 3C
+- 71 new tests (449 total passing), 9 test files
+
+### Changed
+- **Warden** (`src/risk/warden.py`): Trade gate now checks buying power (cash - reservations) instead of just capital
+- **ActionExecutor** (`src/agents/action_executor.py`): Operator trades now route through TradeExecutionService instead of placeholder
+- **run_all.py**: Added `--with-trading` flag for trading monitors
+- All module versions bumped to 0.9.0
+
 ## [0.8.0] - 2026-03-12
 
 ### Added — Phase 3B: The Cold Start Boot Sequence

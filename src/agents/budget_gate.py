@@ -5,7 +5,7 @@ Pre-cycle check: Can the agent afford to think?
 Determines NORMAL / SURVIVAL_MODE / SKIP_CYCLE before any API call.
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 import enum
 import logging
