@@ -21,3 +21,5 @@ schedule
 numpy
 ta
 structlog
+jinja2
+python-multipart

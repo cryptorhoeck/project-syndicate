@@ -5,16 +5,18 @@ Standalone script that starts the Genesis main loop.
 Runs the 5-minute cycle with graceful shutdown.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 import asyncio
 import signal
 import sys
 
+import redis.asyncio as aioredis
 import structlog
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from src.agora import create_agora_service
 from src.common.config import config
 from src.genesis.genesis import GenesisAgent
 
@@ -47,9 +49,14 @@ async def main() -> None:
     engine = create_engine(config.database_url)
     session_factory = sessionmaker(bind=engine)
 
+    # Initialize Agora service
+    redis_client = aioredis.from_url(config.redis_url, decode_responses=True)
+    agora = await create_agora_service(session_factory, redis_client)
+
     genesis = GenesisAgent(
         db_session_factory=session_factory,
         exchange_service=None,  # Will be set when exchange keys are configured
+        agora_service=agora,
     )
     await genesis.initialize()
 
@@ -70,6 +77,11 @@ async def main() -> None:
         pass
 
     await genesis.flush_costs_to_db()
+
+    # Clean shutdown of Agora pub/sub
+    await agora.pubsub.shutdown()
+    await redis_client.close()
+
     log.info("genesis_stopped")
 
 

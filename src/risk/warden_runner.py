@@ -5,16 +5,18 @@ Standalone script that starts the Warden as its own process,
 independent of Genesis and all agents. Runs the 30-second check cycle.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 import asyncio
 import signal
 import sys
 
+import redis.asyncio as aioredis
 import structlog
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from src.agora import create_agora_service
 from src.common.config import config
 from src.risk.warden import Warden
 
@@ -46,7 +48,12 @@ async def main() -> None:
 
     engine = create_engine(config.database_url)
     session_factory = sessionmaker(bind=engine)
-    warden = Warden(db_session_factory=session_factory)
+
+    # Initialize Agora service
+    redis_client = aioredis.from_url(config.redis_url, decode_responses=True)
+    agora = await create_agora_service(session_factory, redis_client)
+
+    warden = Warden(db_session_factory=session_factory, agora_service=agora)
 
     interval = config.warden_cycle_interval_seconds
     log.info("warden_started", interval_seconds=interval)
@@ -61,6 +68,10 @@ async def main() -> None:
                 await asyncio.sleep(1)
     except KeyboardInterrupt:
         pass
+
+    # Clean shutdown
+    await agora.pubsub.shutdown()
+    await redis_client.close()
 
     log.info("warden_stopped")
 

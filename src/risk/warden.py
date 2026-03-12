@@ -12,14 +12,14 @@ Responsibilities:
   - Alert escalation with email notifications
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 import asyncio
 import json
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional, TYPE_CHECKING
 
 import redis
 import structlog
@@ -29,13 +29,20 @@ from sqlalchemy.orm import Session, sessionmaker
 from src.common.config import config
 from src.common.models import Agent, InheritedPosition, SystemState
 
+if TYPE_CHECKING:
+    from src.agora.agora_service import AgoraService
+
 logger = structlog.get_logger()
 
 
 class Warden:
     """The immutable risk layer. No AI, pure deterministic checks."""
 
-    def __init__(self, db_session_factory: sessionmaker | None = None) -> None:
+    def __init__(
+        self,
+        db_session_factory: sessionmaker | None = None,
+        agora_service: Optional["AgoraService"] = None,
+    ) -> None:
         self.log = logger.bind(component="warden")
 
         # Database
@@ -55,6 +62,9 @@ class Warden:
         self.PER_AGENT_MAX_POSITION_PCT = config.per_agent_max_position_pct
         self.PER_AGENT_MAX_LOSS_PCT = config.per_agent_max_loss_pct
         self.TRADE_GATE_THRESHOLD = config.trade_gate_threshold
+
+        # Agora (optional — Warden POSTS but NEVER READS)
+        self._agora: Optional["AgoraService"] = agora_service
 
         # Current alert status
         self.alert_status: str = "green"
@@ -227,13 +237,11 @@ class Warden:
             new_status=new_status,
         )
 
-        # Post to Agora via Redis pub/sub
-        alert_msg = json.dumps({
-            "type": "alert_escalation",
-            "status": new_status,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
-        self.redis.publish("agora:system-alerts", alert_msg)
+        # Post to Agora
+        await self._post_alert(
+            f"ALERT ESCALATION: {new_status.upper()}",
+            metadata={"status": new_status, "timestamp": datetime.now(timezone.utc).isoformat()},
+        )
 
         if new_status == "yellow":
             self.log.warning("YELLOW_ALERT: halving all position size limits")
@@ -245,8 +253,6 @@ class Warden:
         elif new_status == "circuit_breaker":
             self.log.critical("CIRCUIT_BREAKER: closing all positions, freezing everything")
             self._freeze_all_agents()
-            # Email notification would be sent here via EmailService
-            # For now, log the emergency
             self.log.critical("CIRCUIT_BREAKER_ACTIVATED — IMMEDIATE ACTION REQUIRED")
 
     # ------------------------------------------------------------------
@@ -267,18 +273,42 @@ class Warden:
             agent.terminated_at = datetime.now(timezone.utc)
             session.commit()
 
-        # Post death notice to Agora via Redis
-        death_msg = json.dumps({
-            "type": "agent_death",
-            "agent_id": agent_id,
-            "reason": reason,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
-        self.redis.publish("agora:agent-lifecycle", death_msg)
+        # Post death notice to Agora
+        await self._post_alert(
+            f"EMERGENCY KILL: Agent {agent_id} — {reason}",
+            metadata={"agent_id": agent_id, "reason": reason},
+        )
 
     # ------------------------------------------------------------------
     # Internal Helpers
     # ------------------------------------------------------------------
+
+    async def _post_alert(self, content: str, metadata: dict | None = None) -> None:
+        """Post an alert to The Agora. Falls back to Redis pub/sub if no AgoraService."""
+        if self._agora is not None:
+            try:
+                from src.agora.schemas import AgoraMessage, MessageType
+                msg = AgoraMessage(
+                    agent_id=0,
+                    agent_name="Warden",
+                    channel="system-alerts",
+                    content=content,
+                    message_type=MessageType.ALERT,
+                    metadata=metadata or {},
+                    importance=2,
+                )
+                await self._agora.post_message(msg)
+                return
+            except Exception as exc:
+                self.log.warning("agora_post_failed_falling_back", error=str(exc))
+
+        # Fallback: direct Redis publish
+        alert_msg = json.dumps({
+            "content": content,
+            "metadata": metadata or {},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        self.redis.publish("agora:system-alerts", alert_msg)
 
     def _get_system_state(self) -> SystemState | None:
         """Read current system state from database."""

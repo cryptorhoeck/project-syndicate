@@ -43,6 +43,15 @@ class RegimeDetector:
 
     async def detect_regime(self) -> dict:
         """Detect current market regime and compare with last recorded."""
+        if self.exchange is None:
+            self.log.warning("no_exchange_service", reason="Cannot detect regime without exchange data")
+            return {
+                "regime": "unknown",
+                "changed": False,
+                "indicators": {},
+                "reason": "No exchange service configured",
+            }
+
         # 1. Fetch market data
         data = await self.exchange.get_market_data_for_regime()
         ohlcv = data.get("ohlcv", [])

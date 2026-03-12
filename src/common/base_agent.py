@@ -15,19 +15,23 @@ Subclasses MUST implement the three abstract coroutines:
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
 import abc
 import asyncio
 import enum
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional, TYPE_CHECKING
 
 import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker, Session
 
 from src.common.models import Agent as AgentModel, Message as MessageModel
+
+if TYPE_CHECKING:
+    from src.agora.agora_service import AgoraService
+    from src.agora.schemas import AgoraMessageResponse, MessageType
 
 logger = structlog.get_logger()
 
@@ -62,12 +66,9 @@ class BaseAgent(abc.ABC):
     agent_type : str
         Category string such as ``"council"``, ``"operator"``, ``"risk"``.
     db_session_factory : sessionmaker
-        A :class:`sqlalchemy.orm.sessionmaker` bound to the project database
-        engine.  Used via the context-manager pattern::
-
-            with self.db_session_factory() as session:
-                ...
-                session.commit()
+        A :class:`sqlalchemy.orm.sessionmaker` bound to the project database engine.
+    agora_service : AgoraService | None
+        The Agora communication service. If None, Agora methods are no-ops.
     """
 
     # ------------------------------------------------------------------
@@ -80,6 +81,7 @@ class BaseAgent(abc.ABC):
         name: str,
         agent_type: str,
         db_session_factory: sessionmaker,
+        agora_service: Optional["AgoraService"] = None,
     ) -> None:
         # Identity
         self.agent_id: int = agent_id
@@ -91,6 +93,9 @@ class BaseAgent(abc.ABC):
 
         # Database access
         self.db_session_factory: sessionmaker = db_session_factory
+
+        # Agora communication
+        self.agora: Optional["AgoraService"] = agora_service
 
         # Structured logger bound to this agent
         self.log: structlog.stdlib.BoundLogger = logger.bind(
@@ -142,13 +147,7 @@ class BaseAgent(abc.ABC):
         self.log.info("agent_woken")
 
     async def terminate(self, reason: str) -> None:
-        """Permanently terminate the agent, recording the reason.
-
-        Parameters
-        ----------
-        reason : str
-            Human-readable explanation of why the agent was terminated.
-        """
+        """Permanently terminate the agent, recording the reason."""
         self.status = AgentStatus.TERMINATED
         now = datetime.now(timezone.utc)
 
@@ -170,79 +169,139 @@ class BaseAgent(abc.ABC):
         self,
         channel: str,
         content: str,
+        message_type: Optional["MessageType"] = None,
         metadata: dict[str, Any] | None = None,
-    ) -> None:
-        """Publish a message to an Agora channel.
+        importance: int = 0,
+        expires_at: Optional[datetime] = None,
+    ) -> Optional["AgoraMessageResponse"]:
+        """Post a message to The Agora.
 
         Parameters
         ----------
         channel : str
-            Target channel name (e.g. ``"strategy"``, ``"risk-alerts"``).
+            Target channel name.
         content : str
             The message body.
+        message_type : MessageType | None
+            Message classification. Defaults to CHAT.
         metadata : dict | None
-            Optional JSON-serialisable payload attached to the message.
+            Optional JSON-serializable payload.
+        importance : int
+            0=normal, 1=important, 2=critical.
+        expires_at : datetime | None
+            When this message expires (for time-sensitive signals).
         """
+        if self.agora is not None:
+            from src.agora.schemas import AgoraMessage, MessageType as MT
+            msg = AgoraMessage(
+                agent_id=self.agent_id,
+                agent_name=self.name,
+                channel=channel,
+                content=content,
+                message_type=message_type or MT.CHAT,
+                metadata=metadata or {},
+                importance=importance,
+                expires_at=expires_at,
+            )
+            return await self.agora.post_message(msg)
+
+        # Fallback: direct DB write (no AgoraService available)
         with self.db_session_factory() as session:
             message = MessageModel(
                 agent_id=self.agent_id,
                 channel=channel,
                 content=content,
                 metadata_json=metadata,
+                agent_name=self.name,
+                message_type=message_type.value if message_type else "chat",
+                importance=importance,
+                expires_at=expires_at,
             )
             session.add(message)
             session.commit()
 
         self.log.info("agora_post", channel=channel, content_length=len(content))
+        return None
 
     async def read_agora(
         self,
         channel: str,
         since: datetime | None = None,
         limit: int = 50,
-    ) -> list[MessageModel]:
-        """Read recent messages from an Agora channel.
+        message_types: Optional[list] = None,
+        only_unread: bool = False,
+    ) -> list:
+        """Read messages from The Agora.
 
         Parameters
         ----------
         channel : str
             Channel to read from.
         since : datetime | None
-            If provided, only return messages created after this timestamp.
+            If provided, only return messages after this timestamp.
         limit : int
-            Maximum number of messages to return (default 50).
-
-        Returns
-        -------
-        list[MessageModel]
-            Messages ordered by creation time (oldest first).
+            Maximum messages to return.
+        message_types : list[MessageType] | None
+            Filter by specific message types.
+        only_unread : bool
+            If True, read only messages since last mark_read().
         """
-        with self.db_session_factory() as session:
-            stmt = (
-                select(MessageModel)
-                .where(MessageModel.channel == channel)
+        if self.agora is not None:
+            if only_unread:
+                return await self.agora.read_channel_since_last_read(
+                    agent_id=self.agent_id, channel=channel, limit=limit
+                )
+            return await self.agora.read_channel(
+                channel=channel, since=since, limit=limit,
+                message_types=message_types,
             )
+
+        # Fallback: direct DB query
+        with self.db_session_factory() as session:
+            stmt = select(MessageModel).where(MessageModel.channel == channel)
             if since is not None:
                 stmt = stmt.where(MessageModel.timestamp > since)
-
             stmt = stmt.order_by(MessageModel.timestamp.asc()).limit(limit)
             results: list[MessageModel] = list(session.scalars(stmt).all())
 
         self.log.debug("agora_read", channel=channel, count=len(results))
         return results
 
+    async def mark_agora_read(
+        self,
+        channel: str,
+        up_to_message_id: Optional[int] = None,
+    ) -> None:
+        """Mark a channel as read. Call after processing messages."""
+        if self.agora is None:
+            return
+        await self.agora.mark_read(
+            agent_id=self.agent_id, channel=channel,
+            up_to_message_id=up_to_message_id,
+        )
+
+    async def get_agora_unread(self) -> dict[str, int]:
+        """Check how many unread messages per channel."""
+        if self.agora is None:
+            return {}
+        return await self.agora.get_unread_counts(agent_id=self.agent_id)
+
+    async def broadcast(self, content: str, importance: int = 1) -> Optional["AgoraMessageResponse"]:
+        """Post an important message to agent-chat visible to everyone."""
+        from src.agora.schemas import MessageType as MT
+        return await self.post_to_agora(
+            channel="agent-chat",
+            content=content,
+            message_type=MT.CHAT,
+            importance=importance,
+        )
+
     # ------------------------------------------------------------------
     # Thinking-tax / API cost tracking
     # ------------------------------------------------------------------
 
     def track_api_cost(self, cost: float) -> None:
-        """Record an incremental API cost for this session.
-
-        Parameters
-        ----------
-        cost : float
-            Dollar amount to add (e.g. ``0.0023``).
-        """
+        """Record an incremental API cost for this session."""
         self.thinking_cost_session += cost
         self.log.debug(
             "api_cost_tracked",

@@ -7,7 +7,7 @@ Syndicate Improvement Proposals (SIPs), system state, lineage tracking,
 inherited positions, market regimes, and daily reports.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 import os
 from datetime import date, datetime
@@ -153,16 +153,24 @@ class Message(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     agent_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("agents.id"), nullable=True)
-    channel: Mapped[str] = mapped_column(String(50), nullable=False)  # general, strategy, risk, market_data, sips
+    channel: Mapped[str] = mapped_column(String(50), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
+    # Phase 2A additions
+    message_type: Mapped[str] = mapped_column(String(20), default="chat")  # thought, proposal, signal, alert, chat, system, evaluation, trade, economy
+    agent_name: Mapped[str | None] = mapped_column(String(100), nullable=True)  # denormalized for fast display
+    parent_message_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("messages.id"), nullable=True)
+    importance: Mapped[int] = mapped_column(Integer, default=0)  # 0=normal, 1=important, 2=critical
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     # Relationships
     agent: Mapped["Agent | None"] = relationship("Agent", back_populates="messages")
+    parent_message: Mapped["Message | None"] = relationship("Message", remote_side=[id])
 
     def __repr__(self) -> str:
-        return f"<Message(id={self.id}, channel={self.channel!r}, agent_id={self.agent_id})>"
+        return f"<Message(id={self.id}, channel={self.channel!r}, type={self.message_type!r}, agent_id={self.agent_id})>"
 
 
 # ---------------------------------------------------------------------------
@@ -361,3 +369,44 @@ class DailyReport(Base):
 
     def __repr__(self) -> str:
         return f"<DailyReport(id={self.id}, date={self.report_date}, regime={self.market_regime!r})>"
+
+
+# ---------------------------------------------------------------------------
+# AgoraChannel — Phase 2A
+# ---------------------------------------------------------------------------
+
+class AgoraChannel(Base):
+    __tablename__ = "agora_channels"
+
+    name: Mapped[str] = mapped_column(String(50), primary_key=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    def __repr__(self) -> str:
+        return f"<AgoraChannel(name={self.name!r}, system={self.is_system}, messages={self.message_count})>"
+
+
+# ---------------------------------------------------------------------------
+# AgoraReadReceipt — Phase 2A
+# ---------------------------------------------------------------------------
+
+class AgoraReadReceipt(Base):
+    __tablename__ = "agora_read_receipts"
+    __table_args__ = (
+        UniqueConstraint("agent_id", "channel", name="uq_read_receipt_agent_channel"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    channel: Mapped[str] = mapped_column(String(50), nullable=False)
+    last_read_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    last_read_message_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("messages.id"), nullable=True)
+
+    # Relationships
+    agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_id])
+    last_read_message: Mapped["Message | None"] = relationship("Message", foreign_keys=[last_read_message_id])
+
+    def __repr__(self) -> str:
+        return f"<AgoraReadReceipt(agent_id={self.agent_id}, channel={self.channel!r})>"

@@ -2,6 +2,48 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [0.3.0] - 2026-03-12
+
+### Added — Phase 2A: The Agora (Central Nervous System)
+
+#### Agora Core
+- AgoraService (`src/agora/agora_service.py`) — central communication hub for all agents: post_message(), read_channel(), read_channel_since_last_read(), read_multiple_channels(), get_recent_activity(), search_messages(), mark_read(), get_unread_counts(), get_channels(), create_channel(), subscribe(), cleanup_expired_messages(), get_channel_stats()
+- AgoraPubSub (`src/agora/pubsub.py`) — Redis pub/sub manager using redis.asyncio: publish(), subscribe(), unsubscribe(), subscribe_multiple(), shutdown(), with background listener loop
+- Agora Schemas (`src/agora/schemas.py`) — Pydantic models: MessageType enum (9 types: thought, proposal, signal, alert, chat, system, evaluation, trade, economy), AgoraMessage, AgoraMessageResponse, ChannelInfo, ReadReceipt
+- Agora package init (`src/agora/__init__.py`) — create_agora_service() factory function
+
+#### Database
+- Alembic migration: 5 new columns on messages table (message_type, agent_name, parent_message_id, importance, expires_at)
+- New table: agora_channels (10 default channels seeded: market-intel, strategy-proposals, strategy-debate, trade-signals, trade-results, system-alerts, genesis-log, agent-chat, sip-proposals, daily-report)
+- New table: agora_read_receipts (per-agent per-channel read tracking with unique constraint)
+- Backfill: existing messages get agent_name='Genesis' and message_type='chat' defaults
+
+#### Agent Integration
+- BaseAgent (`src/common/base_agent.py`) — updated to v0.3.0: new agora_service parameter, post_to_agora() now supports message_type/importance/expires_at, new methods: read_agora() with only_unread and message_types filters, mark_agora_read(), get_agora_unread(), broadcast(). Graceful fallback to direct DB writes when AgoraService is None
+- Genesis (`src/genesis/genesis.py`) — updated to v0.3.0: accepts agora_service, all post_to_agora() calls now use proper MessageType (SYSTEM/SIGNAL/EVALUATION), Agora monitoring uses read receipts and unread counts, hourly expired message cleanup
+- Warden (`src/risk/warden.py`) — updated to v0.3.0: accepts optional agora_service, alert escalation and emergency kills post via AgoraService (ALERT type, importance=2), fallback to Redis pub/sub when no AgoraService
+
+#### Process Runners
+- genesis_runner.py — updated: creates async Redis client and AgoraService, passes to Genesis, clean shutdown of pub/sub
+- warden_runner.py — updated: creates async Redis client and AgoraService, passes to Warden, clean shutdown
+
+#### Features
+- Rate limiting: 10 messages per 5-minute window per agent via Redis counter with TTL (Genesis exempt)
+- Read receipts: per-agent per-channel tracking, explicit mark_read() required after processing
+- Channel management: auto-creation of non-system channels, system channels are protected
+- Expired messages: messages can have expires_at, excluded from reads by default, Genesis cleans up hourly
+- Message threading: parent_message_id FK for reply chains
+- Importance levels: 0=normal, 1=important, 2=critical — filterable in reads
+- Full-text search: basic ILIKE search across Agora messages with channel/agent filters
+
+#### Tests (44 new, 74 total — all passing)
+- test_agora_service.py (30 tests): posting (basic, all types, metadata, importance, expiry), reading (basic, since, type filter, importance filter, expired handling, limit, multi-channel), search (basic, by channel, by agent), rate limiting (enforced, per-agent, genesis exempt, reset), read receipts (create, update, since_last_read, unread_counts), channels (list, create, validation, system protection), maintenance (cleanup, stats)
+- test_agora_pubsub.py (6 tests): publish, subscribe, multiple subscribers, unsubscribe, multi-channel subscribe, shutdown
+- test_agora_integration.py (6 tests + 1 no-agora): BaseAgent post+read, unread counts, broadcast, message types, fallback without agora, graceful no-op
+
+#### Dependencies
+- Added: jinja2, python-multipart (for Phase 2D prep)
+
 ## [0.2.0] - 2026-03-12
 
 ### Added — Phase 1: Genesis + Risk Desk

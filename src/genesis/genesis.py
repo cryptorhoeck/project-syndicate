@@ -6,11 +6,11 @@ spawning, evaluating, killing agents, capital allocation,
 market regime detection, and daily reporting.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 import json
 from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional, TYPE_CHECKING
 
 import anthropic
 import redis
@@ -18,6 +18,7 @@ import structlog
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
+from src.agora.schemas import MessageType
 from src.common.base_agent import BaseAgent
 from src.common.config import config
 from src.common.models import (
@@ -32,6 +33,9 @@ from src.genesis.regime_detector import RegimeDetector
 from src.genesis.treasury import TreasuryManager
 from src.risk.accountant import Accountant
 
+if TYPE_CHECKING:
+    from src.agora.agora_service import AgoraService
+
 logger = structlog.get_logger()
 
 
@@ -42,12 +46,14 @@ class GenesisAgent(BaseAgent):
         self,
         db_session_factory: sessionmaker,
         exchange_service=None,
+        agora_service: Optional["AgoraService"] = None,
     ) -> None:
         super().__init__(
             agent_id=0,
             name="Genesis",
             agent_type="genesis",
             db_session_factory=db_session_factory,
+            agora_service=agora_service,
         )
 
         self.exchange = exchange_service
@@ -67,6 +73,9 @@ class GenesisAgent(BaseAgent):
         if config.anthropic_api_key:
             self.claude = anthropic.Anthropic(api_key=config.anthropic_api_key)
 
+        # Track last hourly maintenance
+        self._last_hourly_maintenance: datetime | None = None
+
         self.log = logger.bind(component="genesis")
 
     # ------------------------------------------------------------------
@@ -74,8 +83,26 @@ class GenesisAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def initialize(self) -> None:
-        """Initialize Genesis. Create system_state record if missing."""
+        """Initialize Genesis. Register self in agents table, create system_state if missing."""
         with self.db_session_factory() as session:
+            # Ensure Genesis has a row in agents (needed for FK on messages, etc.)
+            genesis_row = session.get(Agent, 0)
+            if genesis_row is None:
+                genesis_row = Agent(
+                    id=0,
+                    name="Genesis",
+                    type="genesis",
+                    status="active",
+                    generation=0,
+                    capital_allocated=0.0,
+                    capital_current=0.0,
+                    strategy_summary="Immortal God Node — ecosystem manager",
+                )
+                session.add(genesis_row)
+                session.commit()
+                self.log.info("genesis_agent_registered", agent_id=0)
+
+            # Ensure system_state record exists
             state = session.execute(select(SystemState).limit(1)).scalar_one_or_none()
             if state is None:
                 state = SystemState(
@@ -129,9 +156,11 @@ class GenesisAgent(BaseAgent):
                 cycle_report["regime"] = regime
                 if regime.get("changed"):
                     await self.post_to_agora(
-                        "market-regime",
+                        "market-intel",
                         f"Regime change: {regime.get('previous_regime')} -> {regime['regime']}",
+                        message_type=MessageType.SIGNAL,
                         metadata=regime.get("indicators"),
+                        importance=1,
                     )
                     # Update system state
                     with self.db_session_factory() as session:
@@ -166,14 +195,18 @@ class GenesisAgent(BaseAgent):
             cycle_report["reproduction"] = reproduction
 
             # 9. AGORA MONITORING
-            agora_summary = self._monitor_agora()
+            agora_summary = await self._monitor_agora()
             cycle_report["agora"] = agora_summary
 
-            # 10. LOG CYCLE
+            # 10. HOURLY MAINTENANCE (expired messages cleanup)
+            await self._maybe_run_hourly_maintenance()
+
+            # 11. LOG CYCLE
             await self.post_to_agora(
                 "genesis-log",
                 f"Cycle complete. Treasury: ${treasury['total']:.2f}, "
                 f"Agents: {agent_health.get('active', 0)} active",
+                message_type=MessageType.SYSTEM,
                 metadata={"cycle_report_keys": list(cycle_report.keys())},
             )
 
@@ -325,9 +358,11 @@ class GenesisAgent(BaseAgent):
                 await self.treasury.reclaim_capital(agent_id)
                 await self.treasury.inherit_positions(agent_id)
                 await self.post_to_agora(
-                    "agent-lifecycle",
+                    "genesis-log",
                     f"TERMINATED: {agent_name} — {reason}",
+                    message_type=MessageType.SYSTEM,
                     metadata=pnl_data,
+                    importance=2,
                 )
             else:
                 # Survive
@@ -363,6 +398,14 @@ class GenesisAgent(BaseAgent):
             session.add(evaluation)
             session.commit()
 
+        # Post evaluation result to Agora
+        await self.post_to_agora(
+            "genesis-log",
+            f"Evaluation: {agent_name} — {decision} (score: {score:.4f})",
+            message_type=MessageType.EVALUATION,
+            metadata={"agent_id": agent_id, "decision": decision, "score": score},
+        )
+
         self.log.info(
             "agent_evaluated",
             agent_id=agent_id,
@@ -388,7 +431,6 @@ class GenesisAgent(BaseAgent):
     ) -> str:
         """Ask Claude whether a borderline agent should survive."""
         if self.claude is None:
-            # No API key — default to probation survival
             return "survive"
 
         try:
@@ -409,9 +451,8 @@ class GenesisAgent(BaseAgent):
             )
             answer = response.content[0].text.strip().upper()
 
-            # Track API cost
             await self.accountant.track_api_call(
-                agent_id=0,  # Genesis
+                agent_id=0,
                 model="claude-sonnet-4-5-20250514",
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
@@ -420,7 +461,7 @@ class GenesisAgent(BaseAgent):
             return "terminate" if "TERMINATE" in answer else "survive"
         except Exception as exc:
             self.log.error("claude_probation_error", error=str(exc))
-            return "survive"  # Default to mercy
+            return "survive"
 
     # ------------------------------------------------------------------
     # Spawn Decisions
@@ -473,6 +514,12 @@ class GenesisAgent(BaseAgent):
             )
 
             if "YES" in answer.upper()[:20]:
+                await self.post_to_agora(
+                    "genesis-log",
+                    f"Spawn decision: YES — {answer[:200]}",
+                    message_type=MessageType.SYSTEM,
+                    importance=1,
+                )
                 return {"spawned": True, "claude_reasoning": answer[:500]}
             return {"spawned": False, "claude_reasoning": answer[:500]}
 
@@ -497,7 +544,6 @@ class GenesisAgent(BaseAgent):
             if top_agent is None:
                 return {"reproduction": False, "reason": "No active agents"}
 
-            # Must be Veteran+ prestige
             if top_agent.prestige_title not in ("Veteran", "Elite", "Legendary"):
                 return {
                     "reproduction": False,
@@ -515,16 +561,50 @@ class GenesisAgent(BaseAgent):
     # Agora Monitoring
     # ------------------------------------------------------------------
 
-    def _monitor_agora(self) -> dict:
+    async def _monitor_agora(self) -> dict:
         """Read recent Agora messages for SIPs and anomalies."""
+        # Check unread messages via AgoraService
+        unread = await self.get_agora_unread()
+
+        # Process SIP proposals if any
+        if unread.get("sip-proposals", 0) > 0:
+            sips = await self.read_agora("sip-proposals", only_unread=True)
+            self.log.info("sip_proposals_found", count=len(sips))
+            await self.mark_agora_read("sip-proposals")
+
+        # Get overall message count for the report
         with self.db_session_factory() as session:
             recent = session.execute(
-                select(func.count()).where(
+                select(func.count()).select_from(Message).where(
                     Message.timestamp >= datetime.now(timezone.utc) - timedelta(hours=1)
                 )
             ).scalar() or 0
 
-        return {"messages_last_hour": recent}
+        return {
+            "messages_last_hour": recent,
+            "unread_channels": unread,
+        }
+
+    # ------------------------------------------------------------------
+    # Hourly Maintenance
+    # ------------------------------------------------------------------
+
+    async def _maybe_run_hourly_maintenance(self) -> None:
+        """Run maintenance tasks once per hour."""
+        now = datetime.now(timezone.utc)
+        if (
+            self._last_hourly_maintenance is not None
+            and (now - self._last_hourly_maintenance) < timedelta(hours=1)
+        ):
+            return
+
+        self._last_hourly_maintenance = now
+
+        # Clean up expired Agora messages
+        if self.agora is not None:
+            deleted = await self.agora.cleanup_expired_messages()
+            if deleted > 0:
+                self.log.info("agora_cleanup", expired_messages_deleted=deleted)
 
     # ------------------------------------------------------------------
     # Daily Report
@@ -580,7 +660,7 @@ class GenesisAgent(BaseAgent):
             report = DailyReport(
                 report_date=date.today(),
                 treasury_balance=summary["total_treasury"],
-                treasury_change_24h=0.0,  # Would calculate from previous day
+                treasury_change_24h=0.0,
                 active_agents=summary["active_agents"],
                 market_regime=summary["current_regime"],
                 alert_status=summary["alert_status"],
@@ -590,7 +670,12 @@ class GenesisAgent(BaseAgent):
             session.add(report)
             session.commit()
 
-        await self.post_to_agora("daily-report", report_content[:500])
+        await self.post_to_agora(
+            "daily-report",
+            report_content[:500],
+            message_type=MessageType.SYSTEM,
+            importance=1,
+        )
         self.log.info("daily_report_generated", date=date.today().isoformat())
         return report_content
 
@@ -613,7 +698,6 @@ class GenesisAgent(BaseAgent):
         if total < config.min_spawn_capital:
             return [{"status": "skip", "reason": f"Insufficient capital: ${total}"}]
 
-        # Default Gen 1 population
         gen1_agents = [
             {"name": "Scout-Alpha", "type": "scout", "mandate": "Crypto market scanner"},
             {"name": "Scout-Beta", "type": "scout", "mandate": "Broader opportunity scanner"},
@@ -622,7 +706,6 @@ class GenesisAgent(BaseAgent):
             {"name": "Operator-Genesis", "type": "operator", "mandate": "First execution agent"},
         ]
 
-        # Allocate capital evenly
         available = balance["available_for_allocation"]
         per_agent = available / len(gen1_agents)
 
@@ -644,9 +727,8 @@ class GenesisAgent(BaseAgent):
                     survival_clock_end=now + timedelta(days=config.default_survival_clock_days),
                 )
                 session.add(agent)
-                session.flush()  # Get the ID
+                session.flush()
 
-                # Lineage record
                 lineage = Lineage(
                     agent_id=agent.id,
                     parent_id=None,
@@ -664,12 +746,13 @@ class GenesisAgent(BaseAgent):
 
             session.commit()
 
-        # Log to Agora
         await self.post_to_agora(
-            "agent-lifecycle",
+            "genesis-log",
             f"GENESIS RECORD ZERO: {len(spawned)} Gen 1 agents spawned. "
             f"Total capital deployed: ${available:.2f}",
+            message_type=MessageType.SYSTEM,
             metadata={"gen1_agents": spawned},
+            importance=1,
         )
         self.log.info("cold_start_complete", agents_spawned=len(spawned))
         return spawned

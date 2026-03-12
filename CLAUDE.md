@@ -10,8 +10,8 @@ Project Syndicate is an autonomous, self-evolving multi-agent AI financial ecosy
 
 ## Current Status
 
-**Phase:** 1 — Genesis + Risk Desk (COMPLETE)
-**Focus:** Genesis agent, Warden, Accountant, Treasury, Regime Detector, Exchange Service, Email Alerts
+**Phase:** 2A — The Agora (COMPLETE)
+**Focus:** Central nervous system — Agora messaging, pub/sub, read receipts, rate limiting
 **Last Updated:** 2026-03-12
 
 See `CURRENT_STATUS.md` for detailed session-by-session progress.
@@ -43,6 +43,17 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **Exchange Service** (`src/common/exchange_service.py`) — unified ccxt wrapper for Kraken (primary) + Binance (secondary), retry logic, paper trading service
 - **Email Service** (`src/reports/email_service.py`) — daily reports, Yellow/Red/Circuit Breaker alerts via Gmail SMTP
 - **Config** (`src/common/config.py`) — centralized pydantic-settings configuration from .env
+
+### The Agora (Phase 2A)
+- **AgoraService** (`src/agora/agora_service.py`) — central nervous system, all agent communication flows through here: post_message(), read_channel(), mark_read(), subscribe(), search_messages(), cleanup_expired_messages()
+- **AgoraPubSub** (`src/agora/pubsub.py`) — Redis pub/sub manager for real-time message delivery
+- **Schemas** (`src/agora/schemas.py`) — Pydantic models: AgoraMessage, AgoraMessageResponse, ChannelInfo, ReadReceipt, MessageType enum (9 types)
+- **10 channels:** market-intel, strategy-proposals, strategy-debate, trade-signals, trade-results, system-alerts, genesis-log, agent-chat, sip-proposals, daily-report
+- **Real-time:** Redis pub/sub for instant delivery (`agora:{channel}` pattern)
+- **Persistent:** PostgreSQL for history and querying
+- **Rate limited:** 10 messages per 5-minute window per agent (Genesis exempt)
+- **Read receipts:** agents track what they've read per channel via agora_read_receipts table
+- **BaseAgent integration:** all agents get post_to_agora(), read_agora(), mark_agora_read(), get_agora_unread(), broadcast() — graceful no-op if AgoraService is None
 
 ## Dev Environment
 
@@ -142,7 +153,10 @@ At the beginning of every script or module, include (or call) standard boilerpla
 |-------|-------|--------|
 | 0 | Foundation (infra, DB, Redis, base agent, backup, recovery) | **COMPLETE** |
 | 1 | Genesis + Risk Desk | **COMPLETE** |
-| 2 | The Agora + Library + Internal Economy | Pending |
+| 2A | The Agora (central nervous system) | **COMPLETE** |
+| 2B | The Library (knowledge layer) | Pending |
+| 2C | Internal Economy (reputation marketplace) | Pending |
+| 2D | Web Frontend (dashboard) | Pending |
 | 3 | First Generation (boot sequence, paper trading) | Pending |
 | 4 | Natural Selection (evolution loop) | Pending |
 | 5 | Social Presence + Solana | Pending |
