@@ -5,7 +5,7 @@ All system configuration in one place, loaded from .env with sensible defaults.
 Uses pydantic-settings for validation and type coercion.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.7.0"
 
 from pydantic_settings import BaseSettings
 
@@ -75,6 +75,25 @@ class SyndicateConfig(BaseSettings):
     smtp_password: str = ""
     alert_email_to: str = ""
     alert_email_from: str = ""
+
+    # Phase 3A: Thinking Cycle
+    scout_cycle_interval: int = 300
+    strategist_cycle_interval: int = 900
+    operator_active_cycle_interval: int = 60
+    operator_idle_cycle_interval: int = 900
+    interrupt_cooldown_seconds: int = 60
+    max_retries_per_cycle: int = 1
+    retry_tax_multiplier: float = 2.0
+    reflection_every_n_cycles: int = 10
+    short_term_memory_size: int = 50
+    context_token_budget_normal: int = 3000
+    context_token_budget_survival: int = 1500
+
+    # API Temperature defaults (per role)
+    scout_temperature: float = 0.7
+    strategist_temperature: float = 0.5
+    critic_temperature: float = 0.2
+    operator_temperature: float = 0.2
 
     # Logging
     log_level: str = "INFO"

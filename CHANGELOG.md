@@ -2,6 +2,40 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [0.7.0] - 2026-03-12
+
+### Added — Phase 3A: The Agent Thinking Cycle
+
+#### Core Engine
+- **Thinking Cycle Engine** (`src/agents/thinking_cycle.py`) — OODA loop master orchestrator: Budget → Observe → Orient+Decide → Validate → Act → Record
+- **Budget Gate** (`src/agents/budget_gate.py`) — pre-cycle check with NORMAL/SURVIVAL_MODE/SKIP_CYCLE states, rolling average cost from last 20 cycles
+- **Context Assembler** (`src/agents/context_assembler.py`) — builds agent context within token budget, 4 dynamic modes (Normal/Crisis/Hunting/Survival), relevance scoring, tiktoken estimation
+- **Output Validator** (`src/agents/output_validator.py`) — 5-step validation pipeline (JSON parse, schema check, action space, Warden pre-check, sanity), one retry with repair prompt (double tax)
+- **Action Executor** (`src/agents/action_executor.py`) — routes 18 action types to Agora/DB/Warden, paper trading placeholder for Operator trades
+- **Cycle Recorder** (`src/agents/cycle_recorder.py`) — writes to PostgreSQL (agent_cycles), Agora (agent-activity), Redis (short-term memory), agent running stats
+
+#### Memory & Learning
+- **Memory Manager** (`src/agents/memory_manager.py`) — three-tier memory: Working (context window), Short-term (Redis, 50 cycles), Long-term (PostgreSQL, persistent)
+- Reflection processing: lesson/pattern extraction, memory promotion/demotion by content match
+- Memory inheritance: parent → offspring with confidence decay, grandparent passthrough
+
+#### Scheduling & Roles
+- **Cycle Scheduler** (`src/agents/cycle_scheduler.py`) — per-role frequency, interrupt triggers (opportunity→strategist, plan→critic, approval→operator, alert→all), 60s cooldown, Redis priority queue
+- **Role Definitions** (`src/agents/roles.py`) — Scout/Strategist/Critic/Operator with complete action spaces (4-5 actions each + universal go_idle), temperatures, cycle intervals
+- **Claude API Client** (`src/agents/claude_client.py`) — Anthropic SDK wrapper with token/cost tracking, exponential backoff retries, repair call support
+
+#### Database
+- New table: `agent_cycles` — full black box record of every thinking cycle
+- New table: `agent_long_term_memory` — curated agent wisdom with confidence scores
+- New table: `agent_reflections` — reflection cycle outputs with memory promotions/demotions
+- Agent table additions: cycle_count, last_cycle_at, avg_cycle_cost, avg_cycle_tokens, idle_rate, validation_fail_rate, warden_violation_count, current_context_mode, api_temperature, watched_markets
+
+#### Configuration
+- 16 new config variables: cycle intervals, temperatures, token budgets, memory sizes, retry settings
+
+#### Tests
+- 66 new tests (286 total): budget_gate (7), context_assembler (10), output_validator (12), cycle_scheduler (15), memory_manager (12), thinking_cycle integration (10)
+
 ## [0.6.0] - 2026-03-12
 
 ### Added — Phase 2D: Web Frontend (Mission Control Dashboard)

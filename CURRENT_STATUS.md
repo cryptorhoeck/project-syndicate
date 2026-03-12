@@ -2,63 +2,57 @@
 
 ## Last Updated: 2026-03-12
 
-## Phase: 2 — COMPLETE (All Sub-Phases)
+## Phase: 3A — COMPLETE (The Agent Thinking Cycle)
 
-### Completed This Session (Phase 2D — Web Frontend)
-- [x] Phase 2C verification: 186 tests passing, backup created
-- [x] Added `aiofiles` dependency
-- [x] Directory structure: `src/web/` with routes/, templates/, static/
-- [x] Base template: Tailwind CSS Play CDN, HTMX, Google Fonts, dark/light theme toggle
-- [x] Navigation sidebar: project logo, system status pill, 5 page links, theme toggle, treasury/regime display
-- [x] 8 reusable components: nav, agent_badge, message_row, agent_card, stat_card, status_dot, theme_toggle, empty_state
-- [x] Agora page: channel sidebar, message feed, type/importance filters, 10s HTMX auto-refresh
-- [x] Leaderboard page: main ranking table, Intel/Critic/Reputation/Dynasty tabs
-- [x] Library page: tabbed categories, search with 300ms debounce, entry detail page
-- [x] Agents page: card grid, summary stats, agent detail with lineage tree
-- [x] System page: status banner, process health, economy overview, recent alerts
-- [x] FastAPI app factory with lifespan, route registration, static files
-- [x] Dependencies module for shared DB session and common context
-- [x] 5 API fragment route modules (agora, leaderboard, library, agents, system)
-- [x] Runner script: `scripts/run_web.py` (port 8000)
-- [x] Updated `scripts/run_all.py` with `--with-web` flag
-- [x] SVG favicon (network node icon)
-- [x] 34 new tests (220 total), all passing
+### Completed This Session (Phase 3A — The Agent Thinking Cycle)
+- [x] Phase 2D verification: 220 tests passing, backup created
+- [x] Added `tiktoken` and `jsonschema` dependencies
+- [x] Database schema: 3 new tables (agent_cycles, agent_long_term_memory, agent_reflections) + 10 new agent columns
+- [x] Budget Gate: NORMAL/SURVIVAL_MODE/SKIP_CYCLE with rolling avg cost from last 20 cycles
+- [x] Context Assembler: 4 dynamic modes, token-budgeted, relevance scoring, tiktoken estimation
+- [x] Output Validator: 5-step pipeline, JSON/schema/action/Warden/sanity checks, retry with repair
+- [x] Action Executor: 18 action types routed to Agora/DB/Warden, paper trading placeholder
+- [x] Cycle Recorder: PostgreSQL + Agora + Redis + agent stats, failed cycle handling
+- [x] Memory Manager: 3-tier memory, reflection processing, memory inheritance
+- [x] Cycle Scheduler: per-role frequency, interrupt triggers, cooldown, priority queue
+- [x] Thinking Cycle Engine: OODA loop master orchestrator with full pipeline
+- [x] Role Definitions: Scout/Strategist/Critic/Operator with action spaces and schemas
+- [x] Claude API Client: Anthropic SDK wrapper, token/cost tracking, retries
+- [x] 16 new config variables in SyndicateConfig and .env.example
+- [x] 66 new tests (286 total), all passing
 - [x] CLAUDE.md, CHANGELOG.md updated
+
+### Previously Completed (Phase 2D)
+- [x] Web Frontend: FastAPI + Jinja2 + HTMX + Tailwind, 5 pages, HTMX auto-refresh
 
 ### Previously Completed (Phase 2C)
 - [x] Internal Economy: reputation, intel market, settlement, review market, gaming detection
-- [x] 66 Economy tests
 
 ### Previously Completed (Phase 2B)
 - [x] LibraryService: textbooks, archives, peer review, mentor system
-- [x] 46 Library tests
 
 ### Previously Completed (Phase 2A)
 - [x] AgoraService: central communication hub, Redis pub/sub, read receipts, rate limiting
-- [x] 44 Agora tests
 
 ### Previously Completed (Phase 1)
 - [x] Genesis Agent, Warden, Accountant, Treasury, Regime Detector
-- [x] Exchange Service, Email Service, Config, Process runners
 
 ### Previously Completed (Phase 0)
 - [x] Full project scaffold, PostgreSQL, Redis, base agent, backup, heartbeat
 
-### What's Next — Phase 3: First Generation
-- [ ] Boot sequence: spawn initial 5 agents (2 Scouts, 1 Strategist, 1 Critic, 1 Operator)
-- [ ] LangGraph agent implementation with Claude Sonnet API
-- [ ] Paper trading integration via exchange service
-- [ ] Agent survival clock and evaluation loop
-- [ ] First full Genesis cycle with live agents
+### What's Next — Phase 3B: Cold Start Boot Sequence
+- [ ] First-cycle cold start problem (zero memory orientation)
+- [ ] Library integration during agent spawning
+- [ ] Spawn initial 5 agents (2 Scouts, 1 Strategist, 1 Critic, 1 Operator)
+- [ ] Inter-agent workflow pipeline (Scout → Strategist → Critic → Operator)
 
 ### Important Notes
-- **Admin routes redirect to public** — `/admin/*` → `/*` (auth comes in Phase 6)
-- **Tailwind via Play CDN** — switch to production build in Phase 6
-- **Empty states on most pages** — agents arrive in Phase 3's cold start
-- **Web server is separate** — `run_web.py` runs independently from core processes
-- **Service Market is framework only** — full purchase/fulfillment flow deferred to Phase 4
-- **Settlement Engine requires exchange_service** — gracefully defers if None
-- **Textbook content is PLACEHOLDER** — must be written before Phase 3
+- **Thinking cycle is sequential** — one agent at a time through the queue. Parallel processing deferred to Phase 4.
+- **Operator trade actions are placeholders** — logs intent, returns mock result. Real paper trading in Phase 3C.
+- **Reflection every 10 cycles** — mandatory self-review, memory curation
+- **Critics are on-demand only** — no base cycle interval, triggered by plan submissions
+- **Token counting uses tiktoken cl100k_base** — reasonable approximation for Claude
+- **API temperatures configurable per-agent** — null = role default, non-null = override
 
 ### Known Issues
 - PostgreSQL binaries not in system PATH (located at C:/ProDesk/pgsql/bin/)
@@ -68,6 +62,7 @@
 - SMTP not yet configured (email sends will be skipped)
 - RuntimeWarning in tests from mock Redis pipeline coroutines (cosmetic only)
 - DeprecationWarning from Starlette TemplateResponse parameter order (cosmetic only)
+- LegacyAPIWarning from Query.get() usage in tests (cosmetic only)
 
 ### Environment Notes
 - Python venv: E:\project syndicate\.venv

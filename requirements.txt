@@ -25,3 +25,5 @@ jinja2
 python-multipart
 aiofiles
 markdown
+tiktoken
+jsonschema

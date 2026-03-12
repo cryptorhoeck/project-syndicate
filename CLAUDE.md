@@ -10,8 +10,8 @@ Project Syndicate is an autonomous, self-evolving multi-agent AI financial ecosy
 
 ## Current Status
 
-**Phase:** 2 — COMPLETE (all 4 sub-phases: Agora, Library, Economy, Web Frontend)
-**Focus:** Phase 2D Web Frontend complete. Next: Phase 3 (First Generation)
+**Phase:** 3A — COMPLETE (The Agent Thinking Cycle)
+**Focus:** OODA loop, memory, scheduling. Next: Phase 3B (Cold Start Boot Sequence)
 **Last Updated:** 2026-03-12
 
 See `CURRENT_STATUS.md` for detailed session-by-session progress.
@@ -90,6 +90,19 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **Design:** "Mission Control for AI Colony" — JetBrains Mono + IBM Plex Sans, agent-type color coding
 - **App factory:** `src/web/app.py`, runner: `python scripts/run_web.py` (port 8000)
 - **No auth in Phase 2D** — running on localhost. Auth comes in Phase 6
+
+### Thinking Cycle (Phase 3A)
+- **OODA Loop Engine** (`src/agents/thinking_cycle.py`) — master orchestrator: Budget → Observe → Orient+Decide → Validate → Act → Record
+- **Budget Gate** (`src/agents/budget_gate.py`) — pre-cycle check: NORMAL / SURVIVAL_MODE / SKIP_CYCLE
+- **Context Assembler** (`src/agents/context_assembler.py`) — builds agent "mind" per cycle. 4 modes: Normal/Crisis/Hunting/Survival. Token-budgeted with relevance scoring.
+- **Output Validator** (`src/agents/output_validator.py`) — JSON parsing, schema validation, action space check, Warden pre-check, sanity checks. One retry for malformed JSON (double tax).
+- **Action Executor** (`src/agents/action_executor.py`) — routes validated actions to Agora/DB/Warden. Paper trading placeholder for Operator trades.
+- **Cycle Recorder** (`src/agents/cycle_recorder.py`) — writes to PostgreSQL (agent_cycles), Agora, Redis short-term memory, agent stats.
+- **Memory Manager** (`src/agents/memory_manager.py`) — three-tier memory: Working (context), Short-term (Redis, 50 cycles), Long-term (PostgreSQL). Reflection promote/demote. Inheritance for offspring.
+- **Cycle Scheduler** (`src/agents/cycle_scheduler.py`) — per-role frequency, interrupt triggers, cooldown (60s), Redis priority queue, sequential processing.
+- **Role Definitions** (`src/agents/roles.py`) — Scout/Strategist/Critic/Operator with action spaces, temperatures, intervals.
+- **Claude API Client** (`src/agents/claude_client.py`) — Anthropic API wrapper with token tracking, cost calculation, retry logic.
+- **DB tables:** `agent_cycles`, `agent_long_term_memory`, `agent_reflections` + new `agents` columns
 
 ## Dev Environment
 
@@ -193,7 +206,8 @@ At the beginning of every script or module, include (or call) standard boilerpla
 | 2B | The Library (knowledge layer) | **COMPLETE** |
 | 2C | Internal Economy (reputation marketplace) | **COMPLETE** |
 | 2D | Web Frontend (dashboard) | **COMPLETE** |
-| 3 | First Generation (boot sequence, paper trading) | Pending |
+| 3A | Agent Thinking Cycle (OODA loop, memory, scheduling) | **COMPLETE** |
+| 3B-3F | Boot sequence, paper trading, evaluation, evolution | Pending |
 | 4 | Natural Selection (evolution loop) | Pending |
 | 5 | Social Presence + Solana | Pending |
 | 6 | Owner Console + Polish | Pending |

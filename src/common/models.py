@@ -7,7 +7,7 @@ Syndicate Improvement Proposals (SIPs), system state, lineage tracking,
 inherited positions, market regimes, and daily reports.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.7.0"
 
 import os
 from datetime import date, datetime
@@ -92,6 +92,18 @@ class Agent(Base):
     total_true_pnl: Mapped[float] = mapped_column(Float, default=0.0)
     evaluation_count: Mapped[int] = mapped_column(Integer, default=0)
     profitable_evaluations: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Phase 3A additions — thinking cycle stats
+    cycle_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_cycle_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    avg_cycle_cost: Mapped[float] = mapped_column(Float, default=0.0)
+    avg_cycle_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    idle_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    validation_fail_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    warden_violation_count: Mapped[int] = mapped_column(Integer, default=0)
+    current_context_mode: Mapped[str] = mapped_column(String(20), default="normal")
+    api_temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    watched_markets: Mapped[dict | None] = mapped_column(JSON, default=list)
 
     # Relationships
     parent: Mapped["Agent | None"] = relationship(
@@ -717,3 +729,110 @@ class GamingFlag(Base):
 
     def __repr__(self) -> str:
         return f"<GamingFlag(id={self.id}, type={self.flag_type!r}, severity={self.severity!r})>"
+
+
+# ---------------------------------------------------------------------------
+# AgentCycle — Phase 3A (Thinking Cycle Black Box)
+# ---------------------------------------------------------------------------
+
+class AgentCycle(Base):
+    __tablename__ = "agent_cycles"
+    __table_args__ = (
+        Index("ix_agent_cycles_agent_id_cycle", "agent_id", "cycle_number"),
+        Index("ix_agent_cycles_agent_id_timestamp", "agent_id", "timestamp"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    cycle_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    cycle_type: Mapped[str] = mapped_column(String(20), nullable=False, default="normal")  # normal, reflection, survival
+    timestamp: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    context_mode: Mapped[str] = mapped_column(String(20), default="normal")  # normal, crisis, hunting, survival
+    context_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    situation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    confidence_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recent_pattern: Mapped[str | None] = mapped_column(Text, nullable=True)
+    action_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    action_params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    self_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validation_passed: Mapped[bool] = mapped_column(Boolean, default=True)
+    validation_retries: Mapped[int] = mapped_column(Integer, default=0)
+    warden_flags: Mapped[int] = mapped_column(Integer, default=0)
+    outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outcome_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    api_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    cycle_duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    api_latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relationships
+    agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_id])
+
+    def __repr__(self) -> str:
+        return f"<AgentCycle(id={self.id}, agent_id={self.agent_id}, cycle={self.cycle_number}, type={self.cycle_type!r})>"
+
+
+# ---------------------------------------------------------------------------
+# AgentLongTermMemory — Phase 3A
+# ---------------------------------------------------------------------------
+
+class AgentLongTermMemory(Base):
+    __tablename__ = "agent_long_term_memory"
+    __table_args__ = (
+        Index("ix_agent_ltm_agent_active", "agent_id", "is_active"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    memory_type: Mapped[str] = mapped_column(String(20), nullable=False)  # lesson, pattern, relationship, reflection, inherited
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    source: Mapped[str] = mapped_column(String(20), default="self")  # self, parent, grandparent
+    source_cycle: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    times_confirmed: Mapped[int] = mapped_column(Integer, default=0)
+    times_contradicted: Mapped[int] = mapped_column(Integer, default=0)
+    promoted_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    demoted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relationships
+    agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_id])
+
+    def __repr__(self) -> str:
+        return f"<AgentLongTermMemory(id={self.id}, agent_id={self.agent_id}, type={self.memory_type!r}, active={self.is_active})>"
+
+
+# ---------------------------------------------------------------------------
+# AgentReflection — Phase 3A
+# ---------------------------------------------------------------------------
+
+class AgentReflection(Base):
+    __tablename__ = "agent_reflections"
+    __table_args__ = (
+        Index("ix_agent_reflections_agent_id", "agent_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    cycle_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    what_worked: Mapped[str | None] = mapped_column(Text, nullable=True)
+    what_failed: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pattern_detected: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lesson: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence_trend: Mapped[str | None] = mapped_column(String(20), nullable=True)  # improving, stable, declining
+    confidence_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    strategy_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    memory_promotions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    memory_demotions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relationships
+    agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_id])
+
+    def __repr__(self) -> str:
+        return f"<AgentReflection(id={self.id}, agent_id={self.agent_id}, cycle={self.cycle_number})>"
