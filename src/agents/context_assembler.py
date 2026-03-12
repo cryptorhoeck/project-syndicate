@@ -6,7 +6,7 @@ Builds the agent's "mind" for each cycle — pure deterministic code, no AI.
 Assembles mandatory, priority, and long-term memory context within a token budget.
 """
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 import enum
 import logging
@@ -18,7 +18,7 @@ import tiktoken
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
-from src.common.models import Agent, AgentCycle, AgentLongTermMemory, Message, SystemState
+from src.common.models import Agent, AgentCycle, AgentLongTermMemory, Message, Opportunity, Plan, SystemState
 from src.agents.budget_gate import BudgetStatus
 from src.agents.roles import (
     format_actions_for_prompt,
@@ -267,6 +267,11 @@ Watched markets: {agent.watched_markets or []}"""
                     break
             sections.append("\n".join(agora_lines))
 
+        # Pipeline context: opportunities and plans
+        pipeline_text = self._build_pipeline_context(agent)
+        if pipeline_text:
+            sections.append(pipeline_text)
+
         # Recent cycle history (last 5 cycles with outcomes)
         recent_cycles = (
             self.db.query(AgentCycle)
@@ -369,3 +374,122 @@ Analyze the situation and choose your action."""
 {memory}
 
 Review your recent performance and produce a reflection."""
+
+    def _build_pipeline_context(self, agent: Agent) -> str:
+        """Build pipeline context: active opportunities and plans relevant to this agent's role."""
+        now = datetime.now(timezone.utc)
+        lines = []
+
+        if agent.type == "scout":
+            # Scouts see their own recent opportunities and their outcomes
+            recent_opps = (
+                self.db.query(Opportunity)
+                .filter(
+                    Opportunity.scout_agent_id == agent.id,
+                    Opportunity.created_at > now - timedelta(hours=12),
+                )
+                .order_by(desc(Opportunity.created_at))
+                .limit(5)
+                .all()
+            )
+            if recent_opps:
+                lines.append("=== YOUR RECENT OPPORTUNITIES ===")
+                for opp in recent_opps:
+                    lines.append(f"  #{opp.id} {opp.market} ({opp.signal_type}) — {opp.status}")
+
+        elif agent.type == "strategist":
+            # Strategists see unclaimed opportunities
+            unclaimed = (
+                self.db.query(Opportunity)
+                .filter(
+                    Opportunity.status == "new",
+                    Opportunity.expires_at > now,
+                )
+                .order_by(desc(Opportunity.created_at))
+                .limit(5)
+                .all()
+            )
+            if unclaimed:
+                lines.append("=== AVAILABLE OPPORTUNITIES ===")
+                for opp in unclaimed:
+                    lines.append(
+                        f"  #{opp.id} [{opp.urgency}] {opp.market} — {opp.signal_type} "
+                        f"(confidence: {opp.confidence}/10) by {opp.scout_agent_name}"
+                    )
+                    lines.append(f"    {opp.details[:150]}")
+
+            # And their own plans
+            my_plans = (
+                self.db.query(Plan)
+                .filter(
+                    Plan.strategist_agent_id == agent.id,
+                    Plan.status.in_(["draft", "submitted", "under_review", "revision_requested"]),
+                )
+                .limit(5)
+                .all()
+            )
+            if my_plans:
+                lines.append("=== YOUR PLANS ===")
+                for plan in my_plans:
+                    lines.append(
+                        f"  #{plan.id} [{plan.status}] {plan.plan_name} — "
+                        f"{plan.direction} {plan.market}"
+                    )
+                    if plan.critic_reasoning:
+                        lines.append(f"    Critic feedback: {plan.critic_reasoning[:150]}")
+
+        elif agent.type == "critic":
+            # Critics see plans awaiting review
+            pending = (
+                self.db.query(Plan)
+                .filter(Plan.status == "submitted")
+                .order_by(Plan.submitted_at)
+                .limit(5)
+                .all()
+            )
+            if pending:
+                lines.append("=== PLANS AWAITING REVIEW ===")
+                for plan in pending:
+                    lines.append(
+                        f"  #{plan.id} {plan.plan_name} by {plan.strategist_agent_name} — "
+                        f"{plan.direction} {plan.market} ({plan.position_size_pct:.0%})"
+                    )
+                    lines.append(f"    Thesis: {plan.thesis[:200]}")
+                    lines.append(f"    Entry: {plan.entry_conditions[:100]}")
+                    lines.append(f"    Exit: {plan.exit_conditions[:100]}")
+
+        elif agent.type == "operator":
+            # Operators see approved plans and their active executions
+            approved = (
+                self.db.query(Plan)
+                .filter(Plan.status == "approved")
+                .order_by(Plan.reviewed_at)
+                .limit(5)
+                .all()
+            )
+            if approved:
+                lines.append("=== APPROVED PLANS (READY TO EXECUTE) ===")
+                for plan in approved:
+                    lines.append(
+                        f"  #{plan.id} {plan.plan_name} — {plan.direction} {plan.market} "
+                        f"({plan.position_size_pct:.0%})"
+                    )
+                    if plan.critic_risk_notes:
+                        lines.append(f"    Risk notes: {plan.critic_risk_notes[:150]}")
+
+            executing = (
+                self.db.query(Plan)
+                .filter(
+                    Plan.operator_agent_id == agent.id,
+                    Plan.status == "executing",
+                )
+                .all()
+            )
+            if executing:
+                lines.append("=== YOUR ACTIVE TRADES ===")
+                for plan in executing:
+                    lines.append(
+                        f"  #{plan.id} {plan.plan_name} — {plan.direction} {plan.market}"
+                    )
+
+        return "\n".join(lines) if lines else ""

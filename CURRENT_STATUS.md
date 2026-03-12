@@ -2,25 +2,28 @@
 
 ## Last Updated: 2026-03-12
 
-## Phase: 3A — COMPLETE (The Agent Thinking Cycle)
+## Phase: 3B — COMPLETE (The Cold Start Boot Sequence)
 
-### Completed This Session (Phase 3A — The Agent Thinking Cycle)
-- [x] Phase 2D verification: 220 tests passing, backup created
-- [x] Added `tiktoken` and `jsonschema` dependencies
-- [x] Database schema: 3 new tables (agent_cycles, agent_long_term_memory, agent_reflections) + 10 new agent columns
-- [x] Budget Gate: NORMAL/SURVIVAL_MODE/SKIP_CYCLE with rolling avg cost from last 20 cycles
-- [x] Context Assembler: 4 dynamic modes, token-budgeted, relevance scoring, tiktoken estimation
-- [x] Output Validator: 5-step pipeline, JSON/schema/action/Warden/sanity checks, retry with repair
-- [x] Action Executor: 18 action types routed to Agora/DB/Warden, paper trading placeholder
-- [x] Cycle Recorder: PostgreSQL + Agora + Redis + agent stats, failed cycle handling
-- [x] Memory Manager: 3-tier memory, reflection processing, memory inheritance
-- [x] Cycle Scheduler: per-role frequency, interrupt triggers, cooldown, priority queue
-- [x] Thinking Cycle Engine: OODA loop master orchestrator with full pipeline
-- [x] Role Definitions: Scout/Strategist/Critic/Operator with action spaces and schemas
-- [x] Claude API Client: Anthropic SDK wrapper, token/cost tracking, retries
-- [x] 16 new config variables in SyndicateConfig and .env.example
-- [x] 66 new tests (286 total), all passing
-- [x] CLAUDE.md, CHANGELOG.md updated
+### Completed This Session (Phase 3B — The Cold Start Boot Sequence)
+- [x] Phase 3A verification: 286 tests passing, backup created
+- [x] Textbook condensed summaries: thinking_efficiently, market_mechanics, risk_management
+- [x] Database schema: 3 new tables (opportunities, plans, boot_sequence_log) + 6 new agent columns
+- [x] Market Data Service: exchange wrapper with mock fallback, caching, context formatting
+- [x] Opportunities Manager: create/claim/expire/convert lifecycle, market/urgency filtering
+- [x] Plans Manager: full lifecycle with status transition validation (draft→submitted→under_review→approved/rejected→executing→completed)
+- [x] Orientation Protocol: textbook injection at 150% budget, role-specific prompts, watchlist extraction
+- [x] Boot Sequence Orchestrator: 3 condition-based spawn waves, 21-day survival clocks
+- [x] Day-10 Health Check: cycle count, idle rate, validation fail, cost checks with clock adjustments
+- [x] Context Assembler: pipeline-aware context (opportunities for strategists, plans for critics, etc.)
+- [x] Action Executor: pipeline-integrated (broadcast_opportunity creates Opportunity, propose_plan creates Plan, critic verdicts update Plan)
+- [x] Cycle Scheduler: orientation-aware (skips un-oriented agents), new interrupt triggers
+- [x] Maintenance Service: expire opportunities, clean stale plans, reset budgets, prune memory
+- [x] 4 new config variables in SyndicateConfig and .env.example
+- [x] 94 new tests (380 total), all passing
+- [x] CHANGELOG.md, CURRENT_STATUS.md updated
+
+### Previously Completed (Phase 3A)
+- [x] Thinking Cycle Engine: OODA loop, Budget Gate, Context Assembler, Output Validator, Action Executor, Cycle Recorder, Memory Manager, Cycle Scheduler, Role Definitions, Claude API Client
 
 ### Previously Completed (Phase 2D)
 - [x] Web Frontend: FastAPI + Jinja2 + HTMX + Tailwind, 5 pages, HTMX auto-refresh
@@ -40,19 +43,20 @@
 ### Previously Completed (Phase 0)
 - [x] Full project scaffold, PostgreSQL, Redis, base agent, backup, heartbeat
 
-### What's Next — Phase 3B: Cold Start Boot Sequence
-- [ ] First-cycle cold start problem (zero memory orientation)
-- [ ] Library integration during agent spawning
-- [ ] Spawn initial 5 agents (2 Scouts, 1 Strategist, 1 Critic, 1 Operator)
-- [ ] Inter-agent workflow pipeline (Scout → Strategist → Critic → Operator)
+### What's Next — Phase 3C: Paper Trading Engine
+- [ ] Real paper trading execution (replace placeholders)
+- [ ] Position tracking and P&L calculation
+- [ ] Stop loss / take profit monitoring
+- [ ] Trade history and performance metrics
 
 ### Important Notes
-- **Thinking cycle is sequential** — one agent at a time through the queue. Parallel processing deferred to Phase 4.
-- **Operator trade actions are placeholders** — logs intent, returns mock result. Real paper trading in Phase 3C.
-- **Reflection every 10 cycles** — mandatory self-review, memory curation
-- **Critics are on-demand only** — no base cycle interval, triggered by plan submissions
-- **Token counting uses tiktoken cl100k_base** — reasonable approximation for Claude
-- **API temperatures configurable per-agent** — null = role default, non-null = override
+- **Boot sequence is condition-based** — each wave waits for the previous wave's agents to complete orientation
+- **Orientation is a single special cycle** — 150% token budget, textbook injection, must produce valid first output
+- **Pipeline is fully connected** — Scout broadcasts create Opportunity records, Strategist plans create Plan records, Critic verdicts update Plan status
+- **Day-10 health check** — Genesis evaluates Gen 1 progress, can extend/shorten survival clocks
+- **Opportunities expire** — 6-hour TTL by default, maintenance task handles cleanup
+- **Plans have state machine** — invalid transitions are rejected (can't approve a draft, can't execute unapproved)
+- **Cycle scheduler skips un-oriented agents** — agents in "initializing" status with no orientation are excluded from scheduling
 
 ### Known Issues
 - PostgreSQL binaries not in system PATH (located at C:/ProDesk/pgsql/bin/)

@@ -2,6 +2,38 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [0.8.0] - 2026-03-12
+
+### Added — Phase 3B: The Cold Start Boot Sequence
+
+#### Boot Sequence
+- **Boot Sequence Orchestrator** (`src/genesis/boot_sequence.py`) — 3 condition-based spawn waves: Wave 1 (2 Scouts), Wave 2 (1 Strategist after scouts orient), Wave 3 (1 Critic + 1 Operator after strategist orients). 21-day survival clocks. Logs to boot_sequence_log table.
+- **Orientation Protocol** (`src/agents/orientation.py`) — special first-cycle handling for new agents. Library textbook injection at 150% token budget, role-specific prompts, initial watchlist extraction, pass/fail validation.
+- **Day-10 Health Check** (`src/genesis/health_check.py`) — early evaluation of Gen 1 agents. Checks cycle count, idle rate, validation fail rate, API cost efficiency. Can extend/shorten survival clocks and adjust budgets.
+
+#### Inter-Agent Pipeline
+- **Opportunities Manager** (`src/agents/opportunities.py`) — Scout → Strategist pipeline. Create, claim, expire, and convert opportunities. TTL-based expiry, market/urgency filtering.
+- **Plans Manager** (`src/agents/plans.py`) — Strategist → Critic → Operator pipeline. Full plan lifecycle: draft → submitted → under_review → approved/rejected/revision_requested → executing → completed. Status transition validation.
+- **Action Executor** updated — `broadcast_opportunity` creates Opportunity records, `propose_plan` creates Plan records, critic verdicts update Plan status. Full pipeline-aware routing.
+- **Context Assembler** updated — pipeline-aware context: Scouts see their opportunities, Strategists see unclaimed opportunities + their plans, Critics see plans awaiting review, Operators see approved plans.
+
+#### Infrastructure
+- **Market Data Service** (`src/common/market_data.py`) — lightweight market data wrapper with exchange integration and mock fallback. Provides top markets, market summary, and individual snapshots with caching.
+- **Maintenance Service** (`src/agents/maintenance.py`) — periodic housekeeping: expire stale opportunities, clean up abandoned plans, reset daily thinking budgets, prune terminated agent memory.
+- **Textbook Summaries** (`data/library/summaries/`) — condensed training materials for agent orientation: thinking_efficiently, market_mechanics, risk_management.
+
+#### Database
+- New table: `opportunities` — Scout-discovered opportunities with TTL, urgency, and pipeline tracking
+- New table: `plans` — trading plans with full lifecycle status, critic review, and operator assignment
+- New table: `boot_sequence_log` — boot sequence events by wave
+- Agent table additions: spawn_wave, orientation_completed, orientation_failed, health_check_passed, health_check_at, initial_watchlist
+
+#### Configuration
+- 4 new config variables: gen1_survival_clock_days, opportunity_ttl_hours, health_check_day, orientation_token_budget_multiplier
+
+#### Tests
+- 94 new tests (380 total): market_data (12), opportunities (12), plans (17), orientation (12), boot_sequence (16), health_check (12), maintenance (9)
+
 ## [0.7.0] - 2026-03-12
 
 ### Added — Phase 3A: The Agent Thinking Cycle

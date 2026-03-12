@@ -7,7 +7,7 @@ Syndicate Improvement Proposals (SIPs), system state, lineage tracking,
 inherited positions, market regimes, and daily reports.
 """
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 import os
 from datetime import date, datetime
@@ -104,6 +104,14 @@ class Agent(Base):
     current_context_mode: Mapped[str] = mapped_column(String(20), default="normal")
     api_temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
     watched_markets: Mapped[dict | None] = mapped_column(JSON, default=list)
+
+    # Phase 3B additions — boot sequence and orientation
+    spawn_wave: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    orientation_completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    orientation_failed: Mapped[bool] = mapped_column(Boolean, default=False)
+    health_check_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    health_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    initial_watchlist: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Relationships
     parent: Mapped["Agent | None"] = relationship(
@@ -836,3 +844,112 @@ class AgentReflection(Base):
 
     def __repr__(self) -> str:
         return f"<AgentReflection(id={self.id}, agent_id={self.agent_id}, cycle={self.cycle_number})>"
+
+
+# ---------------------------------------------------------------------------
+# Opportunity — Phase 3B (Scout → Strategist Pipeline)
+# ---------------------------------------------------------------------------
+
+class Opportunity(Base):
+    __tablename__ = "opportunities"
+    __table_args__ = (
+        Index("ix_opportunities_status_created", "status", "created_at"),
+        Index("ix_opportunities_scout", "scout_agent_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scout_agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    scout_agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    market: Mapped[str] = mapped_column(String(30), nullable=False)
+    signal_type: Mapped[str] = mapped_column(String(50), nullable=False)  # volume_breakout, trend_reversal, support_bounce, etc.
+    details: Mapped[str] = mapped_column(Text, nullable=False)
+    urgency: Mapped[str] = mapped_column(String(10), default="medium")  # low, medium, high
+    confidence: Mapped[int] = mapped_column(Integer, default=5)  # 1-10
+    status: Mapped[str] = mapped_column(String(20), default="new")  # new, claimed, expired, converted
+    claimed_by_agent_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("agents.id"), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    converted_to_plan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # FK added after Plan defined
+    agora_message_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("messages.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Relationships
+    scout_agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[scout_agent_id])
+    claimed_by: Mapped["Agent | None"] = relationship("Agent", foreign_keys=[claimed_by_agent_id])
+    agora_message: Mapped["Message | None"] = relationship("Message", foreign_keys=[agora_message_id])
+
+    def __repr__(self) -> str:
+        return f"<Opportunity(id={self.id}, market={self.market!r}, status={self.status!r})>"
+
+
+# ---------------------------------------------------------------------------
+# Plan — Phase 3B (Strategist → Critic → Operator Pipeline)
+# ---------------------------------------------------------------------------
+
+class Plan(Base):
+    __tablename__ = "plans"
+    __table_args__ = (
+        Index("ix_plans_status", "status"),
+        Index("ix_plans_strategist", "strategist_agent_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    strategist_agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    strategist_agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    opportunity_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("opportunities.id"), nullable=True)
+    plan_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    market: Mapped[str] = mapped_column(String(30), nullable=False)
+    direction: Mapped[str] = mapped_column(String(10), nullable=False)  # long, short
+    entry_conditions: Mapped[str] = mapped_column(Text, nullable=False)
+    exit_conditions: Mapped[str] = mapped_column(Text, nullable=False)
+    position_size_pct: Mapped[float] = mapped_column(Float, default=0.1)
+    timeframe: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    thesis: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="draft")
+    # Status flow: draft → submitted → under_review → approved/rejected/revision_requested → executing → completed
+    critic_agent_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("agents.id"), nullable=True)
+    critic_agent_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    critic_verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)  # approved, rejected, revision_requested
+    critic_reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    critic_risk_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    operator_agent_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("agents.id"), nullable=True)
+    operator_agent_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    revision_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Relationships
+    strategist_agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[strategist_agent_id])
+    opportunity: Mapped["Opportunity | None"] = relationship("Opportunity", foreign_keys=[opportunity_id])
+    critic_agent: Mapped["Agent | None"] = relationship("Agent", foreign_keys=[critic_agent_id])
+    operator_agent: Mapped["Agent | None"] = relationship("Agent", foreign_keys=[operator_agent_id])
+
+    def __repr__(self) -> str:
+        return f"<Plan(id={self.id}, name={self.plan_name!r}, status={self.status!r})>"
+
+
+# ---------------------------------------------------------------------------
+# BootSequenceLog — Phase 3B
+# ---------------------------------------------------------------------------
+
+class BootSequenceLog(Base):
+    __tablename__ = "boot_sequence_log"
+    __table_args__ = (
+        Index("ix_boot_log_wave_event", "wave_number", "event_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    wave_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)  # spawn, orientation_start, orientation_complete, orientation_failed, wave_complete, health_check
+    agent_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("agents.id"), nullable=True)
+    agent_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relationships
+    agent: Mapped["Agent | None"] = relationship("Agent", foreign_keys=[agent_id])
+
+    def __repr__(self) -> str:
+        return f"<BootSequenceLog(id={self.id}, wave={self.wave_number}, event={self.event_type!r})>"

@@ -9,7 +9,7 @@ Manages agent thinking cycle scheduling:
   - Sequential cycle processing (one at a time for Phase 3A)
 """
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 import enum
 import json
@@ -46,6 +46,7 @@ class ScheduleResult:
 # Interrupt trigger mapping: Agora event type → which roles to wake
 INTERRUPT_TRIGGERS: dict[str, list[str]] = {
     "opportunity_broadcast": ["strategist"],
+    "opportunity_created": ["strategist"],  # Phase 3B: pipeline-aware
     "plan_submitted": ["critic"],
     "plan_approved": ["operator"],
     "warden_alert": ["scout", "strategist", "critic", "operator"],
@@ -228,6 +229,10 @@ class CycleScheduler:
         now = datetime.now(timezone.utc)
 
         for agent in agents:
+            # Phase 3B: skip agents not yet oriented
+            if not agent.orientation_completed and agent.generation > 0:
+                continue
+
             interval = self.get_cycle_interval(agent)
             if interval <= 0:  # on-demand only (critics)
                 continue

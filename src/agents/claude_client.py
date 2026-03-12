@@ -5,7 +5,7 @@ Thin wrapper around the Anthropic API for agent thinking cycles.
 Handles: send prompts, track tokens/cost, errors/retries, budget limits.
 """
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 import logging
 import time

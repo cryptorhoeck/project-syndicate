@@ -10,7 +10,7 @@ Routes validated actions to the appropriate system:
   Universal → go_idle (log only)
 """
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 import json
 import logging
@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from src.common.models import Agent, Message
+from src.common.models import Agent, Message, Opportunity, Plan
 
 logger = logging.getLogger(__name__)
 
@@ -77,18 +77,18 @@ class ActionExecutor:
     def _get_handler(self, action_type: str):
         """Map action type to handler method."""
         handlers = {
-            # Scout
-            "broadcast_opportunity": self._handle_broadcast,
+            # Scout — pipeline-aware
+            "broadcast_opportunity": self._handle_broadcast_opportunity,
             "request_deeper_analysis": self._handle_broadcast,
             "update_watchlist": self._handle_update_watchlist,
-            # Strategist
-            "propose_plan": self._handle_broadcast,
+            # Strategist — pipeline-aware
+            "propose_plan": self._handle_propose_plan,
             "revise_plan": self._handle_broadcast,
             "request_scout_intel": self._handle_broadcast,
-            # Critic
-            "approve_plan": self._handle_broadcast,
-            "reject_plan": self._handle_broadcast,
-            "request_revision": self._handle_broadcast,
+            # Critic — pipeline-aware
+            "approve_plan": self._handle_critic_verdict,
+            "reject_plan": self._handle_critic_verdict,
+            "request_revision": self._handle_critic_verdict,
             "flag_risk": self._handle_flag_risk,
             # Operator
             "execute_trade": self._handle_trade_placeholder,
@@ -100,41 +100,145 @@ class ActionExecutor:
         }
         return handlers.get(action_type, self._handle_go_idle)
 
+    async def _handle_broadcast_opportunity(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Handle Scout opportunity broadcasts — creates an Opportunity record."""
+        market = params.get("market", "unknown")
+        signal = params.get("signal", "unknown")
+        urgency = params.get("urgency", "medium")
+        details = params.get("details", "")
+        confidence = params.get("confidence", 5)
+        if isinstance(confidence, dict):
+            confidence = confidence.get("score", 5)
+
+        # Create opportunity record
+        opp = Opportunity(
+            scout_agent_id=agent.id,
+            scout_agent_name=agent.name,
+            market=market,
+            signal_type=signal,
+            details=details,
+            urgency=urgency,
+            confidence=min(10, max(1, int(confidence))),
+            status="new",
+        )
+        self.db.add(opp)
+        self.db.flush()
+
+        # Also broadcast to Agora
+        summary = self._summarize_action(action_type, params)
+        await self._post_to_agora(agent, "market-intel", summary, action_type, params)
+
+        return ActionResult(
+            success=True,
+            action_type=action_type,
+            details=f"Opportunity #{opp.id}: {market} ({signal})",
+        )
+
+    async def _handle_propose_plan(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Handle Strategist plan proposals — creates a Plan record."""
+        plan = Plan(
+            strategist_agent_id=agent.id,
+            strategist_agent_name=agent.name,
+            plan_name=params.get("plan_name", "Untitled"),
+            market=params.get("market", "unknown"),
+            direction=params.get("direction", "long"),
+            entry_conditions=params.get("entry_conditions", ""),
+            exit_conditions=params.get("exit_conditions", ""),
+            position_size_pct=float(params.get("position_size_pct", 0.1)),
+            timeframe=params.get("timeframe"),
+            thesis=params.get("thesis", ""),
+            status="submitted",
+        )
+
+        # Link to source opportunity if provided
+        source_opp_id = params.get("source_opportunity_id")
+        if source_opp_id:
+            plan.opportunity_id = int(source_opp_id)
+
+        self.db.add(plan)
+        self.db.flush()
+
+        # Update source opportunity status if linked
+        if source_opp_id:
+            opp = self.db.query(Opportunity).filter(Opportunity.id == int(source_opp_id)).first()
+            if opp:
+                opp.status = "converted"
+                opp.converted_to_plan_id = plan.id
+                opp.claimed_by_agent_id = agent.id
+                self.db.add(opp)
+                self.db.flush()
+
+        # Broadcast to Agora
+        summary = self._summarize_action(action_type, params)
+        await self._post_to_agora(agent, "strategy-proposals", summary, action_type, params)
+
+        return ActionResult(
+            success=True,
+            action_type=action_type,
+            details=f"Plan #{plan.id}: {plan.plan_name} ({plan.direction} {plan.market})",
+        )
+
+    async def _handle_critic_verdict(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Handle Critic approve/reject/revision actions — updates Plan record."""
+        plan_id = params.get("plan_id")
+        if not plan_id:
+            return ActionResult(success=False, action_type=action_type, details="No plan_id provided")
+
+        plan = self.db.query(Plan).filter(Plan.id == int(plan_id)).first()
+        if not plan:
+            return ActionResult(success=False, action_type=action_type, details=f"Plan {plan_id} not found")
+
+        verdict_map = {
+            "approve_plan": "approved",
+            "reject_plan": "rejected",
+            "request_revision": "revision_requested",
+        }
+        verdict = verdict_map.get(action_type, "rejected")
+
+        plan.critic_agent_id = agent.id
+        plan.critic_agent_name = agent.name
+        plan.critic_verdict = verdict
+        plan.critic_reasoning = params.get("assessment") or params.get("reasons") or params.get("issues", "")
+        plan.critic_risk_notes = params.get("risk_notes")
+        plan.status = verdict
+        plan.reviewed_at = datetime.now(timezone.utc)
+
+        if verdict == "revision_requested":
+            plan.revision_count += 1
+
+        self.db.add(plan)
+        self.db.flush()
+
+        # Broadcast to Agora
+        summary = self._summarize_action(action_type, params)
+        await self._post_to_agora(agent, "strategy-proposals", summary, action_type, params)
+
+        return ActionResult(
+            success=True,
+            action_type=action_type,
+            details=f"Plan #{plan_id}: {verdict}",
+        )
+
     async def _handle_broadcast(
         self, agent: Agent, action_type: str, params: dict
     ) -> ActionResult:
-        """Handle actions that broadcast to Agora channels."""
+        """Handle actions that broadcast to Agora channels (generic)."""
         channel_map = {
-            "broadcast_opportunity": "market-intel",
             "request_deeper_analysis": "agent-chat",
-            "propose_plan": "strategy-proposals",
             "revise_plan": "strategy-proposals",
             "request_scout_intel": "agent-chat",
-            "approve_plan": "strategy-proposals",
-            "reject_plan": "strategy-proposals",
-            "request_revision": "strategy-proposals",
         }
         channel = channel_map.get(action_type, "agent-chat")
 
         # Build message content
         summary = self._summarize_action(action_type, params)
-
-        # Post to Agora if available, otherwise write directly to DB
-        if self.agora:
-            try:
-                await self.agora.post_message(
-                    agent_id=agent.id,
-                    agent_name=agent.name,
-                    channel=channel,
-                    content=summary,
-                    message_type=self._action_to_message_type(action_type),
-                    metadata={"action_type": action_type, "params": params},
-                )
-            except Exception as e:
-                logger.warning(f"Agora post failed, writing directly: {e}")
-                self._write_message_directly(agent, channel, summary, action_type, params)
-        else:
-            self._write_message_directly(agent, channel, summary, action_type, params)
+        await self._post_to_agora(agent, channel, summary, action_type, params)
 
         return ActionResult(
             success=True,
@@ -247,6 +351,26 @@ class ActionExecutor:
             action_type="go_idle",
             details=f"Idle: {reason}",
         )
+
+    async def _post_to_agora(
+        self, agent: Agent, channel: str, content: str,
+        action_type: str, params: dict, importance: int = 0,
+    ) -> None:
+        """Post to Agora if available, otherwise write directly to DB."""
+        if self.agora:
+            try:
+                await self.agora.post_message(
+                    agent_id=agent.id,
+                    agent_name=agent.name,
+                    channel=channel,
+                    content=content,
+                    message_type=self._action_to_message_type(action_type),
+                    metadata={"action_type": action_type, "params": params},
+                )
+                return
+            except Exception as e:
+                logger.warning(f"Agora post failed, writing directly: {e}")
+        self._write_message_directly(agent, channel, content, action_type, params, importance)
 
     def _write_message_directly(
         self, agent: Agent, channel: str, content: str,

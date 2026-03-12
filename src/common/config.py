@@ -5,7 +5,7 @@ All system configuration in one place, loaded from .env with sensible defaults.
 Uses pydantic-settings for validation and type coercion.
 """
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 from pydantic_settings import BaseSettings
 
@@ -94,6 +94,12 @@ class SyndicateConfig(BaseSettings):
     strategist_temperature: float = 0.5
     critic_temperature: float = 0.2
     operator_temperature: float = 0.2
+
+    # Phase 3B: Boot Sequence
+    gen1_survival_clock_days: int = 21
+    opportunity_ttl_hours: int = 6
+    health_check_day: int = 10
+    orientation_token_budget_multiplier: float = 1.5
 
     # Logging
     log_level: str = "INFO"
