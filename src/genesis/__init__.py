@@ -1,0 +1,1 @@
+"""Project Syndicate - genesis package."""

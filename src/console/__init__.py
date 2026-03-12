@@ -1,0 +1,1 @@
+"""Project Syndicate - console package."""
