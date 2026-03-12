@@ -1,0 +1,228 @@
+"""
+Project Syndicate — Reflection Library Selector (Phase 3E)
+
+Targeted "study sessions" during reflection cycles.
+System offers relevant material when it detects weakness — agents don't choose.
+"""
+
+__version__ = "1.1.0"
+
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from sqlalchemy import select, func
+from sqlalchemy.orm import Session
+
+from src.common.config import config
+from src.common.models import Agent, LibraryEntry, StudyHistory
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ReflectionLibraryContent:
+    """Content selected for injection during reflection cycle."""
+    resource_type: str  # textbook_summary, post_mortem, strategy_record, pattern
+    resource_id: str
+    title: str
+    content: str
+    context_prompt: str  # Why this was selected
+    weakest_metric: str
+
+
+# Mapping: role → {metric → textbook summary filename}
+WEAKNESS_TO_RESOURCE: dict[str, dict[str, str]] = {
+    "scout": {
+        "signal_quality": "05_technical_analysis_summary.md",
+        "intel_conversion": "02_strategy_categories_summary.md",
+        "thinking_efficiency": "08_thinking_efficiently_summary.md",
+    },
+    "strategist": {
+        "plan_approval_rate": "03_risk_management_summary.md",
+        "revision_rate": "02_strategy_categories_summary.md",
+        "thinking_efficiency": "08_thinking_efficiently_summary.md",
+    },
+    "critic": {
+        "approval_accuracy": "03_risk_management_summary.md",
+        "rejection_value": "02_strategy_categories_summary.md",
+        "thinking_efficiency": "08_thinking_efficiently_summary.md",
+    },
+    "operator": {
+        "sharpe": "03_risk_management_summary.md",
+        "true_pnl": "01_market_mechanics_summary.md",
+        "thinking_efficiency": "08_thinking_efficiently_summary.md",
+    },
+}
+
+
+class ReflectionLibrarySelector:
+    """Selects Library content for reflection cycle study sessions."""
+
+    def __init__(self) -> None:
+        self.log = logger
+
+    async def select_for_reflection(
+        self,
+        session: Session,
+        agent: Agent,
+    ) -> ReflectionLibraryContent | None:
+        """Select relevant Library content based on agent weakness."""
+        # 1. Get weakest metric from last evaluation scorecard
+        scorecard = agent.evaluation_scorecard
+        if not scorecard:
+            return None
+
+        metrics = scorecard.get("metrics", {})
+        if not metrics:
+            return None
+
+        # Find weakest metric
+        weakest_metric = None
+        weakest_value = float("inf")
+        for name, data in metrics.items():
+            if isinstance(data, dict):
+                raw = data.get("raw", data.get("normalized"))
+            else:
+                raw = data
+            if raw is not None and raw < weakest_value:
+                weakest_value = raw
+                weakest_metric = name
+
+        if not weakest_metric:
+            return None
+
+        # 2. Look up relevant resource
+        role = agent.type
+        role_resources = WEAKNESS_TO_RESOURCE.get(role, {})
+        resource_file = role_resources.get(weakest_metric)
+
+        if resource_file:
+            # 3. Check study cooldown
+            if not self._on_cooldown(session, agent.id, resource_file, agent.cycle_count):
+                content = self._load_textbook_summary(resource_file)
+                if content:
+                    self._record_study(session, agent.id, "textbook_summary", resource_file, agent.cycle_count)
+                    return ReflectionLibraryContent(
+                        resource_type="textbook_summary",
+                        resource_id=resource_file,
+                        title=resource_file.replace("_summary.md", "").replace("_", " ").title(),
+                        content=content,
+                        context_prompt=(
+                            f"Library reading is available below. It was selected because your "
+                            f"last evaluation identified {weakest_metric} as an area for growth. "
+                            f"Studying costs nothing extra — it's part of this cycle."
+                        ),
+                        weakest_metric=weakest_metric,
+                    )
+
+        # 4. Fallback: look for Library archive entries
+        fallback = self._find_archive_fallback(session, agent, weakest_metric)
+        if fallback:
+            return fallback
+
+        return None
+
+    def _on_cooldown(
+        self,
+        session: Session,
+        agent_id: int,
+        resource_id: str,
+        current_cycle: int,
+    ) -> bool:
+        """Check if agent has studied this resource within cooldown period."""
+        cooldown = config.reflection_library_cooldown
+        # Cooldown is in reflections (every 10 cycles)
+        cooldown_cycles = cooldown * config.reflection_every_n_cycles
+
+        recent = session.execute(
+            select(StudyHistory).where(
+                StudyHistory.agent_id == agent_id,
+                StudyHistory.resource_id == resource_id,
+                StudyHistory.studied_at_cycle >= current_cycle - cooldown_cycles,
+            )
+        ).scalar_one_or_none()
+
+        return recent is not None
+
+    def _load_textbook_summary(self, filename: str) -> str | None:
+        """Load textbook summary content from disk."""
+        import os
+        summary_path = os.path.join("data", "library", "summaries", filename)
+        try:
+            with open(summary_path, encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            # Try textbook itself (truncated)
+            textbook_name = filename.replace("_summary", "")
+            textbook_path = os.path.join("data", "library", "textbooks", textbook_name)
+            try:
+                with open(textbook_path, encoding="utf-8") as f:
+                    content = f.read()
+                    return content[:2000]  # Truncate for token budget
+            except FileNotFoundError:
+                self.log.warning(
+                    "textbook_not_found",
+                    extra={"filename": filename},
+                )
+                return None
+
+    def _find_archive_fallback(
+        self,
+        session: Session,
+        agent: Agent,
+        weakest_metric: str,
+    ) -> ReflectionLibraryContent | None:
+        """Find relevant Library archive entry as fallback."""
+        # Search for post-mortems or strategy records mentioning the weak area
+        entries = session.execute(
+            select(LibraryEntry).where(
+                LibraryEntry.is_published == True,
+                LibraryEntry.category.in_(["post_mortem", "strategy_record"]),
+            ).order_by(LibraryEntry.created_at.desc()).limit(20)
+        ).scalars().all()
+
+        for entry in entries:
+            resource_id = str(entry.id)
+            if self._on_cooldown(session, agent.id, resource_id, agent.cycle_count):
+                continue
+
+            # Simple relevance check: does the entry mention the weak metric area?
+            content_lower = (entry.content or "").lower()
+            if weakest_metric.replace("_", " ") in content_lower:
+                self._record_study(
+                    session, agent.id,
+                    entry.category, resource_id, agent.cycle_count,
+                )
+                summary = entry.summary or entry.content[:500]
+                return ReflectionLibraryContent(
+                    resource_type=entry.category,
+                    resource_id=resource_id,
+                    title=entry.title,
+                    content=summary,
+                    context_prompt=(
+                        f"Library reading is available below. This {entry.category.replace('_', ' ')} "
+                        f"was selected because your last evaluation identified {weakest_metric} "
+                        f"as an area for growth."
+                    ),
+                    weakest_metric=weakest_metric,
+                )
+
+        return None
+
+    def _record_study(
+        self,
+        session: Session,
+        agent_id: int,
+        resource_type: str,
+        resource_id: str,
+        cycle_number: int,
+    ) -> None:
+        """Record that agent studied a resource."""
+        record = StudyHistory(
+            agent_id=agent_id,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            studied_at_cycle=cycle_number,
+        )
+        session.add(record)

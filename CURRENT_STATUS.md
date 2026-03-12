@@ -2,32 +2,27 @@
 
 ## Last Updated: 2026-03-12
 
-## Phase: 3D — COMPLETE (Natural Selection — The First Evaluation Cycle)
+## Phase: 3E — COMPLETE (Personality Through Experience)
 
-### Completed This Session (Phase 3D — Natural Selection)
-- [x] Role-specific composite formulas: Operator, Scout, Strategist, Critic metrics
-- [x] Normalization helper with configurable min/max ranges
-- [x] 3-stage evaluation engine: pre-filter → Genesis AI judgment → execute decisions
-- [x] Evaluation assembler: builds full evaluation packages from all analyzers
-- [x] Pipeline analyzer: conversion rates at each stage, bottleneck detection
-- [x] Rejection tracker: counterfactual simulation for critic rejections
-- [x] Idle analyzer: post_loss_caution, no_input, strategic_patience, paralysis
-- [x] Honesty scorer: confidence calibration, self-note accuracy, reflection specificity
-- [x] Ecosystem contribution calculator: role-specific attribution
-- [x] Post-mortem generation: genesis_visible immediately, 6-hour Library delay
-- [x] Prestige milestones: Apprentice/Journeyman/Expert/Master/Grandmaster
-- [x] Probation mechanics: shortened clock, budget cut, 3-cycle grace
-- [x] First-evaluation leniency: no termination on first eval
-- [x] Regime adjustment: leniency when alert hours > 50%
-- [x] Rubber-stamp penalty: critic approval rate > 90% → accuracy × 0.50
-- [x] Portfolio concentration: Warden hard limit 50%, warning at 35%
-- [x] Context assembler: portfolio awareness for operators, evaluation feedback injection
-- [x] Plans manager: rejection tracking on critic rejection
-- [x] Genesis integration: EvaluationEngine, rejection monitoring, post-mortem publication
-- [x] Database: 7 new Agent columns, expanded Evaluation, RejectionTracking, PostMortem tables
-- [x] Config: 22 new Phase 3D variables
-- [x] 47 new tests (496 total), all passing (2 pre-existing library textbook failures)
+### Completed This Session (Phase 3E — Personality Through Experience)
+- [x] Behavioral Profile Calculator: 7 traits (risk_appetite, market_focus, timing, decision_style, collaboration, learning_velocity, resilience) computed from behavior
+- [x] Temperature Evolution Engine: ±0.05 drift per eval, 2-eval momentum, role-specific bounds, history recording
+- [x] Reflection Library Selector: targeted study sessions, weakness-based resource selection, 5-reflection cooldown, archive fallback
+- [x] Dynamic Identity Builder: facts-not-labels system prompt, 3 tiers (new/established/veteran), blocked label word validation
+- [x] Relationship Manager: Bayesian trust scoring, pipeline outcome tracking, self-note sentiment, dead agent archiving
+- [x] Divergence Calculator: cosine distance between profile vectors, same-role pairwise comparison, low divergence flagging
+- [x] Dashboard API: 4 JSON endpoints (profile, relationships, temperature-history, divergence)
+- [x] Context Assembler integration: dynamic identity, trust relationships, library injection
+- [x] Evaluation Engine integration: profile computation, drift detection, temperature evolution, divergence
+- [x] Action Executor integration: relationship tracking on position close
+- [x] Memory Manager integration: relationship extraction from reflection text
+- [x] Database: 4 new tables (behavioral_profiles, agent_relationships, divergence_scores, study_history), 4 new Agent columns
+- [x] Config: 22 new Phase 3E variables in config.py and .env.example
+- [x] 58 new tests across 6 test files, all passing (554 total, 2 pre-existing library textbook failures)
 - [x] CLAUDE.md, CHANGELOG.md, CURRENT_STATUS.md updated
+
+### Previously Completed (Phase 3D)
+- [x] Natural Selection: role-specific composites, 3-stage evaluation, rejection tracking, post-mortems, prestige milestones, probation, portfolio concentration
 
 ### Previously Completed (Phase 3C)
 - [x] Paper Trading: PriceCache, FeeSchedule, SlippageModel, PaperTradingService, PositionMonitor, LimitOrderMonitor, EquitySnapshots, SanityChecker
@@ -63,13 +58,13 @@
 - [ ] Generation 2+ lifecycle validation
 
 ### Important Notes
-- **All module versions bumped to 1.0.0** for Phase 3D components
+- **All module versions bumped to 1.1.0** for Phase 3E components
 - **Dead code cleanup needed**: `_evaluate_agent` and `_claude_probation_decision` methods in genesis.py are now unused (replaced by EvaluationEngine)
-- **Evaluation is role-aware**: each role has its own composite formula, pre-filter thresholds, and pipeline metrics
-- **Rejection tracker runs in hourly maintenance**: monitors rejected plans against market prices
-- **Post-mortems publish after 6 hours**: genesis_visible=True immediately for internal use
-- **Prestige is cumulative**: milestones checked after each evaluation based on evaluation_count
-- **Probation grace period**: 3 cycles before probation status can trigger termination
+- **Facts not labels**: DynamicIdentityBuilder architecturally cannot import BehavioralProfile — agents see observations, not classifications
+- **Personality drift alarm**: 2+ tier label shift flagged but NOT auto-terminated — Genesis uses it as supplementary info
+- **Regime-stamped profiles**: each profile records dominant market regime so Genesis can distinguish context
+- **Trust is automatic**: agents don't choose who to trust, trust emerges from pipeline outcomes
+- **Temperature momentum**: needs same signal twice before drift occurs — prevents oscillation
 
 ### Known Issues
 - PostgreSQL binaries not in system PATH (located at C:/ProDesk/pgsql/bin/)
@@ -80,7 +75,7 @@
 - RuntimeWarning in tests from mock Redis pipeline coroutines (cosmetic only)
 - DeprecationWarning from Starlette TemplateResponse parameter order (cosmetic only)
 - LegacyAPIWarning from Query.get() usage in tests (cosmetic only)
-- 2 pre-existing test_library_textbooks failures (unrelated to Phase 3D)
+- 2 pre-existing test_library_textbooks failures (unrelated to Phase 3E)
 
 ### Environment Notes
 - Python venv: E:\project syndicate\.venv

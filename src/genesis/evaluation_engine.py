@@ -10,7 +10,7 @@ Also handles role gap detection, capital reallocation,
 and prestige milestone checks.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import json
 import logging
@@ -28,6 +28,10 @@ from src.common.models import (
 )
 from src.genesis.evaluation_assembler import EvaluationAssembler, EvaluationPackage
 from src.genesis.pipeline_analyzer import PipelineAnalyzer
+from src.personality.behavioral_profile import BehavioralProfileCalculator
+from src.personality.temperature_evolution import TemperatureEvolution
+from src.personality.divergence import DivergenceCalculator
+from src.personality.relationship_manager import RelationshipManager
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +69,10 @@ class EvaluationEngine:
         self.agora = agora_service
         self.assembler = EvaluationAssembler()
         self.pipeline_analyzer = PipelineAnalyzer()
+        self.profile_calculator = BehavioralProfileCalculator()
+        self.temp_evolution = TemperatureEvolution()
+        self.divergence_calculator = DivergenceCalculator()
+        self.relationship_manager = RelationshipManager()
 
     async def evaluate_batch(
         self, session: Session, agents: list[Agent],
@@ -128,6 +136,65 @@ class EvaluationEngine:
 
         # Phase 6: Capital/budget reallocation
         await self._reallocate_capital_and_budget(session)
+
+        # Phase 7 (3E): Behavioral profiles + temperature evolution for survivors
+        surviving_eval_ids = []
+        for result, pkg in zip(results, packages):
+            if result.pre_filter_result != "terminate" and result.evaluation_id:
+                agent = session.get(Agent, result.agent_id)
+                if agent and agent.status in ("active", "frozen"):
+                    try:
+                        # Compute behavioral profile
+                        profile = await self.profile_calculator.compute(
+                            session, agent.id, result.evaluation_id,
+                        )
+
+                        # Personality drift detection
+                        from src.common.models import BehavioralProfile
+                        previous = session.execute(
+                            select(BehavioralProfile).where(
+                                BehavioralProfile.agent_id == agent.id,
+                                BehavioralProfile.id != profile.id,
+                            ).order_by(BehavioralProfile.created_at.desc()).limit(1)
+                        ).scalar_one_or_none()
+
+                        drift_flags = self.profile_calculator.detect_drift(previous, profile)
+                        if drift_flags:
+                            for df in drift_flags:
+                                logger.warning(
+                                    f"PERSONALITY DRIFT: {agent.name} {df.trait} "
+                                    f"shifted from {df.old_label} to {df.new_label} "
+                                    f"({df.tier_distance} tiers)"
+                                )
+
+                        # Temperature evolution
+                        temp_result = await self.temp_evolution.evolve(
+                            session, agent, period_start, period_end,
+                        )
+
+                        surviving_eval_ids.append(result.evaluation_id)
+                    except Exception as e:
+                        logger.error(f"Phase 3E processing failed for {agent.name}: {e}")
+
+        # Phase 8 (3E): Divergence computation
+        try:
+            divergence_results = await self.divergence_calculator.compute_pairwise(session)
+            if divergence_results:
+                eval_id = surviving_eval_ids[0] if surviving_eval_ids else None
+                await self.divergence_calculator.store_snapshot(
+                    session, divergence_results, eval_id,
+                )
+
+                # Flag low divergence
+                from src.common.config import config as cfg
+                for dr in divergence_results:
+                    if dr.score < cfg.divergence_low_threshold:
+                        logger.info(
+                            f"Low divergence ({dr.score:.3f}) between agents "
+                            f"{dr.agent_a_id} and {dr.agent_b_id} (role: {dr.role})"
+                        )
+        except Exception as e:
+            logger.error(f"Divergence computation failed: {e}")
 
         session.commit()
 
@@ -425,6 +492,9 @@ The warning will be shown to the agent if they survive."""
 
         # Generate post-mortem
         await self._generate_post_mortem(session, agent, evaluation, result)
+
+        # Phase 3E: Archive relationships for dead agent
+        await self.relationship_manager.archive_dead_agent_relationships(session, agent.id)
 
         logger.info(f"Agent {agent.name} terminated: {agent.termination_reason}")
 

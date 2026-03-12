@@ -7,7 +7,7 @@ Syndicate Improvement Proposals (SIPs), system state, lineage tracking,
 inherited positions, market regimes, and daily reports.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import os
 from datetime import date, datetime
@@ -130,6 +130,12 @@ class Agent(Base):
     role_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_evaluation_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("evaluations.id"), nullable=True)
     evaluation_scorecard: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # Phase 3E additions — personality through experience
+    last_temperature_signal: Mapped[int] = mapped_column(Integer, default=0)  # -1, 0, or +1
+    temperature_history: Mapped[dict | None] = mapped_column(JSON, default=list)
+    identity_tier: Mapped[str] = mapped_column(String(20), default="new")  # new, established, veteran
+    behavioral_profile_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("behavioral_profiles.id"), nullable=True)
 
     # Relationships
     parent: Mapped["Agent | None"] = relationship(
@@ -1210,3 +1216,148 @@ class PostMortem(Base):
 
     def __repr__(self) -> str:
         return f"<PostMortem(id={self.id}, agent={self.agent_name!r}, published={self.published})>"
+
+
+# ---------------------------------------------------------------------------
+# BehavioralProfile — Phase 3E (Personality Through Experience)
+# ---------------------------------------------------------------------------
+
+class BehavioralProfile(Base):
+    __tablename__ = "behavioral_profiles"
+    __table_args__ = (
+        Index("ix_behavioral_profiles_agent", "agent_id"),
+        Index("ix_behavioral_profiles_eval", "evaluation_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    evaluation_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("evaluations.id"), nullable=True)
+
+    # Seven traits
+    risk_appetite_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    risk_appetite_label: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    market_focus_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    market_focus_entropy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    timing_heatmap: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    decision_style_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    decision_style_label: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    collaboration_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    collaboration_label: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    learning_velocity_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    learning_velocity_label: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    resilience_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    resilience_label: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
+    # Aggregated data
+    raw_scores: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    is_complete: Mapped[bool] = mapped_column(Boolean, default=False)
+    dominant_regime: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    regime_distribution: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relationships
+    agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_id])
+    evaluation: Mapped["Evaluation | None"] = relationship("Evaluation", foreign_keys=[evaluation_id])
+
+    def raw_scores_vector(self) -> list[float | None]:
+        """Return ordered list of numeric scores for divergence calculation."""
+        return [
+            self.risk_appetite_score,
+            self.market_focus_entropy,
+            self.decision_style_score,
+            self.collaboration_score,
+            self.learning_velocity_score,
+            self.resilience_score,
+        ]
+
+    def __repr__(self) -> str:
+        return f"<BehavioralProfile(id={self.id}, agent_id={self.agent_id}, complete={self.is_complete})>"
+
+
+# ---------------------------------------------------------------------------
+# AgentRelationship — Phase 3E (Relationship Memory)
+# ---------------------------------------------------------------------------
+
+class AgentRelationship(Base):
+    __tablename__ = "agent_relationships"
+    __table_args__ = (
+        UniqueConstraint("agent_id", "target_agent_id", name="uq_agent_relationship"),
+        Index("ix_agent_relationships_agent", "agent_id"),
+        Index("ix_agent_relationships_target", "target_agent_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    target_agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    target_agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    trust_score: Mapped[float] = mapped_column(Float, default=0.5)
+    interaction_count: Mapped[int] = mapped_column(Integer, default=0)
+    positive_outcomes: Mapped[int] = mapped_column(Integer, default=0)
+    negative_outcomes: Mapped[int] = mapped_column(Integer, default=0)
+    last_interaction_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_assessment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    archive_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_id])
+    target_agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[target_agent_id])
+
+    def __repr__(self) -> str:
+        return f"<AgentRelationship(agent={self.agent_id}→{self.target_agent_id}, trust={self.trust_score:.2f})>"
+
+
+# ---------------------------------------------------------------------------
+# DivergenceScore — Phase 3E (Divergence Tracking)
+# ---------------------------------------------------------------------------
+
+class DivergenceScore(Base):
+    __tablename__ = "divergence_scores"
+    __table_args__ = (
+        Index("ix_divergence_scores_agents", "agent_a_id", "agent_b_id"),
+        Index("ix_divergence_scores_eval", "evaluation_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_a_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    agent_b_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    agent_a_role: Mapped[str] = mapped_column(String(50), nullable=False)
+    divergence_score: Mapped[float] = mapped_column(Float, nullable=False)
+    comparable_metrics: Mapped[int] = mapped_column(Integer, nullable=False)
+    evaluation_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("evaluations.id"), nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relationships
+    agent_a: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_a_id])
+    agent_b: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_b_id])
+    evaluation: Mapped["Evaluation | None"] = relationship("Evaluation", foreign_keys=[evaluation_id])
+
+    def __repr__(self) -> str:
+        return f"<DivergenceScore(a={self.agent_a_id}, b={self.agent_b_id}, score={self.divergence_score:.3f})>"
+
+
+# ---------------------------------------------------------------------------
+# StudyHistory — Phase 3E (Reflection Library Access)
+# ---------------------------------------------------------------------------
+
+class StudyHistory(Base):
+    __tablename__ = "study_history"
+    __table_args__ = (
+        Index("ix_study_history_agent", "agent_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(50), nullable=False)  # textbook_summary, post_mortem, strategy_record, pattern
+    resource_id: Mapped[str] = mapped_column(String(200), nullable=False)  # filename or library_entry_id
+    studied_at_cycle: Mapped[int] = mapped_column(Integer, nullable=False)
+    studied_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relationships
+    agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_id])
+
+    def __repr__(self) -> str:
+        return f"<StudyHistory(id={self.id}, agent_id={self.agent_id}, resource={self.resource_id!r})>"

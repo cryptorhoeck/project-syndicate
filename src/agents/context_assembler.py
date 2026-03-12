@@ -6,7 +6,7 @@ Builds the agent's "mind" for each cycle — pure deterministic code, no AI.
 Assembles mandatory, priority, and long-term memory context within a token budget.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import enum
 import logging
@@ -18,7 +18,7 @@ import tiktoken
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
-from src.common.models import Agent, AgentCycle, AgentLongTermMemory, Message, Opportunity, Plan, Position, SystemState
+from src.common.models import Agent, AgentCycle, AgentLongTermMemory, AgentRelationship, Message, Opportunity, Plan, Position, SystemState
 from src.agents.budget_gate import BudgetStatus
 from src.agents.roles import (
     format_actions_for_prompt,
@@ -26,6 +26,7 @@ from src.agents.roles import (
     NORMAL_OUTPUT_SCHEMA,
     REFLECTION_OUTPUT_SCHEMA,
 )
+from src.personality.identity_builder import DynamicIdentityBuilder, extract_evaluation_facts
 
 logger = logging.getLogger(__name__)
 
@@ -173,8 +174,10 @@ class ContextAssembler:
         sys_state = self.db.query(SystemState).first()
         alert_level = sys_state.alert_status if sys_state else "green"
 
-        return f"""You are {agent.name}, a {agent.type} agent in Project Syndicate.
-Generation: {agent.generation} | Reputation: {agent.reputation_score:.1f} ({prestige})
+        # Dynamic identity section (Phase 3E)
+        identity = self._build_dynamic_identity(agent)
+
+        return f"""{identity}
 Cycle: {agent.cycle_count} | Budget remaining today: ${budget_remaining:.4f}
 
 YOUR ROLE: {role_def.description}
@@ -198,8 +201,9 @@ Respond ONLY in valid JSON matching this schema — no other text:
         self, agent: Agent, prestige: str, budget_remaining: float, survival_directive: str
     ) -> str:
         """Build the system prompt for a reflection cycle."""
-        return f"""You are {agent.name}, a {agent.type} agent in Project Syndicate.
-Generation: {agent.generation} | Reputation: {agent.reputation_score:.1f} ({prestige})
+        identity = self._build_dynamic_identity(agent)
+
+        return f"""{identity}
 Cycle: {agent.cycle_count} | Budget remaining today: ${budget_remaining:.4f}
 
 This is a REFLECTION cycle. You are not choosing an action.
@@ -398,6 +402,11 @@ Watched markets: {agent.watched_markets or []}""" + self._build_evaluation_feedb
                 lines.pop()
                 break
 
+        # Phase 3E: Add trust relationships
+        trust_text = self._build_trust_relationships(agent)
+        if trust_text and count_tokens("\n".join(lines) + trust_text) <= token_budget:
+            lines.append(trust_text)
+
         return "\n".join(lines)
 
     def _build_normal_user_prompt(
@@ -440,12 +449,18 @@ Analyze the situation and choose your action."""
 
         history = "\n".join(cycle_summaries) if cycle_summaries else "No cycle history yet."
 
+        # Phase 3E: Library content for reflections (uses buffer budget)
+        alloc = MODE_ALLOCATIONS.get(self.determine_mode(agent, BudgetStatus.NORMAL), (0.25, 0.45, 0.20, 0.10))
+        buffer_budget = int(self.token_budget * alloc[3])
+        library_section = self._build_reflection_library_content(agent, buffer_budget)
+
         return f"""{mandatory}
 
 === RECENT CYCLE HISTORY (last 10) ===
 {history}
 
 {memory}
+{library_section}
 
 Review your recent performance and produce a reflection."""
 
@@ -567,3 +582,148 @@ Review your recent performance and produce a reflection."""
                     )
 
         return "\n".join(lines) if lines else ""
+
+    # ------------------------------------------------------------------
+    # Phase 3E integrations
+    # ------------------------------------------------------------------
+
+    def _build_dynamic_identity(self, agent: Agent) -> str:
+        """Build dynamic identity section from facts, not labels."""
+        builder = DynamicIdentityBuilder()
+
+        # Extract evaluation facts
+        eval_facts = extract_evaluation_facts(agent.evaluation_scorecard)
+
+        # Gather recent trade facts for veterans
+        recent_trade_facts = None
+        if agent.cycle_count >= 100:
+            recent_trade_facts = self._get_recent_trade_facts(agent)
+
+        # Count long-term memories
+        mem_count = (
+            self.db.query(AgentLongTermMemory)
+            .filter(
+                AgentLongTermMemory.agent_id == agent.id,
+                AgentLongTermMemory.is_active == True,
+            )
+            .count()
+        )
+
+        # Probation details
+        probation_days_left = None
+        probation_warning = None
+        if agent.probation and agent.survival_clock_end:
+            from datetime import timezone
+            delta = agent.survival_clock_end - datetime.now(timezone.utc)
+            probation_days_left = max(0, delta.days)
+        if agent.evaluation_scorecard:
+            probation_warning = agent.evaluation_scorecard.get("warning")
+
+        return builder.build_identity_section(
+            name=agent.name,
+            role=agent.type,
+            generation=agent.generation,
+            cycle_count=agent.cycle_count,
+            reputation_score=agent.reputation_score,
+            prestige_title=agent.prestige_title,
+            evaluation_count=agent.evaluation_count,
+            probation=agent.probation,
+            probation_warning=probation_warning,
+            probation_days_left=probation_days_left,
+            long_term_memory_count=mem_count,
+            recent_trade_facts=recent_trade_facts,
+            **eval_facts,
+        )
+
+    def _get_recent_trade_facts(self, agent: Agent) -> list[str]:
+        """Get factual trade observations for veteran identity section."""
+        facts = []
+
+        # Recent position outcomes
+        recent_positions = (
+            self.db.query(Position)
+            .filter(
+                Position.agent_id == agent.id,
+                Position.status != "open",
+            )
+            .order_by(Position.closed_at.desc())
+            .limit(5)
+            .all()
+        )
+
+        if recent_positions:
+            wins = sum(1 for p in recent_positions if (p.realized_pnl or 0) > 0)
+            losses = len(recent_positions) - wins
+            facts.append(f"last 5 trades: {wins}W/{losses}L")
+
+            # Check for patterns
+            loss_symbols = [p.symbol for p in recent_positions if (p.realized_pnl or 0) < 0]
+            if len(loss_symbols) >= 2 and len(set(loss_symbols)) == 1:
+                facts.append(f"repeated losses on {loss_symbols[0]}")
+
+        return facts
+
+    def _build_trust_relationships(self, agent: Agent) -> str:
+        """Build trust relationship section for memory context."""
+        relationships = (
+            self.db.query(AgentRelationship)
+            .filter(
+                AgentRelationship.agent_id == agent.id,
+                AgentRelationship.archived == False,
+                AgentRelationship.interaction_count >= 2,
+            )
+            .order_by(AgentRelationship.trust_score.desc())
+            .limit(5)
+            .all()
+        )
+
+        if not relationships:
+            return ""
+
+        # Filter for active targets only
+        lines = []
+        for r in relationships:
+            target = self.db.query(Agent).get(r.target_agent_id)
+            if not target or target.status not in ("active", "frozen"):
+                continue
+            lines.append(
+                f"- {r.target_agent_name}: {r.trust_score:.2f} trust "
+                f"({r.positive_outcomes} positive, {r.negative_outcomes} negative outcomes)"
+            )
+
+        if not lines:
+            return ""
+
+        return "\nTrust relationships:\n" + "\n".join(lines)
+
+    def _build_reflection_library_content(self, agent: Agent, buffer_budget: int) -> str:
+        """Inject Library content during reflection if weakness detected and budget allows."""
+        try:
+            from src.personality.reflection_library import ReflectionLibrarySelector
+            import asyncio
+
+            selector = ReflectionLibrarySelector()
+            # Run async selector synchronously (context assembler is sync)
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Can't await in running loop; skip
+                    return ""
+            except RuntimeError:
+                pass
+
+            content = asyncio.get_event_loop().run_until_complete(
+                selector.select_for_reflection(self.db, agent)
+            )
+
+            if content is None:
+                return ""
+
+            # Check if content fits in buffer
+            content_text = f"\n=== LIBRARY READING ===\n{content.context_prompt}\n\n{content.content}"
+            if count_tokens(content_text) > buffer_budget:
+                return ""  # Buffer full — agent's own reflection is more important
+
+            return content_text
+        except Exception:
+            return ""  # Graceful degradation

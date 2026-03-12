@@ -5,7 +5,7 @@ All system configuration in one place, loaded from .env with sensible defaults.
 Uses pydantic-settings for validation and type coercion.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 from pydantic_settings import BaseSettings
 
@@ -145,6 +145,43 @@ class SyndicateConfig(BaseSettings):
     # Critic rubber-stamp detection (Phase 3D)
     critic_rubber_stamp_threshold: float = 0.90
     critic_rubber_stamp_penalty: float = 0.50
+
+    # Phase 3E — Personality Through Experience
+    # Temperature evolution
+    temperature_drift_amount: float = 0.05
+    temperature_signal_threshold: float = 0.2
+    temperature_bounds_scout: list = [0.3, 0.9]
+    temperature_bounds_strategist: list = [0.2, 0.7]
+    temperature_bounds_critic: list = [0.1, 0.4]
+    temperature_bounds_operator: list = [0.1, 0.4]
+
+    # Relationship memory
+    trust_decay_factor: float = 0.95
+    trust_prior: float = 0.5
+    trust_min_interactions_to_show: int = 2
+
+    # Reflection library
+    reflection_library_cooldown: int = 5  # reflections between same resource
+
+    # Divergence tracking
+    divergence_low_threshold: float = 0.15
+    divergence_min_comparable_metrics: int = 3
+
+    # Behavioral profile thresholds
+    profile_min_positions: int = 10
+    profile_min_cycles: int = 20
+    profile_min_cycle_days: int = 3
+    profile_min_actions: int = 15
+    profile_min_pipeline_outcomes: int = 5
+    profile_min_evaluations: int = 2
+    profile_min_losses: int = 3
+
+    # Identity section
+    identity_new_threshold: int = 30
+    identity_established_threshold: int = 100
+
+    # Personality drift alarm
+    personality_drift_tier_threshold: int = 2
 
     # Logging
     log_level: str = "INFO"

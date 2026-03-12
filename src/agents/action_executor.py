@@ -10,7 +10,7 @@ Routes validated actions to the appropriate system:
   Universal → go_idle (log only)
 """
 
-__version__ = "0.9.0"
+__version__ = "1.1.0"
 
 import json
 import logging
@@ -416,6 +416,17 @@ class ActionExecutor:
         await self._post_to_agora(agent, "trades", summary, action_type, params)
 
         if result.success:
+            # Phase 3E: Update trust relationships from pipeline outcome
+            try:
+                from src.personality.relationship_manager import RelationshipManager
+                from src.common.models import Position
+                position = self.db.query(Position).get(int(position_id))
+                if position and position.realized_pnl is not None:
+                    rm = RelationshipManager()
+                    await rm.update_from_pipeline_outcome(self.db, position)
+            except Exception as e:
+                logger.debug(f"Relationship tracking skipped: {e}")
+
             return ActionResult(
                 success=True, action_type=action_type,
                 details=f"Position #{position_id} closed: P&L=${result.realized_pnl:.4f}",

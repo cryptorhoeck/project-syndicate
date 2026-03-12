@@ -65,6 +65,7 @@ def create_app() -> FastAPI:
     from src.web.routes.api_library import router as api_library_router
     from src.web.routes.api_agents import router as api_agents_router
     from src.web.routes.api_system import router as api_system_router
+    from src.web.routes.api_personality import router as api_personality_router
 
     app.include_router(pages_router)
     app.include_router(api_agora_router, prefix="/api/agora")
@@ -72,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(api_library_router, prefix="/api/library")
     app.include_router(api_agents_router, prefix="/api/agents")
     app.include_router(api_system_router, prefix="/api/system")
+    app.include_router(api_personality_router, prefix="/api/personality")
 
     # Root redirect
     @app.get("/")

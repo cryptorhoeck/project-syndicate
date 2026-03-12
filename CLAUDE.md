@@ -10,8 +10,8 @@ Project Syndicate is an autonomous, self-evolving multi-agent AI financial ecosy
 
 ## Current Status
 
-**Phase:** 3D — COMPLETE (Natural Selection — The First Evaluation Cycle)
-**Focus:** Role-specific evaluation, Darwinian selection, rejection tracking, post-mortems, capital reallocation. Next: Phase 4 (The Arena)
+**Phase:** 3E — COMPLETE (Personality Through Experience)
+**Focus:** Behavioral profiling, temperature evolution, reflection library, dynamic identity, relationship memory, divergence tracking
 **Last Updated:** 2026-03-12
 
 See `CURRENT_STATUS.md` for detailed session-by-session progress.
@@ -106,6 +106,18 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **Context Assembler** updated — portfolio awareness for Operators, one-time evaluation feedback injection.
 - **Models** updated — 7 new Agent columns, expanded Evaluation model (~25 new columns), RejectionTracking table, PostMortem table.
 
+### Personality Through Experience (Phase 3E)
+- **Behavioral Profile Calculator** (`src/personality/behavioral_profile.py`) — 7 traits computed from behavior, never self-reported: risk_appetite (position sizing/loss tolerance), market_focus (Shannon entropy of market distribution), timing (hour-of-day heatmap), decision_style (reasoning length × confidence variance), collaboration (pipeline outcome-weighted), learning_velocity (evaluation score trend), resilience (loss-to-recovery cycles). Agents NEVER see their own profile. Classification via threshold-based scoring with tier distance drift detection.
+- **Temperature Evolution Engine** (`src/personality/temperature_evolution.py`) — agent API temperature drifts ±0.05 per evaluation based on diversity-profitability Pearson correlation. 2-eval momentum requirement (same signal twice before drift). Role-specific bounds (scout 0.3–0.9, operator 0.1–0.4). History recorded on agent for dashboard visualization.
+- **Reflection Library Selector** (`src/personality/reflection_library.py`) — targeted study sessions during reflection cycles. System offers relevant Library material when it detects weakness via evaluation scorecard. 5-reflection cooldown per resource. Passive injection (not agent-requested). Falls back to Library archive entries if textbook not found.
+- **Dynamic Identity Builder** (`src/personality/identity_builder.py`) — evolving system prompt identity from FACTS, not labels. Architectural constraint: NEVER imports BehavioralProfile, never accepts label fields. Three tiers: new (<30 cycles), established (30-99), veteran (100+). Shows "your last 3 trades hit stop-loss" not "you are reckless." Blocked label word validation.
+- **Relationship Manager** (`src/personality/relationship_manager.py`) — Bayesian trust scoring between agents. trust = weighted_positive / weighted_total with prior=0.5 and decay_factor=0.95/day. Updated automatically from pipeline outcomes (position close → plan → opportunity chain) and self-note sentiment analysis. Dead agent relationships archived (not deleted). Trust summary injected into context.
+- **Divergence Calculator** (`src/personality/divergence.py`) — cosine distance between behavioral profile score vectors for same-role agent pairs. Low divergence (<0.15) flagged as potential redundancy. Snapshots stored per evaluation for trend tracking.
+- **Dashboard API** (`src/web/routes/api_personality.py`) — JSON endpoints: GET /api/personality/{id}/profile, /relationships, /temperature-history, /divergence
+- **Integration points:** Context Assembler (dynamic identity + trust relationships + library injection), Evaluation Engine (profile computation + drift detection + temperature evolution + divergence), Action Executor (relationship tracking on position close), Memory Manager (relationship extraction from reflections)
+- **Models updated:** 4 new tables (BehavioralProfile, AgentRelationship, DivergenceScore, StudyHistory), 4 new Agent columns (last_temperature_signal, temperature_history, identity_tier, behavioral_profile_id)
+- **Config:** 22 new variables for thresholds, bounds, and minimums
+
 ### Thinking Cycle (Phase 3A)
 - **OODA Loop Engine** (`src/agents/thinking_cycle.py`) — master orchestrator: Budget → Observe → Orient+Decide → Validate → Act → Record
 - **Budget Gate** (`src/agents/budget_gate.py`) — pre-cycle check: NORMAL / SURVIVAL_MODE / SKIP_CYCLE
@@ -150,6 +162,7 @@ E:\project syndicate\
 │   ├── agora/                  ← Message bus, channels, persistence, web frontend
 │   ├── economy/                ← Internal economy, reputation, prestige system
 │   ├── library/                ← Knowledge bootstrap, educational materials
+│   ├── personality/            ← Behavioral profiles, temperature, identity, relationships, divergence
 │   ├── social/                 ← Social media agent and integrations
 │   ├── reports/                ← Report generator, email sender, alert system
 │   ├── console/                ← Owner Override Console (FastAPI endpoints)
@@ -225,6 +238,7 @@ At the beginning of every script or module, include (or call) standard boilerpla
 | 3B | Cold Start Boot Sequence (spawn waves, orientation, pipeline) | **COMPLETE** |
 | 3C | Paper Trading Infrastructure | **COMPLETE** |
 | 3D | Natural Selection (evaluation, survival, reproduction) | **COMPLETE** |
+| 3E | Personality Through Experience (profiles, temperature, identity, trust) | **COMPLETE** |
 | 4 | The Arena (full paper trading validation) | Pending |
 | 5 | Social Presence + Solana | Pending |
 | 6 | Owner Console + Polish | Pending |

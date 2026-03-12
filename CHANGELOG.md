@@ -2,6 +2,47 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [1.1.0] - 2026-03-12
+
+### Added — Phase 3E: Personality Through Experience
+
+#### Behavioral Profile System
+- **Behavioral Profile Calculator** (`src/personality/behavioral_profile.py`) — computes 7 traits from actual behavior: risk_appetite (position sizing/loss tolerance), market_focus (Shannon entropy), timing (hour heatmap), decision_style (reasoning × confidence variance), collaboration (pipeline outcomes), learning_velocity (eval score trend), resilience (loss-to-recovery). Agents NEVER see their own profile. Threshold-based classification with tier distance drift detection (2+ tier shift = alarm).
+
+#### Temperature Evolution
+- **Temperature Evolution Engine** (`src/personality/temperature_evolution.py`) — API temperature drifts ±0.05 per evaluation based on diversity-profitability Pearson correlation. 2-eval momentum requirement. Role-specific bounds (scout 0.3–0.9, operator 0.1–0.4). Full history recorded on agent.
+
+#### Reflection Library Access
+- **Reflection Library Selector** (`src/personality/reflection_library.py`) — targeted study sessions during reflection cycles. System offers Library material matching weakest evaluation metric. 5-reflection cooldown per resource. Passive injection via buffer token budget. Archive fallback for missing textbooks.
+
+#### Dynamic Identity
+- **Dynamic Identity Builder** (`src/personality/identity_builder.py`) — evolving system prompt identity from facts, not labels. Architectural constraint: NEVER imports BehavioralProfile. Three tiers: new (<30), established (30-99), veteran (100+). Blocked label word validation. `extract_evaluation_facts()` helper.
+
+#### Relationship Memory
+- **Relationship Manager** (`src/personality/relationship_manager.py`) — Bayesian trust scoring (prior=0.5, decay=0.95/day). Auto-updated from pipeline outcomes (position → plan → opportunity chain) and self-note sentiment analysis (positive/negative word sets). Dead agent relationships archived. Trust summary for context injection.
+
+#### Divergence Tracking
+- **Divergence Calculator** (`src/personality/divergence.py`) — cosine distance between behavioral profile score vectors for same-role pairs. Low divergence (<0.15) flagged as redundancy. Snapshots stored per evaluation.
+
+#### Dashboard
+- **Personality API** (`src/web/routes/api_personality.py`) — JSON endpoints: GET /api/personality/{id}/profile, /relationships, /temperature-history, /divergence
+
+#### Database Schema
+- 4 new tables: `behavioral_profiles`, `agent_relationships`, `divergence_scores`, `study_history`
+- 4 new Agent columns: `last_temperature_signal`, `temperature_history`, `identity_tier`, `behavioral_profile_id`
+
+#### Integration
+- **Context Assembler** — dynamic identity replaces static intro, trust relationships in memory context, library content injection during reflection cycles
+- **Evaluation Engine** — Phase 7 (profile computation + drift detection + temperature evolution) and Phase 8 (divergence computation + low divergence flagging)
+- **Action Executor** — relationship tracking on position close via RelationshipManager
+- **Memory Manager** — relationship extraction from reflection text via sentiment analysis
+
+#### Configuration
+- 22 new config variables in `src/common/config.py` and `.env.example` for temperature bounds, trust parameters, profile thresholds, identity tiers, and divergence settings
+
+#### Tests
+- 58 new tests across 6 test files: behavioral profile (15), temperature evolution (7), reflection library (5), dynamic identity (9), relationship manager (11), divergence (11)
+
 ## [1.0.0] - 2026-03-12
 
 ### Added — Phase 3D: Natural Selection (The First Evaluation Cycle)

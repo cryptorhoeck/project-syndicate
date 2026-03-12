@@ -10,7 +10,7 @@ Handles memory promotion/demotion from reflection cycles,
 memory inheritance for offspring, and memory retrieval for context assembly.
 """
 
-__version__ = "0.9.0"
+__version__ = "1.1.0"
 
 import json
 import logging
@@ -262,8 +262,41 @@ class MemoryManager:
         for demo_text in reflection.get("memory_demotion", []):
             self._demote_by_content(agent_id, demo_text)
 
+        # Phase 3E: Extract relationship mentions from self-notes
+        self._extract_relationship_mentions(agent_id, reflection)
+
         logger.info(f"Reflection processed for agent {agent_id}, cycle {cycle_number}")
         return ref
+
+    def _extract_relationship_mentions(self, agent_id: int, reflection: dict) -> None:
+        """Extract agent mentions from reflection text and update trust."""
+        try:
+            import asyncio
+            from src.personality.relationship_manager import RelationshipManager
+
+            # Combine all text fields for scanning
+            texts = [
+                reflection.get("what_worked", ""),
+                reflection.get("what_failed", ""),
+                reflection.get("lesson", ""),
+                reflection.get("strategy_note", ""),
+            ]
+            combined = " ".join(t for t in texts if t)
+            if not combined.strip():
+                return
+
+            rm = RelationshipManager()
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    return  # Can't await in running loop
+                loop.run_until_complete(
+                    rm.update_from_self_note(self.db, agent_id, combined)
+                )
+            except RuntimeError:
+                pass
+        except Exception as e:
+            logger.debug(f"Relationship extraction skipped: {e}")
 
     def _promote_by_content(self, agent_id: int, content_fragment: str) -> None:
         """Promote a memory by fuzzy content match."""
