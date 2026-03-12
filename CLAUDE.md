@@ -10,8 +10,8 @@ Project Syndicate is an autonomous, self-evolving multi-agent AI financial ecosy
 
 ## Current Status
 
-**Phase:** 2A — The Agora (COMPLETE)
-**Focus:** Central nervous system — Agora messaging, pub/sub, read receipts, rate limiting
+**Phase:** 2C — The Internal Economy (COMPLETE)
+**Focus:** Reputation marketplace — intel market, review market, settlement engine, gaming detection
 **Last Updated:** 2026-03-12
 
 See `CURRENT_STATUS.md` for detailed session-by-session progress.
@@ -54,6 +54,31 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **Rate limited:** 10 messages per 5-minute window per agent (Genesis exempt)
 - **Read receipts:** agents track what they've read per channel via agora_read_receipts table
 - **BaseAgent integration:** all agents get post_to_agora(), read_agora(), mark_agora_read(), get_agora_unread(), broadcast() — graceful no-op if AgoraService is None
+
+### The Library (Phase 2B)
+- **Institutional memory** — knowledge that persists across agent generations
+- **Textbooks:** 8 static files in `data/library/textbooks/` (PLACEHOLDER — content pending review)
+- **Archives:** post-mortems (immediate), strategy records (48h delay), patterns (Genesis-curated), contributions (peer-reviewed)
+- **Peer review:** Genesis solo when < 8 agents, two qualified reviewers when >= 8
+- **Reviewer requirements:** reputation >= 200, not self, not same lineage
+- **Mentor system:** offspring inherit parent knowledge, heritage condensed at Gen 4+
+- **LibraryService** (`src/library/library_service.py`) — textbooks, archives, contributions, mentor packages
+- **Schemas** (`src/library/schemas.py`) — LibraryCategory, ContributionStatus, ReviewDecision, MentorPackage
+- **BaseAgent integration:** read_textbook(), search_library(), submit_to_library(), get_my_pending_reviews() — graceful no-op if LibraryService is None
+
+### Internal Economy (Phase 2C)
+- **Reputation-based marketplace** — agents earn, spend, and stake reputation
+- **Starting balance:** 100 rep per agent
+- **EconomyService** (`src/economy/economy_service.py`) — core orchestrator: reputation management (initialize, transfer, reward, penalty, escrow), delegates to market modules
+- **Intel Market** (`src/economy/intel_market.py`) — endorsement model (no paywall), Scouts post signals, agents endorse by staking reputation (5-25 rep)
+- **Settlement Engine** (`src/economy/settlement_engine.py`) — hybrid settlement: trade-linked (full multipliers) + time-based fallback (half multipliers). Direction threshold: 0.5%
+- **Review Market** (`src/economy/review_market.py`) — Strategists pay Critics for reviews (10-25 rep budget), accuracy tracked retroactively, two reviews for >20% capital strategies
+- **Service Market** (`src/economy/service_market.py`) — framework only (activates Phase 4), CRUD for service listings
+- **Gaming Detection** (`src/economy/gaming_detection.py`) — wash trading (50% threshold), rubber-stamp critics (90% over 10+ reviews), intel spam (<10% endorsement rate over 20+ signals). Runs daily
+- **Reputation thresholds:** 50 to create signals, 25 to endorse, -50 triggers immediate evaluation
+- **Escrow model:** deducted on escrow, logged as "escrow:{reason}", refunded via release_escrow()
+- **All economy events posted to Agora** with message_type=ECONOMY
+- **BaseAgent integration:** create_intel_signal(), endorse_intel(), request_strategy_review(), accept_and_submit_review(), get_my_reputation() — graceful no-op if EconomyService is None
 
 ## Dev Environment
 
@@ -154,8 +179,8 @@ At the beginning of every script or module, include (or call) standard boilerpla
 | 0 | Foundation (infra, DB, Redis, base agent, backup, recovery) | **COMPLETE** |
 | 1 | Genesis + Risk Desk | **COMPLETE** |
 | 2A | The Agora (central nervous system) | **COMPLETE** |
-| 2B | The Library (knowledge layer) | Pending |
-| 2C | Internal Economy (reputation marketplace) | Pending |
+| 2B | The Library (knowledge layer) | **COMPLETE** |
+| 2C | Internal Economy (reputation marketplace) | **COMPLETE** |
 | 2D | Web Frontend (dashboard) | Pending |
 | 3 | First Generation (boot sequence, paper trading) | Pending |
 | 4 | Natural Selection (evolution loop) | Pending |

@@ -2,6 +2,104 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [0.5.0] - 2026-03-12
+
+### Added — Phase 2C: The Internal Economy (Reputation Marketplace)
+
+#### Economy Core
+- EconomyService (`src/economy/economy_service.py`) — central orchestrator: reputation management (initialize, transfer, reward, penalty, escrow/release), delegates to Intel Market, Review Market, Service Market, Settlement Engine, Gaming Detector
+- Economy Schemas (`src/economy/schemas.py`) — Pydantic models and enums: SignalDirection, SignalStatus, EndorsementStatus, ReviewRequestStatus, ReviewVerdict, GamingFlagType, GamingFlagSeverity, IntelSignalResponse, IntelEndorsementResponse, ReviewRequestResponse, ReviewAssignmentResponse, CriticAccuracyResponse, ServiceListingResponse, GamingFlagResponse, EconomyStats
+- Economy package init (`src/economy/__init__.py`) — exports all public types
+
+#### Intel Market
+- IntelMarket (`src/economy/intel_market.py`) — create_signal() (validates rep >= 50, asset format, expiry), endorse_signal() (validates stake 5-25, no self-endorsement, no duplicates, escrows stake), link_trade_to_endorsement(), get_active_signals(), get_signals_ready_for_settlement(), get_endorsements_for_signal(), get_agent_signal_stats()
+
+#### Settlement Engine
+- SettlementEngine (`src/economy/settlement_engine.py`) — run_settlement_cycle() processes all expired signals. Hybrid settlement: trade-linked (full multipliers: scout +/-1x stake, endorser gets stake+2 bonus or loses stake) and time-based fallback (half multipliers: scout +/-0.5x stake, endorser always refunded). Direction threshold: price must move >= 0.5% to count as directional. Gracefully defers if exchange unavailable (extends expiry by 1 hour)
+
+#### Review Market
+- ReviewMarket (`src/economy/review_market.py`) — request_review() (budget 10-25 rep, auto-determines if 2 reviews needed for >20% capital strategies), get_open_requests(), accept_review(), submit_review() (pays critic from escrow), update_critic_accuracy(), expire_stale_requests() (refunds budget after 24h), check_overdue_assignments() (warns at deadline, releases after 24h overdue), get_critic_stats()
+
+#### Service Market (Framework)
+- ServiceMarket (`src/economy/service_market.py`) — CRUD only: create_listing(), get_listings(), cancel_listing(). Full marketplace deferred to Phase 4
+
+#### Gaming Detection
+- GamingDetector (`src/economy/gaming_detection.py`) — run_full_detection() runs all checks daily: check_wash_trading() (flags >50% endorsements between same pair over 7 days), check_rubber_stamp_critics() (flags >90% approval rate over 10+ reviews), check_intel_spam() (flags <10% endorsement rate over 20+ signals in 30 days). resolve_flag() with optional penalty. Posts summary to system-alerts
+
+#### Database
+- Alembic migration: 7 new tables (intel_signals, intel_endorsements, review_requests, review_assignments, critic_accuracy, service_listings, gaming_flags)
+- Indexes: status+expires on signals/requests, scout_agent_id, signal_id, endorser+status, critic+completed, resolved+detected
+- Unique constraints: one endorsement per agent per signal, one assignment per critic per request
+- 7 new SQLAlchemy ORM models in `src/common/models.py`
+
+#### Agent Integration
+- BaseAgent (`src/common/base_agent.py`) — updated to v0.5.0: new economy_service parameter, create_intel_signal(), endorse_intel(), request_strategy_review(), accept_and_submit_review(), get_my_reputation(). Graceful no-op when EconomyService is None
+- Genesis (`src/genesis/genesis.py`) — updated to v0.5.0: accepts economy_service, initializes agent reputation on spawn, checks negative reputation agents (flags for evaluation), runs settlement cycle every Genesis cycle, economy maintenance in hourly cycle (expire stale reviews, check overdue assignments), gaming detection + economy stats in daily report
+
+#### Process Runners
+- genesis_runner.py — updated to v0.5.0: creates EconomyService and passes to Genesis
+
+#### Tests (66 new, 186 total — all passing)
+- test_economy_service.py (9 tests): initialize reputation, transfer, insufficient balance, reward, penalty, negative detection, escrow/release, insufficient escrow, transaction history
+- test_intel_market.py (16 tests): create signal (valid, low rep, invalid asset, past expiry), endorse (valid, own signal, duplicate, expired, min/max stake, insufficient rep, link trade), queries (active, by asset, ready for settlement, stats)
+- test_settlement_engine.py (14 tests): no endorsements, bullish/bearish/neutral correct/incorrect, direction threshold, trade-linked profitable/unprofitable, time-based correct/incorrect, mixed settlement, no exchange, exchange error, full cycle
+- test_review_market.py (13 tests): request (valid, two required, insufficient rep), accept (valid, own, already full, second reviewer), submit (single, two critics), expire stale, overdue, critic accuracy, stats
+- test_gaming_detection.py (10 tests): wash trading (detected, below threshold), rubber stamp (detected, below threshold, insufficient reviews), intel spam (detected, below threshold), resolve flag (basic, with penalty), full cycle
+- test_economy_integration.py (4 tests): reputation initialization, negative rep trigger, full intel lifecycle, full review lifecycle
+
+### Design Decisions
+- Intel model: endorsement, not paywall — all intel is public, scouts earn via accountability
+- Settlement: hybrid — trade-linked (full multipliers) + time-based fallback (half multipliers)
+- Warden does NOT interact with the Economy — financial safety is separate from reputation economics
+- Escrow: reputation deducted on escrow, refunded via release_escrow — no separate escrow table
+
+## [0.4.0] - 2026-03-12
+
+### Added — Phase 2B: The Library (Institutional Memory)
+
+#### Library Core
+- LibraryService (`src/library/library_service.py`) — institutional memory hub: list_textbooks(), get_textbook(), search_textbooks(), get_entries(), search_entries(), record_view(), create_post_mortem(), create_strategy_record(), create_pattern_summary(), publish_delayed_entries(), submit_contribution(), submit_review(), handle_review_timeouts(), build_mentor_package(), get_mentor_package(), get_library_stats()
+- Library Schemas (`src/library/schemas.py`) — Pydantic models: LibraryCategory enum (5 types), ContributionStatus enum, ReviewDecision enum, LibraryEntryResponse, LibraryEntryBrief, ContributionResponse, MentorPackage
+- Library package init (`src/library/__init__.py`) — exports all public types
+
+#### Database
+- Alembic migration: 3 new tables (library_entries, library_contributions, library_views)
+- library_entries: category, title, content, summary, tags, source_agent_id, publish_after, is_published, view_count
+- library_contributions: full peer review workflow — submitter, two reviewers, decisions, reasoning, final_decision_by (consensus/genesis_tiebreaker/genesis_solo), reputation_effects_applied
+- library_views: per-agent per-entry unique view tracking
+- Lineage table updated: mentor_package_json, mentor_package_generated_at columns
+
+#### Textbooks
+- 8 placeholder markdown files in data/library/textbooks/: market mechanics, strategy categories, risk management, crypto fundamentals, technical analysis, DeFi protocols, exchange APIs, thinking efficiently
+- Framework only — content pending review before Phase 3
+
+#### Agent Integration
+- BaseAgent (`src/common/base_agent.py`) — updated to v0.4.0: new library_service parameter, read_textbook(), search_library(), submit_to_library(), get_my_pending_reviews(). Graceful no-op when LibraryService is None
+- Genesis (`src/genesis/genesis.py`) — updated to v0.4.0: accepts library_service, auto-creates post-mortems on agent termination, creates strategy records on profitable survival, runs publish_delayed_entries() and handle_review_timeouts() in hourly maintenance
+
+#### Process Runners
+- genesis_runner.py — updated: creates LibraryService with optional anthropic_client, passes to Genesis
+
+#### Features
+- Post-mortems: auto-generated on agent termination, immediate publication, template fallback when no AI
+- Strategy records: auto-generated on profitable survival, 48-hour publication delay
+- Pattern summaries: Genesis-curated insights, immediate publication to market-intel
+- Peer review: Genesis solo when < 8 agents, two qualified reviewers when >= 8 (reputation >= 200, not self, not same lineage)
+- Review timeouts: 24-hour deadline, single decision stands, neither → Genesis solo
+- Reputation effects: logged as pending (reviewer +5 participation, +10 accuracy, submitter +15 approved, -10 rejected consensus)
+- Mentor system: knowledge inheritance for offspring, heritage condensed at Gen 4+ via Claude API
+- View tracking: idempotent per agent per entry
+
+#### Tests (46 new, 120 total — all passing)
+- test_library_textbooks.py (9 tests): list, get by topic, fuzzy match, not found, search, placeholder detection
+- test_library_archives.py (13 tests): post-mortems (with/without AI, tags), strategy records (delayed, publish), patterns, views (increment, idempotent), entries (by category, published only), search
+- test_library_contributions.py (11 tests): submission, genesis solo, peer assignment, not self, not same lineage, both approve, both reject, split without AI, genesis solo approve, timeout, reputation effects
+- test_library_mentor.py (6 tests): gen1 package, grandparent data, no AI condensation, store/retrieve, gen1 no prior, recommended entries
+- test_library_integration.py (7 tests): death → post-mortem, survival → strategy record, BaseAgent read/submit/reviews, Agora notifications, library stats
+
+#### Dependencies
+- Added: markdown
+
 ## [0.3.0] - 2026-03-12
 
 ### Added — Phase 2A: The Agora (Central Nervous System)

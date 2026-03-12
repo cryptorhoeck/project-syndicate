@@ -7,7 +7,7 @@ Syndicate Improvement Proposals (SIPs), system state, lineage tracking,
 inherited positions, market regimes, and daily reports.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.5.0"
 
 import os
 from datetime import date, datetime
@@ -15,10 +15,12 @@ from datetime import date, datetime
 from dotenv import load_dotenv
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
@@ -286,6 +288,10 @@ class Lineage(Base):
     agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_id])
     parent: Mapped["Agent | None"] = relationship("Agent", foreign_keys=[parent_id])
 
+    # Phase 2B additions
+    mentor_package_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mentor_package_generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     def __repr__(self) -> str:
         return f"<Lineage(agent_id={self.agent_id}, generation={self.generation}, path={self.lineage_path!r})>"
 
@@ -410,3 +416,304 @@ class AgoraReadReceipt(Base):
 
     def __repr__(self) -> str:
         return f"<AgoraReadReceipt(agent_id={self.agent_id}, channel={self.channel!r})>"
+
+
+# ---------------------------------------------------------------------------
+# LibraryEntry — Phase 2B
+# ---------------------------------------------------------------------------
+
+class LibraryEntry(Base):
+    __tablename__ = "library_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    category: Mapped[str] = mapped_column(String(20), nullable=False)  # textbook, post_mortem, strategy_record, pattern, contribution
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tags: Mapped[dict | None] = mapped_column(JSON, default=list)
+    source_agent_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("agents.id"), nullable=True)
+    source_agent_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    market_regime_at_creation: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    related_evaluation_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("evaluations.id"), nullable=True)
+    publish_after: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_published: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    view_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Relationships
+    source_agent: Mapped["Agent | None"] = relationship("Agent", foreign_keys=[source_agent_id])
+    related_evaluation: Mapped["Evaluation | None"] = relationship("Evaluation", foreign_keys=[related_evaluation_id])
+
+    def __repr__(self) -> str:
+        return f"<LibraryEntry(id={self.id}, category={self.category!r}, title={self.title!r})>"
+
+
+# ---------------------------------------------------------------------------
+# LibraryContribution — Phase 2B
+# ---------------------------------------------------------------------------
+
+class LibraryContribution(Base):
+    __tablename__ = "library_contributions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    submitter_agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    submitter_agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(String(20), default="contribution")
+    tags: Mapped[dict | None] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="pending_review")  # pending_review, in_review, approved, rejected, needs_revision
+    reviewer_1_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("agents.id"), nullable=True)
+    reviewer_1_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    reviewer_1_decision: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    reviewer_1_reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewer_1_completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reviewer_2_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("agents.id"), nullable=True)
+    reviewer_2_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    reviewer_2_decision: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    reviewer_2_reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewer_2_completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    final_decision: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    final_decision_by: Mapped[str | None] = mapped_column(String(20), nullable=True)  # consensus, genesis_tiebreaker, genesis_solo
+    genesis_reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reputation_effects_applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Relationships
+    submitter: Mapped["Agent"] = relationship("Agent", foreign_keys=[submitter_agent_id])
+    reviewer_1: Mapped["Agent | None"] = relationship("Agent", foreign_keys=[reviewer_1_id])
+    reviewer_2: Mapped["Agent | None"] = relationship("Agent", foreign_keys=[reviewer_2_id])
+
+    def __repr__(self) -> str:
+        return f"<LibraryContribution(id={self.id}, title={self.title!r}, status={self.status!r})>"
+
+
+# ---------------------------------------------------------------------------
+# LibraryView — Phase 2B
+# ---------------------------------------------------------------------------
+
+class LibraryView(Base):
+    __tablename__ = "library_views"
+    __table_args__ = (
+        UniqueConstraint("entry_id", "agent_id", name="uq_library_view_entry_agent"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entry_id: Mapped[int] = mapped_column(Integer, ForeignKey("library_entries.id"), nullable=False)
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    viewed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relationships
+    entry: Mapped["LibraryEntry"] = relationship("LibraryEntry", foreign_keys=[entry_id])
+    agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_id])
+
+    def __repr__(self) -> str:
+        return f"<LibraryView(entry_id={self.entry_id}, agent_id={self.agent_id})>"
+
+
+# ---------------------------------------------------------------------------
+# IntelSignal — Phase 2C
+# ---------------------------------------------------------------------------
+
+class IntelSignal(Base):
+    __tablename__ = "intel_signals"
+    __table_args__ = (
+        Index("ix_intel_signals_status_expires", "status", "expires_at"),
+        Index("ix_intel_signals_scout", "scout_agent_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    message_id: Mapped[int] = mapped_column(Integer, ForeignKey("messages.id"), nullable=False)
+    scout_agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    scout_agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    asset: Mapped[str] = mapped_column(String(30), nullable=False)
+    direction: Mapped[str] = mapped_column(String(10), nullable=False)  # bullish, bearish, neutral
+    confidence_level: Mapped[int] = mapped_column(Integer, default=3)
+    price_at_creation: Mapped[float] = mapped_column(Float, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="active")
+    total_endorsement_stake: Mapped[float] = mapped_column(Float, default=0.0)
+    endorsement_count: Mapped[int] = mapped_column(Integer, default=0)
+    settlement_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    settlement_price_change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Relationships
+    scout_agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[scout_agent_id])
+    message: Mapped["Message"] = relationship("Message", foreign_keys=[message_id])
+
+    def __repr__(self) -> str:
+        return f"<IntelSignal(id={self.id}, asset={self.asset!r}, direction={self.direction!r}, status={self.status!r})>"
+
+
+# ---------------------------------------------------------------------------
+# IntelEndorsement — Phase 2C
+# ---------------------------------------------------------------------------
+
+class IntelEndorsement(Base):
+    __tablename__ = "intel_endorsements"
+    __table_args__ = (
+        UniqueConstraint("signal_id", "endorser_agent_id", name="uq_endorsement_signal_agent"),
+        Index("ix_intel_endorsements_signal", "signal_id"),
+        Index("ix_intel_endorsements_endorser_status", "endorser_agent_id", "settlement_status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    signal_id: Mapped[int] = mapped_column(Integer, ForeignKey("intel_signals.id"), nullable=False)
+    endorser_agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    endorser_agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    stake_amount: Mapped[float] = mapped_column(Float, nullable=False)
+    linked_trade_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("transactions.id"), nullable=True)
+    settlement_status: Mapped[str] = mapped_column(String(20), default="pending")
+    settlement_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    scout_reputation_change: Mapped[float | None] = mapped_column(Float, nullable=True)
+    endorser_reputation_change: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Relationships
+    signal: Mapped["IntelSignal"] = relationship("IntelSignal", foreign_keys=[signal_id])
+    endorser_agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[endorser_agent_id])
+    linked_trade: Mapped["Transaction | None"] = relationship("Transaction", foreign_keys=[linked_trade_id])
+
+    def __repr__(self) -> str:
+        return f"<IntelEndorsement(id={self.id}, signal_id={self.signal_id}, endorser={self.endorser_agent_name!r})>"
+
+
+# ---------------------------------------------------------------------------
+# ReviewRequest — Phase 2C
+# ---------------------------------------------------------------------------
+
+class ReviewRequest(Base):
+    __tablename__ = "review_requests"
+    __table_args__ = (
+        Index("ix_review_requests_status_expires", "status", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    requester_agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    requester_agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    proposal_message_id: Mapped[int] = mapped_column(Integer, ForeignKey("messages.id"), nullable=False)
+    proposal_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    budget_reputation: Mapped[float] = mapped_column(Float, nullable=False)
+    requires_two_reviews: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(20), default="open")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Relationships
+    requester_agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[requester_agent_id])
+    proposal_message: Mapped["Message"] = relationship("Message", foreign_keys=[proposal_message_id])
+
+    def __repr__(self) -> str:
+        return f"<ReviewRequest(id={self.id}, requester={self.requester_agent_name!r}, status={self.status!r})>"
+
+
+# ---------------------------------------------------------------------------
+# ReviewAssignment — Phase 2C
+# ---------------------------------------------------------------------------
+
+class ReviewAssignment(Base):
+    __tablename__ = "review_assignments"
+    __table_args__ = (
+        UniqueConstraint("review_request_id", "critic_agent_id", name="uq_review_assignment_request_critic"),
+        Index("ix_review_assignments_critic_completed", "critic_agent_id", "completed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    review_request_id: Mapped[int] = mapped_column(Integer, ForeignKey("review_requests.id"), nullable=False)
+    critic_agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    critic_agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    risk_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    review_message_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("messages.id"), nullable=True)
+    reputation_earned: Mapped[float | None] = mapped_column(Float, nullable=True)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    deadline_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    # Relationships
+    review_request: Mapped["ReviewRequest"] = relationship("ReviewRequest", foreign_keys=[review_request_id])
+    critic_agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[critic_agent_id])
+    review_message: Mapped["Message | None"] = relationship("Message", foreign_keys=[review_message_id])
+
+    def __repr__(self) -> str:
+        return f"<ReviewAssignment(id={self.id}, critic={self.critic_agent_name!r}, verdict={self.verdict!r})>"
+
+
+# ---------------------------------------------------------------------------
+# CriticAccuracy — Phase 2C
+# ---------------------------------------------------------------------------
+
+class CriticAccuracy(Base):
+    __tablename__ = "critic_accuracy"
+
+    critic_agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), primary_key=True)
+    total_reviews: Mapped[int] = mapped_column(Integer, default=0)
+    accurate_reviews: Mapped[int] = mapped_column(Integer, default=0)
+    accuracy_score: Mapped[float] = mapped_column(Float, default=0.0)
+    approve_count: Mapped[int] = mapped_column(Integer, default=0)
+    reject_count: Mapped[int] = mapped_column(Integer, default=0)
+    conditional_count: Mapped[int] = mapped_column(Integer, default=0)
+    avg_risk_score: Mapped[float] = mapped_column(Float, default=0.0)
+    last_updated: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relationships
+    critic_agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[critic_agent_id])
+
+    def __repr__(self) -> str:
+        return f"<CriticAccuracy(critic_id={self.critic_agent_id}, accuracy={self.accuracy_score:.2f})>"
+
+
+# ---------------------------------------------------------------------------
+# ServiceListing — Phase 2C (framework only)
+# ---------------------------------------------------------------------------
+
+class ServiceListing(Base):
+    __tablename__ = "service_listings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider_agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    provider_agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    price_reputation: Mapped[float] = mapped_column(Float, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    purchase_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Relationships
+    provider_agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[provider_agent_id])
+
+    def __repr__(self) -> str:
+        return f"<ServiceListing(id={self.id}, title={self.title!r}, status={self.status!r})>"
+
+
+# ---------------------------------------------------------------------------
+# GamingFlag — Phase 2C
+# ---------------------------------------------------------------------------
+
+class GamingFlag(Base):
+    __tablename__ = "gaming_flags"
+    __table_args__ = (
+        Index("ix_gaming_flags_resolved_detected", "resolved", "detected_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    flag_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    agent_ids: Mapped[dict] = mapped_column(JSON, nullable=False)
+    evidence: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(10), nullable=False)
+    penalty_applied: Mapped[float | None] = mapped_column(Float, nullable=True)
+    detected_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    reviewed_by: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<GamingFlag(id={self.id}, type={self.flag_type!r}, severity={self.severity!r})>"

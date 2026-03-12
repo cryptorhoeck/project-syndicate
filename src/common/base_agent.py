@@ -15,7 +15,7 @@ Subclasses MUST implement the three abstract coroutines:
 
 from __future__ import annotations
 
-__version__ = "0.3.0"
+__version__ = "0.5.0"
 
 import abc
 import asyncio
@@ -32,6 +32,8 @@ from src.common.models import Agent as AgentModel, Message as MessageModel
 if TYPE_CHECKING:
     from src.agora.agora_service import AgoraService
     from src.agora.schemas import AgoraMessageResponse, MessageType
+    from src.economy.economy_service import EconomyService
+    from src.library.library_service import LibraryService
 
 logger = structlog.get_logger()
 
@@ -82,6 +84,8 @@ class BaseAgent(abc.ABC):
         agent_type: str,
         db_session_factory: sessionmaker,
         agora_service: Optional["AgoraService"] = None,
+        library_service: Optional["LibraryService"] = None,
+        economy_service: Optional["EconomyService"] = None,
     ) -> None:
         # Identity
         self.agent_id: int = agent_id
@@ -96,6 +100,12 @@ class BaseAgent(abc.ABC):
 
         # Agora communication
         self.agora: Optional["AgoraService"] = agora_service
+
+        # Library access
+        self.library: Optional["LibraryService"] = library_service
+
+        # Economy access
+        self.economy: Optional["EconomyService"] = economy_service
 
         # Structured logger bound to this agent
         self.log: structlog.stdlib.BoundLogger = logger.bind(
@@ -295,6 +305,152 @@ class BaseAgent(abc.ABC):
             message_type=MT.CHAT,
             importance=importance,
         )
+
+    # ------------------------------------------------------------------
+    # Library access
+    # ------------------------------------------------------------------
+
+    def read_textbook(self, topic: str) -> Optional[str]:
+        """Read a textbook. File I/O, not an API call."""
+        if self.library is None:
+            return None
+        return self.library.get_textbook(topic)
+
+    async def search_library(
+        self, query: str, category=None, limit: int = 10
+    ) -> list:
+        """Search the Library."""
+        if self.library is None:
+            return []
+        return await self.library.search_entries(query=query, category=category, limit=limit)
+
+    async def submit_to_library(
+        self, title: str, content: str, tags: list[str] | None = None
+    ):
+        """Submit a contribution for peer review."""
+        if self.library is None:
+            return None
+        return await self.library.submit_contribution(
+            agent_id=self.agent_id,
+            agent_name=self.name,
+            title=title,
+            content=content,
+            tags=tags or [],
+        )
+
+    async def get_my_pending_reviews(self) -> list:
+        """Check for assigned Library reviews."""
+        if self.library is None:
+            return []
+        return await self.library.get_pending_reviews(self.agent_id)
+
+    # ------------------------------------------------------------------
+    # Economy access
+    # ------------------------------------------------------------------
+
+    async def create_intel_signal(
+        self, asset: str, direction: str, confidence: int, expires_hours: int = 48,
+    ) -> Any:
+        """Post an intel signal to the market."""
+        if self.economy is None:
+            return None
+
+        from src.agora.schemas import MessageType as MT
+        msg = await self.post_to_agora(
+            channel="market-intel",
+            content=f"Signal: {asset} {direction} (confidence {confidence}/5)",
+            message_type=MT.SIGNAL,
+            metadata={"asset": asset, "direction": direction, "confidence": confidence},
+        )
+        if msg is None:
+            return None
+
+        from datetime import timedelta
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=expires_hours)
+
+        # Get current price (best-effort)
+        price = 0.0
+
+        return await self.economy.create_intel_signal(
+            scout_agent_id=self.agent_id,
+            scout_agent_name=self.name,
+            message_id=msg.id,
+            asset=asset,
+            direction=direction,
+            confidence_level=confidence,
+            price_at_creation=price,
+            expires_at=expires_at,
+        )
+
+    async def endorse_intel(self, signal_id: int, stake: float) -> Any:
+        """Endorse someone else's intel signal."""
+        if self.economy is None:
+            return None
+        return await self.economy.endorse_intel(
+            signal_id=signal_id,
+            endorser_agent_id=self.agent_id,
+            endorser_agent_name=self.name,
+            stake_amount=stake,
+        )
+
+    async def request_strategy_review(
+        self,
+        proposal_message_id: int,
+        summary: str,
+        budget: float,
+        capital_pct: float = 0.0,
+    ) -> Any:
+        """Request a Critic to review a strategy proposal."""
+        if self.economy is None:
+            return None
+        return await self.economy.request_review(
+            requester_agent_id=self.agent_id,
+            requester_agent_name=self.name,
+            proposal_message_id=proposal_message_id,
+            proposal_summary=summary,
+            budget_reputation=budget,
+            capital_percentage=capital_pct,
+        )
+
+    async def accept_and_submit_review(
+        self,
+        request_id: int,
+        verdict: str,
+        reasoning: str,
+        risk_score: int,
+    ) -> Any:
+        """Accept and complete a review request (for Critic agents)."""
+        if self.economy is None:
+            return None
+
+        assignment = await self.economy.accept_review(
+            request_id=request_id,
+            critic_agent_id=self.agent_id,
+            critic_agent_name=self.name,
+        )
+        if assignment is None:
+            return None
+
+        from src.agora.schemas import MessageType as MT
+        review_msg = await self.post_to_agora(
+            channel="strategy-debate",
+            content=f"Review of proposal: {verdict}. Risk: {risk_score}/10. {reasoning}",
+            message_type=MT.EVALUATION,
+        )
+
+        return await self.economy.submit_review(
+            assignment_id=assignment.id,
+            verdict=verdict,
+            reasoning=reasoning,
+            risk_score=risk_score,
+            review_message_id=review_msg.id if review_msg else None,
+        )
+
+    async def get_my_reputation(self) -> float:
+        """Get current reputation balance."""
+        if self.economy is None:
+            return 0.0
+        return await self.economy.get_balance(self.agent_id)
 
     # ------------------------------------------------------------------
     # Thinking-tax / API cost tracking

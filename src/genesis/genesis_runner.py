@@ -5,7 +5,7 @@ Standalone script that starts the Genesis main loop.
 Runs the 5-minute cycle with graceful shutdown.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.5.0"
 
 import asyncio
 import signal
@@ -18,7 +18,9 @@ from sqlalchemy.orm import sessionmaker
 
 from src.agora import create_agora_service
 from src.common.config import config
+from src.economy import EconomyService
 from src.genesis.genesis import GenesisAgent
+from src.library import LibraryService
 
 # Logging
 structlog.configure(
@@ -53,10 +55,33 @@ async def main() -> None:
     redis_client = aioredis.from_url(config.redis_url, decode_responses=True)
     agora = await create_agora_service(session_factory, redis_client)
 
+    # Initialize Library service
+    anthropic_client = None
+    try:
+        if config.anthropic_api_key:
+            import anthropic
+            anthropic_client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+    except Exception:
+        pass
+
+    library = LibraryService(
+        db_session_factory=session_factory,
+        agora_service=agora,
+        anthropic_client=anthropic_client,
+    )
+
+    economy = EconomyService(
+        db_session_factory=session_factory,
+        agora_service=agora,
+        exchange_service=None,  # Will be set when exchange keys are configured
+    )
+
     genesis = GenesisAgent(
         db_session_factory=session_factory,
         exchange_service=None,  # Will be set when exchange keys are configured
         agora_service=agora,
+        library_service=library,
+        economy_service=economy,
     )
     await genesis.initialize()
 

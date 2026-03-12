@@ -6,7 +6,7 @@ spawning, evaluating, killing agents, capital allocation,
 market regime detection, and daily reporting.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.5.0"
 
 import json
 from datetime import date, datetime, timedelta, timezone
@@ -35,6 +35,8 @@ from src.risk.accountant import Accountant
 
 if TYPE_CHECKING:
     from src.agora.agora_service import AgoraService
+    from src.economy.economy_service import EconomyService
+    from src.library.library_service import LibraryService
 
 logger = structlog.get_logger()
 
@@ -47,6 +49,8 @@ class GenesisAgent(BaseAgent):
         db_session_factory: sessionmaker,
         exchange_service=None,
         agora_service: Optional["AgoraService"] = None,
+        library_service: Optional["LibraryService"] = None,
+        economy_service: Optional["EconomyService"] = None,
     ) -> None:
         super().__init__(
             agent_id=0,
@@ -54,9 +58,11 @@ class GenesisAgent(BaseAgent):
             agent_type="genesis",
             db_session_factory=db_session_factory,
             agora_service=agora_service,
+            library_service=library_service,
         )
 
         self.exchange = exchange_service
+        self.economy: Optional["EconomyService"] = economy_service
         self.accountant = Accountant(db_session_factory=db_session_factory)
         self.treasury = TreasuryManager(
             exchange_service=exchange_service,
@@ -176,6 +182,18 @@ class GenesisAgent(BaseAgent):
             agent_health = self._check_agent_health()
             cycle_report["agent_health"] = agent_health
 
+            # 4b. NEGATIVE REPUTATION CHECK
+            if self.economy is not None:
+                try:
+                    neg_rep_agents = await self.economy.check_negative_reputation_agents()
+                    if neg_rep_agents:
+                        for aid in neg_rep_agents:
+                            if aid not in agent_health.get("due_for_evaluation", []):
+                                agent_health.setdefault("due_for_evaluation", []).append(aid)
+                        self.log.warning("negative_reputation_agents", agent_ids=neg_rep_agents)
+                except Exception as exc:
+                    self.log.warning("neg_rep_check_failed", error=str(exc))
+
             # 5. EVALUATIONS
             evaluations = await self._run_evaluations()
             cycle_report["evaluations"] = evaluations
@@ -197,6 +215,16 @@ class GenesisAgent(BaseAgent):
             # 9. AGORA MONITORING
             agora_summary = await self._monitor_agora()
             cycle_report["agora"] = agora_summary
+
+            # 9b. SETTLEMENT CYCLE
+            if self.economy is not None:
+                try:
+                    settlement_results = await self.economy.run_settlement_cycle()
+                    if settlement_results.get("settled", 0) > 0 or settlement_results.get("expired", 0) > 0:
+                        cycle_report["settlement"] = settlement_results
+                        self.log.info("settlement_cycle", **settlement_results)
+                except Exception as exc:
+                    self.log.warning("settlement_cycle_failed", error=str(exc))
 
             # 10. HOURLY MAINTENANCE (expired messages cleanup)
             await self._maybe_run_hourly_maintenance()
@@ -364,6 +392,13 @@ class GenesisAgent(BaseAgent):
                     metadata=pnl_data,
                     importance=2,
                 )
+
+                # Create post-mortem in The Library
+                if self.library is not None:
+                    try:
+                        await self.library.create_post_mortem(agent_id)
+                    except Exception as exc:
+                        self.log.warning("post_mortem_failed", agent_id=agent_id, error=str(exc))
             else:
                 # Survive
                 agent.evaluation_count = (agent.evaluation_count or 0) + 1
@@ -397,6 +432,14 @@ class GenesisAgent(BaseAgent):
             )
             session.add(evaluation)
             session.commit()
+            evaluation_id = evaluation.id
+
+            # Create strategy record for profitable survivors
+            if decision == "survive" and true_pnl_pct > 0 and self.library is not None:
+                try:
+                    await self.library.create_strategy_record(agent_id, evaluation_id)
+                except Exception as exc:
+                    self.log.warning("strategy_record_failed", agent_id=agent_id, error=str(exc))
 
         # Post evaluation result to Agora
         await self.post_to_agora(
@@ -606,6 +649,23 @@ class GenesisAgent(BaseAgent):
             if deleted > 0:
                 self.log.info("agora_cleanup", expired_messages_deleted=deleted)
 
+        # Library maintenance: publish delayed entries, handle review timeouts
+        if self.library is not None:
+            published = await self.library.publish_delayed_entries()
+            if published:
+                self.log.info("library_delayed_published", count=len(published))
+            await self.library.handle_review_timeouts()
+
+        # Economy maintenance: expire stale review requests, check overdue assignments
+        if self.economy is not None:
+            try:
+                expired = await self.economy.review_market.expire_stale_requests()
+                overdue = await self.economy.review_market.check_overdue_assignments()
+                if expired > 0 or overdue > 0:
+                    self.log.info("economy_maintenance", expired_reviews=expired, overdue_assignments=overdue)
+            except Exception as exc:
+                self.log.warning("economy_maintenance_failed", error=str(exc))
+
     # ------------------------------------------------------------------
     # Daily Report
     # ------------------------------------------------------------------
@@ -620,6 +680,22 @@ class GenesisAgent(BaseAgent):
             "leaderboard": leaderboard[:10],
             "date": date.today().isoformat(),
         }
+
+        # Economy stats + gaming detection (daily)
+        if self.economy is not None:
+            try:
+                economy_stats = await self.economy.get_economy_stats()
+                report_data["economy"] = economy_stats.model_dump()
+            except Exception as exc:
+                self.log.warning("economy_stats_failed", error=str(exc))
+
+            try:
+                gaming_flags = await self.economy.run_gaming_detection()
+                if gaming_flags:
+                    report_data["gaming_flags"] = len(gaming_flags)
+                    self.log.warning("gaming_flags_detected", count=len(gaming_flags))
+            except Exception as exc:
+                self.log.warning("gaming_detection_failed", error=str(exc))
 
         if self.claude is None:
             report_content = (
@@ -745,6 +821,14 @@ class GenesisAgent(BaseAgent):
                 })
 
             session.commit()
+
+        # Initialize reputation for new agents
+        if self.economy is not None:
+            for s in spawned:
+                try:
+                    await self.economy.initialize_agent_reputation(s["agent_id"])
+                except Exception as exc:
+                    self.log.warning("rep_init_failed", agent_id=s["agent_id"], error=str(exc))
 
         await self.post_to_agora(
             "genesis-log",
