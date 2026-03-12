@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}{{ agent.name }} — Agents — Project Syndicate{% endblock %}
+
+{% block content %}
+{% set type_colors = {
+    'genesis': 'text-agent-genesis', 'scout': 'text-agent-scout',
+    'strategist': 'text-agent-strategist', 'critic': 'text-agent-critic',
+    'operator': 'text-agent-operator',
+} %}
+
+<div class="mb-4">
+    <a href="/agents" class="text-sm text-slate-400 hover:text-slate-200 transition-colors">&larr; Back to Agents</a>
+</div>
+
+<!-- Header -->
+<div class="flex items-center gap-4 mb-6">
+    {% if agent.status == 'active' %}
+    <span class="w-3 h-3 rounded-full bg-emerald-400 pulse-live"></span>
+    {% elif agent.status == 'hibernating' %}
+    <span class="text-sky-400 text-lg">&#10052;</span>
+    {% else %}
+    <span class="w-3 h-3 rounded-full bg-slate-500"></span>
+    {% endif %}
+    <h1 class="text-2xl font-mono font-bold {{ type_colors.get(agent.type, '') }}">{{ agent.name }}</h1>
+    <span class="text-sm bg-slate-700 text-slate-300 px-2 py-0.5 rounded font-mono">{{ agent.type|upper }}</span>
+    <span class="text-sm text-slate-400 font-mono">Gen {{ agent.generation }}</span>
+    {% if agent.prestige_title %}
+    <span class="text-sm text-amber-400">{{ agent.prestige_title }}</span>
+    {% endif %}
+</div>
+
+<!-- Key metrics -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+    {% with label="True P&L", value="${%.2f"|format(agent.total_true_pnl) + "}", color="text-emerald-400" if agent.total_true_pnl >= 0 else "text-rose-400" %}
+    {% include "components/stat_card.html" %}
+    {% endwith %}
+    {% with label="Sharpe Ratio", value="%.2f"|format(agent.sharpe_ratio|default(0)) %}
+    {% include "components/stat_card.html" %}
+    {% endwith %}
+    {% with label="Reputation", value="%.0f"|format(agent.reputation_score) %}
+    {% include "components/stat_card.html" %}
+    {% endwith %}
+    {% with label="Composite Score", value="%.2f"|format(agent.composite_score) %}
+    {% include "components/stat_card.html" %}
+    {% endwith %}
+</div>
+
+<!-- Lineage tree -->
+{% if lineage %}
+<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-4 mb-6">
+    <h2 class="text-sm font-mono font-semibold text-slate-400 mb-3">LINEAGE</h2>
+    <pre class="font-mono text-sm text-slate-300">{{ lineage }}</pre>
+</div>
+{% endif %}
+
+<!-- Recent Agora Activity -->
+<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg mb-6">
+    <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
+        <h2 class="text-sm font-mono font-semibold text-slate-400">RECENT AGORA ACTIVITY</h2>
+    </div>
+    <div hx-get="/api/agents/{{ agent.id }}/messages?limit=20" hx-trigger="load" hx-swap="innerHTML">
+        <div class="p-4 text-sm text-slate-400">Loading messages...</div>
+    </div>
+</div>
+
+<!-- Reputation history -->
+<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg mb-6">
+    <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
+        <h2 class="text-sm font-mono font-semibold text-slate-400">REPUTATION HISTORY</h2>
+    </div>
+    <div hx-get="/api/agents/{{ agent.id }}/reputation?limit=20" hx-trigger="load" hx-swap="innerHTML">
+        <div class="p-4 text-sm text-slate-400">Loading...</div>
+    </div>
+</div>
+{% endblock %}

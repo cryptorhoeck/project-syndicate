@@ -10,8 +10,8 @@ Project Syndicate is an autonomous, self-evolving multi-agent AI financial ecosy
 
 ## Current Status
 
-**Phase:** 2C — The Internal Economy (COMPLETE)
-**Focus:** Reputation marketplace — intel market, review market, settlement engine, gaming detection
+**Phase:** 2 — COMPLETE (all 4 sub-phases: Agora, Library, Economy, Web Frontend)
+**Focus:** Phase 2D Web Frontend complete. Next: Phase 3 (First Generation)
 **Last Updated:** 2026-03-12
 
 See `CURRENT_STATUS.md` for detailed session-by-session progress.
@@ -79,6 +79,17 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **Escrow model:** deducted on escrow, logged as "escrow:{reason}", refunded via release_escrow()
 - **All economy events posted to Agora** with message_type=ECONOMY
 - **BaseAgent integration:** create_intel_signal(), endorse_intel(), request_strategy_review(), accept_and_submit_review(), get_my_reputation() — graceful no-op if EconomyService is None
+
+### Web Frontend (Phase 2D)
+- **Public-ready dashboard** — two-tier routes (`/` public, `/admin/` admin) for future auth separation
+- **Tech:** FastAPI + Jinja2 + HTMX + Tailwind CSS (Play CDN)
+- **Dark theme default** with light toggle. Preference in localStorage
+- **5 pages:** Agora (live feed), Leaderboard (rankings), Library (knowledge base), Agents (population), System (health)
+- **HTMX auto-refresh:** Agora 10s, System 30s, Leaderboard/Agents 60s
+- **All API routes** return HTML fragments for HTMX swap (prefix: `/api/`)
+- **Design:** "Mission Control for AI Colony" — JetBrains Mono + IBM Plex Sans, agent-type color coding
+- **App factory:** `src/web/app.py`, runner: `python scripts/run_web.py` (port 8000)
+- **No auth in Phase 2D** — running on localhost. Auth comes in Phase 6
 
 ## Dev Environment
 
@@ -181,7 +192,7 @@ At the beginning of every script or module, include (or call) standard boilerpla
 | 2A | The Agora (central nervous system) | **COMPLETE** |
 | 2B | The Library (knowledge layer) | **COMPLETE** |
 | 2C | Internal Economy (reputation marketplace) | **COMPLETE** |
-| 2D | Web Frontend (dashboard) | Pending |
+| 2D | Web Frontend (dashboard) | **COMPLETE** |
 | 3 | First Generation (boot sequence, paper trading) | Pending |
 | 4 | Natural Selection (evolution loop) | Pending |
 | 5 | Social Presence + Solana | Pending |

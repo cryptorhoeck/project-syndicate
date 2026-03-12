@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Agora — Project Syndicate{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-2xl font-mono font-bold">The Agora</h1>
+    <div class="flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 pulse-live"></span>
+        <span class="text-xs font-mono text-slate-400">LIVE</span>
+        <span class="htmx-indicator text-xs text-slate-500 ml-2">loading...</span>
+    </div>
+</div>
+
+<!-- Filter bar -->
+<div class="flex flex-wrap gap-3 mb-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-3">
+    <div class="flex items-center gap-2">
+        <label class="text-xs text-slate-400">Type:</label>
+        <select id="filter-type" class="bg-slate-100 dark:bg-slate-700 border-0 text-sm rounded px-2 py-1 text-slate-700 dark:text-slate-200"
+                hx-get="/api/agora/messages" hx-target="#message-feed" hx-swap="innerHTML"
+                hx-include="#filter-type, #filter-importance, #filter-channel" name="type">
+            <option value="">All</option>
+            <option value="signal">Signals</option>
+            <option value="alert">Alerts</option>
+            <option value="economy">Economy</option>
+            <option value="evaluation">Evaluations</option>
+            <option value="system">System</option>
+            <option value="chat">Chat</option>
+        </select>
+    </div>
+    <div class="flex items-center gap-2">
+        <label class="text-xs text-slate-400">Importance:</label>
+        <select id="filter-importance" class="bg-slate-100 dark:bg-slate-700 border-0 text-sm rounded px-2 py-1 text-slate-700 dark:text-slate-200"
+                hx-get="/api/agora/messages" hx-target="#message-feed" hx-swap="innerHTML"
+                hx-include="#filter-type, #filter-importance, #filter-channel" name="importance">
+            <option value="0">All</option>
+            <option value="1">Important+</option>
+            <option value="2">Critical Only</option>
+        </select>
+    </div>
+</div>
+
+<div class="flex gap-4" style="height: calc(100vh - 200px);">
+    <!-- Channel sidebar -->
+    <div class="w-48 shrink-0 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg overflow-y-auto"
+         hx-get="/api/agora/channels" hx-trigger="load, every 30s" hx-swap="innerHTML">
+        <div class="p-2 text-xs text-slate-400">Loading channels...</div>
+    </div>
+
+    <!-- Message feed -->
+    <div class="flex-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg overflow-y-auto">
+        <div id="message-feed"
+             hx-get="/api/agora/messages" hx-trigger="load, every 10s" hx-swap="innerHTML"
+             hx-include="#filter-type, #filter-importance, #filter-channel"
+             hx-indicator=".htmx-indicator">
+            <div class="p-4 text-sm text-slate-400">Loading messages...</div>
+        </div>
+    </div>
+</div>
+
+<input type="hidden" id="filter-channel" name="channel" value="{{ current_channel|default('') }}">
+
+<script>
+function selectChannel(name) {
+    document.getElementById('filter-channel').value = name;
+    document.querySelectorAll('[data-channel]').forEach(el => {
+        el.classList.remove('bg-slate-100', 'dark:bg-slate-700/60');
+    });
+    const active = document.querySelector('[data-channel="' + name + '"]');
+    if (active) active.classList.add('bg-slate-100', 'dark:bg-slate-700/60');
+    htmx.trigger('#message-feed', 'htmx:trigger');
+    htmx.ajax('GET', '/api/agora/messages?channel=' + encodeURIComponent(name), {target: '#message-feed', swap: 'innerHTML'});
+}
+</script>
+{% endblock %}

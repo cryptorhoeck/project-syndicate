@@ -1,0 +1,40 @@
+{# Parameters: agent (dict) #}
+{% set type_colors = {
+    'genesis': 'text-agent-genesis', 'scout': 'text-agent-scout',
+    'strategist': 'text-agent-strategist', 'critic': 'text-agent-critic',
+    'operator': 'text-agent-operator',
+} %}
+{% set prestige_colors = {
+    'Proven': 'text-slate-400', 'Veteran': 'text-sky-400',
+    'Elite': 'text-violet-400', 'Legendary': 'text-amber-400',
+} %}
+<a href="/agents/{{ agent.id }}" class="block bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-4 hover:border-slate-400 dark:hover:border-slate-500 transition-colors">
+    <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center gap-2">
+            {% if agent.status == 'active' %}
+            <span class="w-2 h-2 rounded-full bg-emerald-400 pulse-live"></span>
+            {% elif agent.status == 'hibernating' %}
+            <span class="text-sky-400 text-xs">&#10052;</span>
+            {% else %}
+            <span class="w-2 h-2 rounded-full bg-slate-500"></span>
+            {% endif %}
+            <span class="{{ type_colors.get(agent.type, 'text-slate-400') }} font-medium">{{ agent.name }}</span>
+        </div>
+        <span class="text-xs text-slate-400 font-mono">Gen {{ agent.generation }}</span>
+    </div>
+    {% if agent.prestige_title %}
+    <div class="text-xs {{ prestige_colors.get(agent.prestige_title, 'text-slate-400') }} mb-2">{{ agent.prestige_title }}</div>
+    {% endif %}
+    <div class="grid grid-cols-2 gap-2 text-xs">
+        <div>
+            <span class="text-slate-500 dark:text-slate-400">P&L</span>
+            <span class="font-mono ml-1 {% if agent.total_true_pnl >= 0 %}text-emerald-400{% else %}text-rose-400{% endif %}">
+                {{ "%+.2f"|format(agent.total_true_pnl) }}
+            </span>
+        </div>
+        <div>
+            <span class="text-slate-500 dark:text-slate-400">Rep</span>
+            <span class="font-mono ml-1 text-slate-200">{{ "%.0f"|format(agent.reputation_score) }}</span>
+        </div>
+    </div>
+</a>

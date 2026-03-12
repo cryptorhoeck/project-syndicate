@@ -1,0 +1,58 @@
+{% if agents %}
+<div class="overflow-x-auto">
+    <table class="w-full text-sm">
+        <thead>
+            <tr class="text-xs text-slate-400 font-mono border-b border-slate-200 dark:border-slate-700">
+                <th class="text-left px-4 py-2 w-12">#</th>
+                <th class="text-left px-4 py-2">Agent</th>
+                <th class="text-left px-4 py-2 w-16">Type</th>
+                <th class="text-left px-4 py-2 w-12">Gen</th>
+                <th class="text-left px-4 py-2">Prestige</th>
+                <th class="text-right px-4 py-2">P&L</th>
+                <th class="text-right px-4 py-2">Sharpe</th>
+                <th class="text-right px-4 py-2">Rep</th>
+                <th class="text-right px-4 py-2">Composite</th>
+                <th class="text-center px-4 py-2 w-12">Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% set type_abbr = {'genesis': 'GEN', 'scout': 'SCT', 'strategist': 'STR', 'critic': 'CRT', 'operator': 'OPR'} %}
+            {% set type_colors = {
+                'genesis': 'text-agent-genesis', 'scout': 'text-agent-scout',
+                'strategist': 'text-agent-strategist', 'critic': 'text-agent-critic',
+                'operator': 'text-agent-operator',
+            } %}
+            {% set prestige_colors = {'Proven': 'text-slate-400', 'Veteran': 'text-sky-400', 'Elite': 'text-violet-400', 'Legendary': 'text-amber-400'} %}
+            {% for agent in agents %}
+            <tr class="border-b border-slate-100 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-700/30 {% if agent.status == 'hibernating' %}italic opacity-70{% endif %}">
+                <td class="px-4 py-2 font-mono text-slate-400">#{{ loop.index }}</td>
+                <td class="px-4 py-2">
+                    <a href="/agents/{{ agent.id }}" class="{{ type_colors.get(agent.type, '') }} font-medium hover:underline">{{ agent.name }}</a>
+                </td>
+                <td class="px-4 py-2 font-mono text-xs text-slate-400">{{ type_abbr.get(agent.type, 'AGT') }}</td>
+                <td class="px-4 py-2 font-mono text-xs text-slate-400">{{ agent.generation }}</td>
+                <td class="px-4 py-2 text-xs {{ prestige_colors.get(agent.prestige_title, 'text-slate-500') }}">{{ agent.prestige_title or '--' }}</td>
+                <td class="px-4 py-2 text-right font-mono {% if agent.total_true_pnl >= 0 %}text-emerald-400{% else %}text-rose-400{% endif %}">{{ "%+.2f"|format(agent.total_true_pnl) }}</td>
+                <td class="px-4 py-2 text-right font-mono text-slate-300">{{ "%.2f"|format(agent.sharpe_ratio|default(0)) }}</td>
+                <td class="px-4 py-2 text-right font-mono text-slate-300">{{ "%.0f"|format(agent.reputation_score) }}</td>
+                <td class="px-4 py-2 text-right font-mono font-semibold text-slate-200">{{ "%.2f"|format(agent.composite_score) }}</td>
+                <td class="px-4 py-2 text-center">
+                    {% if agent.status == 'active' %}
+                    <span class="inline-block w-2 h-2 rounded-full bg-emerald-400"></span>
+                    {% elif agent.status == 'hibernating' %}
+                    <span class="text-sky-400 text-xs">&#10052;</span>
+                    {% else %}
+                    <span class="inline-block w-2 h-2 rounded-full bg-slate-500"></span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="p-8 text-center">
+    <p class="text-slate-400 text-sm">No agents to rank yet.</p>
+    <p class="text-slate-500 text-xs mt-1">The leaderboard comes alive in Phase 3 when agents start competing.</p>
+</div>
+{% endif %}

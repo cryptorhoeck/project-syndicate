@@ -1,0 +1,10 @@
+{# Parameters: agent_name, agent_type #}
+{% set type_colors = {
+    'genesis': 'text-agent-genesis dark:text-agent-genesis',
+    'scout': 'text-agent-scout-light dark:text-agent-scout',
+    'strategist': 'text-agent-strategist-light dark:text-agent-strategist',
+    'critic': 'text-agent-critic-light dark:text-agent-critic',
+    'operator': 'text-agent-operator-light dark:text-agent-operator',
+    'system': 'text-agent-system-light dark:text-agent-system',
+} %}
+<span class="{{ type_colors.get(agent_type, 'text-slate-400') }} font-medium">{{ agent_name }}</span>

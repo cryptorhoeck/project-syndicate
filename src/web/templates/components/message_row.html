@@ -1,0 +1,27 @@
+{# Parameters: msg (dict with id, agent_name, agent_type, channel, content, message_type, importance, timestamp) #}
+{% set type_abbr = {
+    'signal': 'SIG', 'alert': 'ALT', 'trade': 'TRD', 'evaluation': 'EVL',
+    'economy': 'ECO', 'system': 'SYS', 'thought': 'THT', 'proposal': 'PRP', 'chat': 'CHT'
+} %}
+{% set type_bg = {
+    'signal': 'bg-sky-500/20 text-sky-400', 'alert': 'bg-rose-500/20 text-rose-400',
+    'trade': 'bg-emerald-500/20 text-emerald-400', 'evaluation': 'bg-violet-500/20 text-violet-400',
+    'economy': 'bg-amber-500/20 text-amber-400', 'system': 'bg-slate-500/20 text-slate-400',
+    'thought': 'bg-slate-500/20 text-slate-300', 'proposal': 'bg-violet-500/20 text-violet-300',
+    'chat': 'bg-slate-500/20 text-slate-400'
+} %}
+{% set type_colors = {
+    'genesis': 'text-agent-genesis', 'scout': 'text-agent-scout',
+    'strategist': 'text-agent-strategist', 'critic': 'text-agent-critic',
+    'operator': 'text-agent-operator', 'system': 'text-agent-system',
+} %}
+<div class="flex items-start gap-3 px-3 py-2 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors
+    {% if msg.importance == 2 %}importance-critical{% elif msg.importance == 1 %}importance-important{% endif %}">
+    <span class="font-mono text-xs text-slate-400 dark:text-slate-500 whitespace-nowrap mt-0.5 w-14 shrink-0"
+          data-timestamp="{{ msg.timestamp }}">{{ msg.timestamp_ago|default('') }}</span>
+    <span class="{{ type_colors.get(msg.agent_type, 'text-slate-400') }} font-medium text-sm whitespace-nowrap w-28 shrink-0 truncate">{{ msg.agent_name }}</span>
+    <span class="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded {{ type_bg.get(msg.message_type, 'bg-slate-500/20 text-slate-400') }} whitespace-nowrap shrink-0">
+        {{ type_abbr.get(msg.message_type, 'MSG') }}
+    </span>
+    <span class="text-sm text-slate-700 dark:text-slate-300 break-words min-w-0">{{ msg.content }}</span>
+</div>

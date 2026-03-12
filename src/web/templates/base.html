@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Project Syndicate{% endblock %}</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        mono: ['"JetBrains Mono"', 'monospace'],
+                        sans: ['"IBM Plex Sans"', 'sans-serif'],
+                    },
+                    colors: {
+                        'agent-genesis': { DEFAULT: '#fbbf24', light: '#b45309' },
+                        'agent-scout': { DEFAULT: '#38bdf8', light: '#0369a1' },
+                        'agent-strategist': { DEFAULT: '#a78bfa', light: '#6d28d9' },
+                        'agent-critic': { DEFAULT: '#fb923c', light: '#c2410c' },
+                        'agent-operator': { DEFAULT: '#34d399', light: '#047857' },
+                        'agent-system': { DEFAULT: '#f43f5e', light: '#be123c' },
+                    }
+                }
+            }
+        }
+    </script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+
+    <script>
+        if (localStorage.getItem('theme') === 'light') {
+            document.documentElement.classList.remove('dark');
+        }
+        function toggleTheme() {
+            const html = document.documentElement;
+            if (html.classList.contains('dark')) {
+                html.classList.remove('dark');
+                localStorage.setItem('theme', 'light');
+            } else {
+                html.classList.add('dark');
+                localStorage.setItem('theme', 'dark');
+            }
+        }
+        function timeAgo(isoStr) {
+            if (!isoStr) return '';
+            const date = new Date(isoStr);
+            const now = new Date();
+            const seconds = Math.floor((now - date) / 1000);
+            if (seconds < 60) return seconds + 's ago';
+            const minutes = Math.floor(seconds / 60);
+            if (minutes < 60) return minutes + 'm ago';
+            const hours = Math.floor(minutes / 60);
+            if (hours < 24) return hours + 'h ago';
+            const days = Math.floor(hours / 24);
+            return days + 'd ago';
+        }
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('[data-timestamp]').forEach(function(el) {
+                el.textContent = timeAgo(el.getAttribute('data-timestamp'));
+                el.title = el.getAttribute('data-timestamp');
+            });
+        });
+        document.addEventListener('htmx:afterSwap', function() {
+            document.querySelectorAll('[data-timestamp]').forEach(function(el) {
+                el.textContent = timeAgo(el.getAttribute('data-timestamp'));
+                el.title = el.getAttribute('data-timestamp');
+            });
+        });
+    </script>
+
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+
+    <style>
+        body { font-family: 'IBM Plex Sans', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        .htmx-indicator { opacity: 0; transition: opacity 200ms ease-in; }
+        .htmx-request .htmx-indicator { opacity: 1; }
+        * { transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease; }
+        .dark ::-webkit-scrollbar { width: 8px; }
+        .dark ::-webkit-scrollbar-track { background: #1e293b; }
+        .dark ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        .importance-critical { border-left: 3px solid #f43f5e; }
+        .importance-important { border-left: 3px solid #fbbf24; }
+        @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .pulse-live { animation: pulse-dot 2s ease-in-out infinite; }
+        @keyframes flash-red { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+        .flash-circuit { animation: flash-red 1s ease-in-out infinite; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100 font-sans min-h-screen">
+
+    <div class="flex min-h-screen">
+        {% include "components/nav.html" %}
+
+        <main class="flex-1 ml-64 p-6">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+</body>
+</html>

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Agents — Project Syndicate{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-mono font-bold">The Syndicate</h1>
+    <label class="flex items-center gap-2 text-sm text-slate-400">
+        <input type="checkbox" id="include-dead" class="rounded border-slate-600"
+               hx-get="/api/agents/cards" hx-target="#agent-grid" hx-swap="innerHTML"
+               hx-vals='{"include_dead": true}'>
+        Show deceased
+    </label>
+</div>
+
+<!-- Summary stats -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+    {% with label="Active Agents", value=stats.active, color="text-emerald-400" %}
+    {% include "components/stat_card.html" %}
+    {% endwith %}
+    {% with label="Hibernating", value=stats.hibernating, color="text-sky-400" %}
+    {% include "components/stat_card.html" %}
+    {% endwith %}
+    {% with label="Deceased", value=stats.deceased, color="text-rose-400" %}
+    {% include "components/stat_card.html" %}
+    {% endwith %}
+    {% with label="Generations", value=stats.generation_range|default("--") %}
+    {% include "components/stat_card.html" %}
+    {% endwith %}
+</div>
+
+<!-- Agent grid -->
+<div id="agent-grid"
+     hx-get="/api/agents/cards" hx-trigger="load, every 60s" hx-swap="innerHTML">
+    <div class="p-4 text-sm text-slate-400">Loading agents...</div>
+</div>
+{% endblock %}

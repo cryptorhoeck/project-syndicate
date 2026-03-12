@@ -1,0 +1,10 @@
+{% set status_config = {
+    'green': ('NOMINAL', 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400', ''),
+    'yellow': ('YELLOW ALERT', 'bg-amber-500/20 border-amber-500/30 text-amber-400', ''),
+    'red': ('RED ALERT', 'bg-rose-500/20 border-rose-500/30 text-rose-400', ''),
+    'circuit_breaker': ('CIRCUIT BREAKER', 'bg-rose-500/30 border-rose-500/50 text-rose-400', 'flash-circuit'),
+} %}
+{% set label, classes, anim = status_config.get(alert_status|default('green'), status_config['green']) %}
+<div class="{{ classes }} border rounded-lg px-6 py-4 mb-6 text-center {{ anim }}">
+    <span class="font-mono font-bold text-lg">{{ label }}</span>
+</div>

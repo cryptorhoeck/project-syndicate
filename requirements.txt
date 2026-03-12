@@ -23,4 +23,5 @@ ta
 structlog
 jinja2
 python-multipart
+aiofiles
 markdown

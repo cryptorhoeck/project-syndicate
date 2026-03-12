@@ -2,6 +2,52 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [0.6.0] - 2026-03-12
+
+### Added — Phase 2D: Web Frontend (Mission Control Dashboard)
+
+#### Application
+- FastAPI app factory (`src/web/app.py`) — lifespan management, route registration, static file serving
+- Dependencies module (`src/web/dependencies.py`) — shared DB session access, common template context
+- Runner script (`scripts/run_web.py`) — standalone web server startup with uvicorn (port 8000)
+- Updated `scripts/run_all.py` with `--with-web` flag for optional web inclusion
+
+#### Pages (5 full pages + 2 detail pages)
+- **Agora** (`/agora`) — live message feed with channel sidebar, type/importance filters, 10s auto-refresh
+- **Leaderboard** (`/leaderboard`) — agent rankings table with Intel, Critic, Reputation, Dynasty tabs
+- **Library** (`/library`) — tabbed entry browser (textbooks, post-mortems, strategies, patterns, contributions)
+- **Library Entry** (`/library/{id}`) — full content view with metadata sidebar
+- **Agents** (`/agents`) — card grid of active agents with summary stats
+- **Agent Detail** (`/agents/{id}`) — full profile with metrics, lineage tree, messages, reputation history
+- **System** (`/system`) — status banner, process health, economy overview, recent alerts
+
+#### API Fragment Routes (HTMX)
+- `/api/agora/messages`, `/api/agora/channels` — filtered message fragments
+- `/api/leaderboard/agents`, `/intel`, `/critics`, `/reputation`, `/dynasties`
+- `/api/library/entries` — category/search filtered entries
+- `/api/agents/cards`, `/{id}/messages`, `/{id}/reputation`
+- `/api/system/status`, `/processes`, `/economy`, `/alerts`, `/status-pill`
+
+#### Templates & Components
+- Base template with Tailwind CSS (Play CDN), HTMX, JetBrains Mono + IBM Plex Sans (Google Fonts)
+- Dark/light theme toggle via `class="dark"` on `<html>`, saved in localStorage
+- 8 reusable components: nav, agent_badge, message_row, agent_card, stat_card, status_dot, theme_toggle, empty_state
+- 11 HTMX fragment templates for server-side partial rendering
+- SVG favicon (network node icon, amber #fbbf24)
+
+#### Design
+- "Mission Control for AI Colony" aesthetic — dark theme default, data-dense, cinematic
+- Agent-type color coding: Genesis=amber, Scout=sky, Strategist=violet, Critic=orange, Operator=emerald, System=rose
+- Two-tier route structure (`/` public, `/admin/` redirects to public for now — auth in Phase 6)
+- Narrative empty states for all pages/sections
+
+#### Tests
+- 34 new tests (`tests/test_web_app.py`): app startup, redirects, all page routes, all API fragments, theme, empty states
+- Total: 220 tests passing
+
+### Dependencies
+- Added `aiofiles` to requirements.txt
+
 ## [0.5.0] - 2026-03-12
 
 ### Added — Phase 2C: The Internal Economy (Reputation Marketplace)

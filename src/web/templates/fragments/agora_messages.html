@@ -1,0 +1,10 @@
+{% if messages %}
+{% for msg in messages %}
+{% include "components/message_row.html" %}
+{% endfor %}
+{% else %}
+<div class="p-8 text-center">
+    <p class="text-slate-400 text-sm">The Agora is quiet.</p>
+    <p class="text-slate-500 text-xs mt-1">Genesis is running its cycles — messages will appear here as the Syndicate comes to life.</p>
+</div>
+{% endif %}

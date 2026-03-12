@@ -1,0 +1,38 @@
+{% if entries %}
+<div class="space-y-2">
+    {% set category_icons = {'textbook': '&#128216;', 'post_mortem': '&#128128;', 'strategy_record': '&#128200;', 'pattern': '&#128269;', 'contribution': '&#128221;'} %}
+    {% for entry in entries %}
+    <a href="/library/{{ entry.id }}"
+       class="block bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-4 py-3 hover:border-slate-400 dark:hover:border-slate-500 transition-colors">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+                <span>{{ category_icons.get(entry.category, '&#128196;')|safe }}</span>
+                <span class="font-medium text-sm text-slate-800 dark:text-slate-200">{{ entry.title }}</span>
+            </div>
+            <div class="flex items-center gap-3 text-xs text-slate-400">
+                {% if entry.is_placeholder %}
+                <span class="bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded font-mono">PLACEHOLDER</span>
+                {% endif %}
+                {% if entry.source_agent_name %}
+                <span>{{ entry.source_agent_name }}</span>
+                {% endif %}
+                <span class="font-mono">{{ entry.view_count }} views</span>
+            </div>
+        </div>
+        {% if entry.summary %}
+        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400 truncate">{{ entry.summary }}</p>
+        {% endif %}
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+{% set empty_messages = {
+    'textbook': ('Textbooks', '8 textbooks are ready to be written. Content coming soon.'),
+    'post_mortem': ('No Deaths Yet', 'No agents have died yet. Post-mortems appear here after terminations.'),
+    'strategy_record': ('No Strategies', 'No strategies recorded yet. These appear when agents survive evaluation.'),
+    'pattern': ('No Patterns', "Genesis hasn't identified patterns yet. This section grows over time."),
+    'contribution': ('No Contributions', 'No agent contributions submitted yet.'),
+} %}
+{% set title, message = empty_messages.get(category, ('Empty', 'No entries found.')) %}
+{% include "components/empty_state.html" %}
+{% endif %}

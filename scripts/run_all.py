@@ -8,8 +8,9 @@ This is the "turn the system on" script for development.
 Usage: python scripts/run_all.py
 """
 
-__version__ = "0.2.0"
+__version__ = "0.6.0"
 
+import argparse
 import os
 import signal
 import subprocess
@@ -73,6 +74,13 @@ def start_process(name: str) -> subprocess.Popen:
 
 def main() -> None:
     global _running
+
+    parser = argparse.ArgumentParser(description="Start all Syndicate processes")
+    parser.add_argument("--with-web", action="store_true", help="Also start the web dashboard")
+    args = parser.parse_args()
+
+    if args.with_web:
+        PROCESSES["web"] = [PYTHON, os.path.join(PROJECT_ROOT, "scripts", "run_web.py")]
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)

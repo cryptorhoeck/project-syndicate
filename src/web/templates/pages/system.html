@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}System — Project Syndicate{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-mono font-bold mb-6">System Status</h1>
+
+<!-- Status banner -->
+<div id="system-status-banner"
+     hx-get="/api/system/status" hx-trigger="load, every 30s" hx-swap="innerHTML">
+    <div class="bg-emerald-500/20 border border-emerald-500/30 rounded-lg px-6 py-4 mb-6 text-center">
+        <span class="font-mono font-bold text-emerald-400 text-lg">NOMINAL</span>
+    </div>
+</div>
+
+<!-- Metric cards -->
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+    {% with label="Treasury", value="${%.2f"|format(treasury_balance|default(0)) + "}", subtitle="Reserve: " + "%.0f"|format(reserve_pct|default(0)) + "%" %}
+    {% include "components/stat_card.html" %}
+    {% endwith %}
+    {% with label="Market Regime", value=(current_regime|default("UNKNOWN"))|upper %}
+    {% include "components/stat_card.html" %}
+    {% endwith %}
+    {% with label="Circuit Breaker", value="%.1f"|format(circuit_breaker_pct|default(0)) + "% from peak",
+            color="text-emerald-400" if (circuit_breaker_pct|default(0)) < 30 else ("text-amber-400" if (circuit_breaker_pct|default(0)) < 60 else "text-rose-400") %}
+    {% include "components/stat_card.html" %}
+    {% endwith %}
+</div>
+
+<!-- Processes -->
+<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg mb-6">
+    <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
+        <h2 class="text-sm font-mono font-semibold text-slate-400">PROCESSES</h2>
+    </div>
+    <div id="process-health"
+         hx-get="/api/system/processes" hx-trigger="load, every 30s" hx-swap="innerHTML">
+        <div class="p-4 text-sm text-slate-400">Loading...</div>
+    </div>
+</div>
+
+<!-- Economy overview -->
+<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg mb-6">
+    <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
+        <h2 class="text-sm font-mono font-semibold text-slate-400">ECONOMY</h2>
+    </div>
+    <div id="economy-overview"
+         hx-get="/api/system/economy" hx-trigger="load, every 30s" hx-swap="innerHTML">
+        <div class="p-4 text-sm text-slate-400">Loading...</div>
+    </div>
+</div>
+
+<!-- Recent alerts -->
+<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg mb-6">
+    <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
+        <h2 class="text-sm font-mono font-semibold text-slate-400">RECENT ALERTS</h2>
+    </div>
+    <div id="system-alerts"
+         hx-get="/api/system/alerts" hx-trigger="load, every 30s" hx-swap="innerHTML">
+        <div class="p-4 text-sm text-slate-400">Loading...</div>
+    </div>
+</div>
+{% endblock %}

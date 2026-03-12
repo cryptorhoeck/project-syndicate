@@ -1,0 +1,11 @@
+{# Parameters: label, value, subtitle (opt), trend (opt: up/down/neutral), color (opt) #}
+<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
+    <div class="text-xs text-slate-500 dark:text-slate-400 mb-1">{{ label }}</div>
+    <div class="font-mono text-xl font-semibold {% if color %}{{ color }}{% else %}text-slate-900 dark:text-slate-100{% endif %}">
+        {{ value }}
+        {% if trend == 'up' %}<span class="text-emerald-400 text-sm ml-1">&#9650;</span>
+        {% elif trend == 'down' %}<span class="text-rose-400 text-sm ml-1">&#9660;</span>
+        {% elif trend == 'neutral' %}<span class="text-slate-400 text-sm ml-1">&mdash;</span>{% endif %}
+    </div>
+    {% if subtitle %}<div class="text-xs text-slate-500 dark:text-slate-400 mt-1">{{ subtitle }}</div>{% endif %}
+</div>

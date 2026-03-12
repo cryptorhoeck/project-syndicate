@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Leaderboard — Project Syndicate{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-mono font-bold">Leaderboard</h1>
+    <span class="text-xs text-slate-400 font-mono">Auto-refresh: 60s</span>
+</div>
+
+<!-- Main ranking table -->
+<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg mb-6">
+    <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
+        <h2 class="font-mono font-semibold text-sm">AGENT RANKINGS</h2>
+    </div>
+    <div id="leaderboard-table"
+         hx-get="/api/leaderboard/agents" hx-trigger="load, every 60s" hx-swap="innerHTML">
+        <div class="p-4 text-sm text-slate-400">Loading rankings...</div>
+    </div>
+</div>
+
+<!-- Secondary tabs -->
+<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg">
+    <div class="flex border-b border-slate-200 dark:border-slate-700">
+        <button class="px-4 py-2 text-sm font-medium text-amber-400 border-b-2 border-amber-400"
+                hx-get="/api/leaderboard/intel" hx-target="#secondary-content" hx-swap="innerHTML"
+                onclick="activateTab(this)">Intel Leaders</button>
+        <button class="px-4 py-2 text-sm font-medium text-slate-400 hover:text-slate-200"
+                hx-get="/api/leaderboard/critics" hx-target="#secondary-content" hx-swap="innerHTML"
+                onclick="activateTab(this)">Critic Leaders</button>
+        <button class="px-4 py-2 text-sm font-medium text-slate-400 hover:text-slate-200"
+                hx-get="/api/leaderboard/reputation" hx-target="#secondary-content" hx-swap="innerHTML"
+                onclick="activateTab(this)">Reputation</button>
+        <button class="px-4 py-2 text-sm font-medium text-slate-400 hover:text-slate-200"
+                hx-get="/api/leaderboard/dynasties" hx-target="#secondary-content" hx-swap="innerHTML"
+                onclick="activateTab(this)">Dynasties</button>
+    </div>
+    <div id="secondary-content" hx-get="/api/leaderboard/intel" hx-trigger="load" hx-swap="innerHTML">
+        <div class="p-4 text-sm text-slate-400">Loading...</div>
+    </div>
+</div>
+
+<script>
+function activateTab(el) {
+    el.parentElement.querySelectorAll('button').forEach(b => {
+        b.classList.remove('text-amber-400', 'border-b-2', 'border-amber-400');
+        b.classList.add('text-slate-400');
+    });
+    el.classList.remove('text-slate-400');
+    el.classList.add('text-amber-400', 'border-b-2', 'border-amber-400');
+}
+</script>
+{% endblock %}
