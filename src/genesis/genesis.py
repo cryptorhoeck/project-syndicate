@@ -1,0 +1,675 @@
+"""
+Project Syndicate — Genesis Agent
+
+The immortal God Node. Manages the entire ecosystem:
+spawning, evaluating, killing agents, capital allocation,
+market regime detection, and daily reporting.
+"""
+
+__version__ = "0.2.0"
+
+import json
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
+
+import anthropic
+import redis
+import structlog
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.orm import sessionmaker
+
+from src.common.base_agent import BaseAgent
+from src.common.config import config
+from src.common.models import (
+    Agent,
+    DailyReport,
+    Evaluation,
+    Lineage,
+    Message,
+    SystemState,
+)
+from src.genesis.regime_detector import RegimeDetector
+from src.genesis.treasury import TreasuryManager
+from src.risk.accountant import Accountant
+
+logger = structlog.get_logger()
+
+
+class GenesisAgent(BaseAgent):
+    """The immortal Genesis agent — manages the entire ecosystem."""
+
+    def __init__(
+        self,
+        db_session_factory: sessionmaker,
+        exchange_service=None,
+    ) -> None:
+        super().__init__(
+            agent_id=0,
+            name="Genesis",
+            agent_type="genesis",
+            db_session_factory=db_session_factory,
+        )
+
+        self.exchange = exchange_service
+        self.accountant = Accountant(db_session_factory=db_session_factory)
+        self.treasury = TreasuryManager(
+            exchange_service=exchange_service,
+            db_session_factory=db_session_factory,
+        )
+        self.regime_detector = RegimeDetector(
+            exchange_service=exchange_service,
+            db_session_factory=db_session_factory,
+        )
+        self.redis_client = redis.Redis.from_url(config.redis_url, decode_responses=True)
+
+        # Anthropic client for Claude API calls
+        self.claude: anthropic.Anthropic | None = None
+        if config.anthropic_api_key:
+            self.claude = anthropic.Anthropic(api_key=config.anthropic_api_key)
+
+        self.log = logger.bind(component="genesis")
+
+    # ------------------------------------------------------------------
+    # BaseAgent interface
+    # ------------------------------------------------------------------
+
+    async def initialize(self) -> None:
+        """Initialize Genesis. Create system_state record if missing."""
+        with self.db_session_factory() as session:
+            state = session.execute(select(SystemState).limit(1)).scalar_one_or_none()
+            if state is None:
+                state = SystemState(
+                    total_treasury=0.0,
+                    peak_treasury=0.0,
+                    current_regime="unknown",
+                    active_agent_count=0,
+                    alert_status="green",
+                )
+                session.add(state)
+                session.commit()
+                self.log.info("system_state_initialized")
+
+        self.log.info("genesis_initialized")
+
+    async def run(self) -> None:
+        """Main Genesis loop — one iteration."""
+        await self.run_cycle()
+
+    async def evaluate(self) -> dict[str, Any]:
+        """Genesis doesn't evaluate itself — it's immortal."""
+        return {"status": "immortal"}
+
+    # ------------------------------------------------------------------
+    # The Genesis Cycle
+    # ------------------------------------------------------------------
+
+    async def run_cycle(self) -> dict:
+        """One full Genesis cycle."""
+        cycle_report: dict[str, Any] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            # 1. HEALTH CHECK
+            health = self._health_check()
+            cycle_report["health"] = health
+            if not health["db_ok"] or not health["redis_ok"]:
+                self.log.critical("health_check_failed", **health)
+                return cycle_report
+
+            # 2. TREASURY UPDATE
+            await self.treasury.update_peak_treasury()
+            await self.treasury.close_inherited_positions()
+            treasury = await self.treasury.get_treasury_balance()
+            cycle_report["treasury"] = treasury
+
+            # 3. MARKET REGIME CHECK
+            try:
+                regime = await self.regime_detector.detect_regime()
+                cycle_report["regime"] = regime
+                if regime.get("changed"):
+                    await self.post_to_agora(
+                        "market-regime",
+                        f"Regime change: {regime.get('previous_regime')} -> {regime['regime']}",
+                        metadata=regime.get("indicators"),
+                    )
+                    # Update system state
+                    with self.db_session_factory() as session:
+                        state = session.execute(select(SystemState).limit(1)).scalar_one_or_none()
+                        if state:
+                            state.current_regime = regime["regime"]
+                            session.commit()
+            except Exception as exc:
+                self.log.warning("regime_detection_failed", error=str(exc))
+                cycle_report["regime_error"] = str(exc)
+
+            # 4. AGENT HEALTH CHECK
+            agent_health = self._check_agent_health()
+            cycle_report["agent_health"] = agent_health
+
+            # 5. EVALUATIONS
+            evaluations = await self._run_evaluations()
+            cycle_report["evaluations"] = evaluations
+
+            # 6. CAPITAL ALLOCATION
+            if evaluations:
+                leaderboard = await self.accountant.generate_leaderboard()
+                allocations = await self.treasury.perform_capital_allocation_round(leaderboard)
+                cycle_report["allocations"] = allocations
+
+            # 7. SPAWN DECISIONS
+            spawn = await self._make_spawn_decisions()
+            cycle_report["spawn"] = spawn
+
+            # 8. REPRODUCTION (top performers)
+            reproduction = await self._check_reproduction()
+            cycle_report["reproduction"] = reproduction
+
+            # 9. AGORA MONITORING
+            agora_summary = self._monitor_agora()
+            cycle_report["agora"] = agora_summary
+
+            # 10. LOG CYCLE
+            await self.post_to_agora(
+                "genesis-log",
+                f"Cycle complete. Treasury: ${treasury['total']:.2f}, "
+                f"Agents: {agent_health.get('active', 0)} active",
+                metadata={"cycle_report_keys": list(cycle_report.keys())},
+            )
+
+        except Exception as exc:
+            self.log.error("genesis_cycle_error", error=str(exc))
+            cycle_report["error"] = str(exc)
+
+        return cycle_report
+
+    # ------------------------------------------------------------------
+    # Health Check
+    # ------------------------------------------------------------------
+
+    def _health_check(self) -> dict:
+        """Verify database, Redis, and Warden are alive."""
+        result = {"db_ok": False, "redis_ok": False, "warden_ok": False}
+
+        # Database
+        try:
+            with self.db_session_factory() as session:
+                session.execute(select(SystemState).limit(1))
+            result["db_ok"] = True
+        except Exception as exc:
+            self.log.error("db_health_check_failed", error=str(exc))
+
+        # Redis
+        try:
+            self.redis_client.ping()
+            result["redis_ok"] = True
+        except Exception as exc:
+            self.log.error("redis_health_check_failed", error=str(exc))
+
+        # Warden (check heartbeat key)
+        try:
+            heartbeat = self.redis_client.get("warden:heartbeat")
+            result["warden_ok"] = heartbeat is not None
+            if not result["warden_ok"]:
+                self.log.warning("warden_heartbeat_missing")
+        except Exception:
+            pass
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Agent Health
+    # ------------------------------------------------------------------
+
+    def _check_agent_health(self) -> dict:
+        """Check all active agents for survival clock expiry and budget limits."""
+        now = datetime.now(timezone.utc)
+        due_for_eval = []
+        over_budget = []
+
+        with self.db_session_factory() as session:
+            agents = session.execute(
+                select(Agent).where(Agent.status.in_(["active", "hibernating"]))
+            ).scalars().all()
+
+            active_count = sum(1 for a in agents if a.status == "active")
+            hibernating_count = sum(1 for a in agents if a.status == "hibernating")
+
+            for agent in agents:
+                # Check survival clock
+                if agent.survival_clock_end and agent.survival_clock_end <= now:
+                    if not agent.survival_clock_paused:
+                        due_for_eval.append(agent.id)
+
+                # Check thinking budget
+                if (agent.thinking_budget_used_today or 0) >= (agent.thinking_budget_daily or 1.0):
+                    over_budget.append(agent.id)
+
+            # Update system state
+            state = session.execute(select(SystemState).limit(1)).scalar_one_or_none()
+            if state:
+                state.active_agent_count = active_count
+                session.commit()
+
+        return {
+            "active": active_count,
+            "hibernating": hibernating_count,
+            "due_for_evaluation": due_for_eval,
+            "over_budget": over_budget,
+        }
+
+    # ------------------------------------------------------------------
+    # Evaluations
+    # ------------------------------------------------------------------
+
+    async def _run_evaluations(self) -> list[dict]:
+        """Evaluate agents whose survival clocks have expired."""
+        now = datetime.now(timezone.utc)
+        results = []
+
+        with self.db_session_factory() as session:
+            due_agents = session.execute(
+                select(Agent).where(
+                    Agent.status == "active",
+                    Agent.survival_clock_end <= now,
+                    Agent.survival_clock_paused == False,
+                )
+            ).scalars().all()
+            due_ids = [(a.id, a.name) for a in due_agents]
+
+        for agent_id, agent_name in due_ids:
+            try:
+                result = await self._evaluate_agent(agent_id, agent_name)
+                results.append(result)
+            except Exception as exc:
+                self.log.error("evaluation_error", agent_id=agent_id, error=str(exc))
+                results.append({"agent_id": agent_id, "error": str(exc)})
+
+        return results
+
+    async def _evaluate_agent(self, agent_id: int, agent_name: str) -> dict:
+        """Evaluate a single agent. Rules-based pre-filter, Claude for edge cases."""
+        # Calculate composite score
+        score = await self.accountant.calculate_composite_score(agent_id)
+        pnl_data = await self.accountant.calculate_agent_pnl(agent_id)
+        true_pnl_pct = pnl_data["true_pnl_pct"]
+
+        decision = None
+        reason = ""
+
+        # Rules-based pre-filter
+        if true_pnl_pct > 0:
+            decision = "survive"
+            reason = f"Profitable: True P&L {true_pnl_pct:+.1f}%"
+        elif true_pnl_pct >= -10:
+            # Probation candidate — ask Claude
+            decision = await self._claude_probation_decision(agent_id, agent_name, pnl_data, score)
+            reason = f"Claude probation decision for P&L {true_pnl_pct:+.1f}%"
+        else:
+            decision = "terminate"
+            reason = f"Unprofitable: True P&L {true_pnl_pct:+.1f}% (below -10%)"
+
+        # Execute decision
+        with self.db_session_factory() as session:
+            agent = session.get(Agent, agent_id)
+            if agent is None:
+                return {"agent_id": agent_id, "decision": "error", "reason": "Agent not found"}
+
+            if decision == "terminate":
+                agent.status = "terminated"
+                agent.termination_reason = reason
+                agent.terminated_at = datetime.now(timezone.utc)
+                session.commit()
+
+                # Reclaim capital and inherit positions
+                await self.treasury.reclaim_capital(agent_id)
+                await self.treasury.inherit_positions(agent_id)
+                await self.post_to_agora(
+                    "agent-lifecycle",
+                    f"TERMINATED: {agent_name} — {reason}",
+                    metadata=pnl_data,
+                )
+            else:
+                # Survive
+                agent.evaluation_count = (agent.evaluation_count or 0) + 1
+                if true_pnl_pct > 0:
+                    agent.profitable_evaluations = (agent.profitable_evaluations or 0) + 1
+
+                # Check prestige milestones
+                evals = agent.evaluation_count
+                if evals >= config.prestige_veteran_threshold:
+                    agent.prestige_title = "Veteran"
+                elif evals >= config.prestige_proven_threshold:
+                    agent.prestige_title = "Proven"
+
+                # Reset survival clock
+                agent.survival_clock_start = datetime.now(timezone.utc)
+                agent.survival_clock_end = datetime.now(timezone.utc) + timedelta(
+                    days=config.default_survival_clock_days
+                )
+                session.commit()
+
+            # Record evaluation
+            evaluation = Evaluation(
+                agent_id=agent_id,
+                evaluation_type="survival_check",
+                pnl_gross=pnl_data["gross_pnl"],
+                pnl_net=pnl_data["true_pnl"],
+                api_cost=pnl_data["api_cost"],
+                sharpe_ratio=await self.accountant.calculate_sharpe_ratio(agent_id),
+                result="survived" if decision == "survive" else "terminated",
+                notes=reason,
+            )
+            session.add(evaluation)
+            session.commit()
+
+        self.log.info(
+            "agent_evaluated",
+            agent_id=agent_id,
+            name=agent_name,
+            decision=decision,
+            reason=reason,
+            composite_score=score,
+        )
+        return {
+            "agent_id": agent_id,
+            "name": agent_name,
+            "decision": decision,
+            "reason": reason,
+            "composite_score": score,
+        }
+
+    async def _claude_probation_decision(
+        self,
+        agent_id: int,
+        agent_name: str,
+        pnl_data: dict,
+        score: float,
+    ) -> str:
+        """Ask Claude whether a borderline agent should survive."""
+        if self.claude is None:
+            # No API key — default to probation survival
+            return "survive"
+
+        try:
+            prompt = (
+                f"Agent '{agent_name}' (ID: {agent_id}) is up for evaluation.\n"
+                f"True P&L: {pnl_data['true_pnl_pct']:+.1f}%\n"
+                f"Composite Score: {score:.4f}\n"
+                f"Win Rate: {pnl_data['win_rate']}%\n"
+                f"Trade Count: {pnl_data['trade_count']}\n"
+                f"API Cost: ${pnl_data['api_cost']:.4f}\n\n"
+                f"This agent is in the probation zone (-10% to 0% P&L). "
+                f"Should it get another chance? Answer SURVIVE or TERMINATE, then explain why."
+            )
+            response = self.claude.messages.create(
+                model="claude-sonnet-4-5-20250514",
+                max_tokens=200,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = response.content[0].text.strip().upper()
+
+            # Track API cost
+            await self.accountant.track_api_call(
+                agent_id=0,  # Genesis
+                model="claude-sonnet-4-5-20250514",
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+            )
+
+            return "terminate" if "TERMINATE" in answer else "survive"
+        except Exception as exc:
+            self.log.error("claude_probation_error", error=str(exc))
+            return "survive"  # Default to mercy
+
+    # ------------------------------------------------------------------
+    # Spawn Decisions
+    # ------------------------------------------------------------------
+
+    async def _make_spawn_decisions(self) -> dict:
+        """Decide whether to spawn new agents. Uses Claude API."""
+        balance = await self.treasury.get_treasury_balance()
+        available = balance["available_for_allocation"]
+
+        if available < config.min_spawn_capital:
+            return {"spawned": False, "reason": "Insufficient capital"}
+
+        with self.db_session_factory() as session:
+            active_count = session.execute(
+                select(func.count()).where(Agent.status == "active")
+            ).scalar() or 0
+
+        if active_count >= config.max_agents:
+            return {"spawned": False, "reason": "Max agents reached"}
+
+        if self.claude is None:
+            return {"spawned": False, "reason": "No API key configured"}
+
+        try:
+            summary = await self.accountant.get_system_summary()
+            prompt = (
+                f"You are Genesis, managing the Project Syndicate AI trading ecosystem.\n"
+                f"Current state:\n"
+                f"- Treasury: ${summary['total_treasury']:.2f}\n"
+                f"- Available for allocation: ${available:.2f}\n"
+                f"- Active agents: {active_count}\n"
+                f"- Market regime: {summary['current_regime']}\n"
+                f"- Alert status: {summary['alert_status']}\n\n"
+                f"Should I spawn a new agent? If yes, specify type (scout/strategist/critic/operator) and why.\n"
+                f"Answer YES or NO, then explain."
+            )
+            response = self.claude.messages.create(
+                model="claude-sonnet-4-5-20250514",
+                max_tokens=300,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = response.content[0].text.strip()
+
+            await self.accountant.track_api_call(
+                agent_id=0,
+                model="claude-sonnet-4-5-20250514",
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+            )
+
+            if "YES" in answer.upper()[:20]:
+                return {"spawned": True, "claude_reasoning": answer[:500]}
+            return {"spawned": False, "claude_reasoning": answer[:500]}
+
+        except Exception as exc:
+            self.log.error("spawn_decision_error", error=str(exc))
+            return {"spawned": False, "reason": f"API error: {str(exc)}"}
+
+    # ------------------------------------------------------------------
+    # Reproduction
+    # ------------------------------------------------------------------
+
+    async def _check_reproduction(self) -> dict:
+        """Check if top performer qualifies for reproduction."""
+        with self.db_session_factory() as session:
+            top_agent = session.execute(
+                select(Agent)
+                .where(Agent.status == "active")
+                .order_by(Agent.composite_score.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+
+            if top_agent is None:
+                return {"reproduction": False, "reason": "No active agents"}
+
+            # Must be Veteran+ prestige
+            if top_agent.prestige_title not in ("Veteran", "Elite", "Legendary"):
+                return {
+                    "reproduction": False,
+                    "reason": f"Top agent {top_agent.name} has insufficient prestige: {top_agent.prestige_title}",
+                }
+
+        return {
+            "reproduction": True,
+            "candidate": top_agent.name,
+            "prestige": top_agent.prestige_title,
+            "note": "Reproduction would be triggered here with Claude API mutation",
+        }
+
+    # ------------------------------------------------------------------
+    # Agora Monitoring
+    # ------------------------------------------------------------------
+
+    def _monitor_agora(self) -> dict:
+        """Read recent Agora messages for SIPs and anomalies."""
+        with self.db_session_factory() as session:
+            recent = session.execute(
+                select(func.count()).where(
+                    Message.timestamp >= datetime.now(timezone.utc) - timedelta(hours=1)
+                )
+            ).scalar() or 0
+
+        return {"messages_last_hour": recent}
+
+    # ------------------------------------------------------------------
+    # Daily Report
+    # ------------------------------------------------------------------
+
+    async def generate_daily_report(self) -> str | None:
+        """Generate and send daily report using Claude API."""
+        summary = await self.accountant.get_system_summary()
+        leaderboard = await self.accountant.generate_leaderboard()
+
+        report_data = {
+            "summary": summary,
+            "leaderboard": leaderboard[:10],
+            "date": date.today().isoformat(),
+        }
+
+        if self.claude is None:
+            report_content = (
+                f"Daily Report — {report_data['date']}\n"
+                f"Treasury: ${summary['total_treasury']:.2f}\n"
+                f"Active Agents: {summary['active_agents']}\n"
+                f"Regime: {summary['current_regime']}\n"
+                f"Alert: {summary['alert_status']}\n"
+            )
+        else:
+            try:
+                prompt = (
+                    "You are the narrator of Project Syndicate, an autonomous AI trading ecosystem. "
+                    "Generate a daily report for the owner. Be concise, insightful, and honest. "
+                    "Highlight what matters. End with a one-line system health assessment: "
+                    "thriving/stable/struggling/critical.\n\n"
+                    f"Data: {json.dumps(report_data, default=str)}"
+                )
+                response = self.claude.messages.create(
+                    model="claude-sonnet-4-5-20250514",
+                    max_tokens=1000,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                report_content = response.content[0].text
+
+                await self.accountant.track_api_call(
+                    agent_id=0,
+                    model="claude-sonnet-4-5-20250514",
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                )
+            except Exception as exc:
+                self.log.error("daily_report_generation_error", error=str(exc))
+                report_content = f"Report generation failed: {str(exc)}"
+
+        # Save to database
+        with self.db_session_factory() as session:
+            report = DailyReport(
+                report_date=date.today(),
+                treasury_balance=summary["total_treasury"],
+                treasury_change_24h=0.0,  # Would calculate from previous day
+                active_agents=summary["active_agents"],
+                market_regime=summary["current_regime"],
+                alert_status=summary["alert_status"],
+                total_api_cost_24h=summary["total_api_spend"],
+                report_content=report_content,
+            )
+            session.add(report)
+            session.commit()
+
+        await self.post_to_agora("daily-report", report_content[:500])
+        self.log.info("daily_report_generated", date=date.today().isoformat())
+        return report_content
+
+    # ------------------------------------------------------------------
+    # Cold Start Boot Sequence
+    # ------------------------------------------------------------------
+
+    async def cold_start_boot_sequence(self) -> list[dict]:
+        """Spawn the initial Gen 1 agents when system has zero agents."""
+        with self.db_session_factory() as session:
+            active_count = session.execute(
+                select(func.count()).where(Agent.status.in_(["active", "hibernating"]))
+            ).scalar() or 0
+
+        if active_count > 0:
+            return [{"status": "skip", "reason": f"{active_count} agents already exist"}]
+
+        balance = await self.treasury.get_treasury_balance()
+        total = balance["total"]
+        if total < config.min_spawn_capital:
+            return [{"status": "skip", "reason": f"Insufficient capital: ${total}"}]
+
+        # Default Gen 1 population
+        gen1_agents = [
+            {"name": "Scout-Alpha", "type": "scout", "mandate": "Crypto market scanner"},
+            {"name": "Scout-Beta", "type": "scout", "mandate": "Broader opportunity scanner"},
+            {"name": "Strategist-Prime", "type": "strategist", "mandate": "Strategy builder"},
+            {"name": "Critic-One", "type": "critic", "mandate": "Plan stress-tester"},
+            {"name": "Operator-Genesis", "type": "operator", "mandate": "First execution agent"},
+        ]
+
+        # Allocate capital evenly
+        available = balance["available_for_allocation"]
+        per_agent = available / len(gen1_agents)
+
+        spawned = []
+        now = datetime.now(timezone.utc)
+
+        with self.db_session_factory() as session:
+            for spec in gen1_agents:
+                agent = Agent(
+                    name=spec["name"],
+                    type=spec["type"],
+                    status="active",
+                    generation=1,
+                    capital_allocated=per_agent,
+                    capital_current=per_agent,
+                    thinking_budget_daily=config.new_agent_daily_thinking_budget,
+                    strategy_summary=spec["mandate"],
+                    survival_clock_start=now,
+                    survival_clock_end=now + timedelta(days=config.default_survival_clock_days),
+                )
+                session.add(agent)
+                session.flush()  # Get the ID
+
+                # Lineage record
+                lineage = Lineage(
+                    agent_id=agent.id,
+                    parent_id=None,
+                    generation=1,
+                    lineage_path=str(agent.id),
+                )
+                session.add(lineage)
+
+                spawned.append({
+                    "agent_id": agent.id,
+                    "name": spec["name"],
+                    "type": spec["type"],
+                    "capital": round(per_agent, 2),
+                })
+
+            session.commit()
+
+        # Log to Agora
+        await self.post_to_agora(
+            "agent-lifecycle",
+            f"GENESIS RECORD ZERO: {len(spawned)} Gen 1 agents spawned. "
+            f"Total capital deployed: ${available:.2f}",
+            metadata={"gen1_agents": spawned},
+        )
+        self.log.info("cold_start_complete", agents_spawned=len(spawned))
+        return spawned

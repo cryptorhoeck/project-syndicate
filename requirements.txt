@@ -17,4 +17,7 @@ pydantic-settings
 pytest
 pytest-asyncio
 apscheduler
+schedule
+numpy
+ta
 structlog

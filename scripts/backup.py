@@ -95,7 +95,7 @@ def backup_database(dest: Path) -> bool:
         return False
 
     dump_file = dest / "syndicate.sql"
-    cmd = [PG_DUMP_PATH, DATABASE_URL, "-f", str(dump_file)]
+    cmd = [PG_DUMP_PATH, f"--dbname={DATABASE_URL}", "-f", str(dump_file)]
     log.info("running_pg_dump", command=" ".join(cmd))
 
     try:

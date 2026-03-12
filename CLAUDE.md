@@ -10,8 +10,8 @@ Project Syndicate is an autonomous, self-evolving multi-agent AI financial ecosy
 
 ## Current Status
 
-**Phase:** 0 — Foundation
-**Focus:** Core infrastructure, database schema, message bus, base agent class, backup system, disaster recovery, Dead Man's Switch
+**Phase:** 1 — Genesis + Risk Desk (COMPLETE)
+**Focus:** Genesis agent, Warden, Accountant, Treasury, Regime Detector, Exchange Service, Email Alerts
 **Last Updated:** 2026-03-12
 
 See `CURRENT_STATUS.md` for detailed session-by-session progress.
@@ -33,6 +33,16 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **Hibernation** — agents can voluntarily pause, survival clock freezes
 - **Black Swan Protocol** — Yellow (15% in 4hrs) / Red (30% in 4hrs) / Circuit Breaker (75% from peak)
 - **SIP Framework** — agents propose system-level improvements via The Agora
+
+### Phase 1 Components (Genesis + Risk Desk)
+- **Genesis Agent** (`src/genesis/genesis.py`) — immortal God Node, 5-min cycle: health check, treasury update, regime check, agent evaluation, capital allocation, spawn decisions, reproduction, Agora monitoring, daily reports
+- **Warden** (`src/risk/warden.py`) — immutable safety layer, 30-sec cycle: circuit breaker, Black Swan alerts, trade gate (hybrid approve/reject/hold), per-agent loss limits. No AI, pure code.
+- **Accountant** (`src/risk/accountant.py`) — P&L calculation, Sharpe ratio, composite scoring (0.40 Sharpe + 0.25 True P&L% + 0.20 Thinking Efficiency + 0.15 Consistency), leaderboard, API cost tracking
+- **Treasury Manager** (`src/genesis/treasury.py`) — capital allocation (90% rank-based + 10% random anti-monopoly), prestige multipliers, position inheritance, reserve ratio enforcement
+- **Regime Detector** (`src/genesis/regime_detector.py`) — rules-based BTC market regime classification (bull/bear/crab/volatile) using MA crossovers, volatility percentiles, market cap trends
+- **Exchange Service** (`src/common/exchange_service.py`) — unified ccxt wrapper for Kraken (primary) + Binance (secondary), retry logic, paper trading service
+- **Email Service** (`src/reports/email_service.py`) — daily reports, Yellow/Red/Circuit Breaker alerts via Gmail SMTP
+- **Config** (`src/common/config.py`) — centralized pydantic-settings configuration from .env
 
 ## Dev Environment
 
@@ -130,8 +140,8 @@ At the beginning of every script or module, include (or call) standard boilerpla
 
 | Phase | Focus | Status |
 |-------|-------|--------|
-| 0 | Foundation (infra, DB, Redis, base agent, backup, recovery) | **ACTIVE** |
-| 1 | Genesis + Risk Desk | Pending |
+| 0 | Foundation (infra, DB, Redis, base agent, backup, recovery) | **COMPLETE** |
+| 1 | Genesis + Risk Desk | **COMPLETE** |
 | 2 | The Agora + Library + Internal Economy | Pending |
 | 3 | First Generation (boot sequence, paper trading) | Pending |
 | 4 | Natural Selection (evolution loop) | Pending |
@@ -165,6 +175,18 @@ git push origin main
 
 REM Create timestamped backup
 python scripts\backup.py
+
+REM Start the full system (dev mode)
+python scripts\run_all.py
+
+REM Start Genesis only
+python scripts\run_genesis.py
+
+REM Start Warden only
+python scripts\run_warden.py
+
+REM Run Dead Man's Switch
+python src\risk\heartbeat.py
 ```
 
 ## Context for AI Sessions
