@@ -2,6 +2,24 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [1.3.0] - 2026-03-12
+
+### Added — Phase 7: The Arena (Launch Preparation)
+
+#### Boot Sequence Integration
+- **Genesis auto-trigger** — `_maybe_run_boot_sequence()` added to Genesis run_cycle step 0; detects zero active agents and triggers wave-based BootSequenceOrchestrator with full orientation protocol
+
+#### Arena Run Script
+- **`scripts/run_arena.py`** — single-command launcher for all system processes: Warden, Genesis, Trading Monitors, Dead Man's Switch, Dashboard. Pre-flight checks, startup banner with live BTC price, process monitoring with auto-restart, graceful shutdown in criticality order
+
+#### Monitoring & Documentation
+- **`docs/arena_monitoring.md`** — daily 5-minute check-in checklist, Day 10 health check, Day 21 evaluation milestones, success criteria
+- **`docs/arena_log.md`** — 21-day structured observation log template
+
+#### Database
+- Clean slate: all agent data truncated, system_state reset to $500 treasury, GREEN alert, 0 agents
+- Redis flushed
+
 ## [1.2.0] - 2026-03-12
 
 ### Added — Phase 3F: First Death, First Reproduction, First Dynasty

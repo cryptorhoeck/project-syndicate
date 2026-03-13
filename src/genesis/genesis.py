@@ -6,7 +6,7 @@ spawning, evaluating, killing agents, capital allocation,
 market regime detection, and daily reporting.
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import json
 from datetime import date, datetime, timedelta, timezone
@@ -146,6 +146,11 @@ class GenesisAgent(BaseAgent):
         }
 
         try:
+            # 0. BOOT SEQUENCE CHECK (auto-trigger on zero agents)
+            boot_result = await self._maybe_run_boot_sequence()
+            if boot_result:
+                cycle_report["boot_sequence"] = boot_result
+
             # 1. HEALTH CHECK
             health = self._health_check()
             cycle_report["health"] = health
@@ -970,3 +975,50 @@ class GenesisAgent(BaseAgent):
         )
         self.log.info("cold_start_complete", agents_spawned=len(spawned))
         return spawned
+
+    async def _maybe_run_boot_sequence(self) -> dict | None:
+        """Auto-trigger boot sequence when there are zero active agents.
+
+        Uses the wave-based BootSequenceOrchestrator for proper
+        orientation flow. Idempotent — safe to call every cycle.
+        """
+        with self.db_session_factory() as session:
+            active_count = session.execute(
+                select(func.count()).where(
+                    Agent.status.in_(["active", "initializing"]),
+                    Agent.id != 0,  # Exclude Genesis itself
+                )
+            ).scalar() or 0
+
+        if active_count > 0:
+            return None
+
+        self.log.info("boot_sequence_triggered", reason="zero_active_agents")
+
+        from src.agents.orientation import OrientationProtocol
+        from src.genesis.boot_sequence import BootSequenceOrchestrator
+
+        # Build orientation protocol with a session and Claude client
+        with self.db_session_factory() as session:
+            orientation = OrientationProtocol(
+                db_session=session,
+                claude_client=self.claude,
+                config=config,
+            )
+
+            orchestrator = BootSequenceOrchestrator(
+                db_session_factory=self.db_session_factory,
+                orientation_protocol=orientation,
+                agora_service=self.agora,
+                economy_service=self.economy,
+            )
+
+            result = await orchestrator.run_boot_sequence()
+
+        self.log.info(
+            "boot_sequence_result",
+            status=result.get("status"),
+            spawned=len(result.get("agents_spawned", [])),
+            oriented=len(result.get("agents_oriented", [])),
+        )
+        return result

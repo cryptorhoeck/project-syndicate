@@ -2,23 +2,22 @@
 
 ## Last Updated: 2026-03-12
 
-## Phase: 3F — COMPLETE (First Death, First Reproduction, First Dynasty)
+## Phase: 7 — THE ARENA (Launch Preparation Complete, Awaiting API Key)
 
-### Completed This Session (Phase 3F — Dynasties & Reproduction)
-- [x] Database: Dynasty table, Memorial table, 16 Lineage extensions, 7 new Agent columns
-- [x] Dynasty Manager: create/update dynasties, birth/death recording, extinction detection, concentration checks
-- [x] Lineage Manager: lineage records, parent chains, profile snapshots, death records, family tree builder
-- [x] Memorial Manager: "The Fallen" records with metrics, epitaphs, achievements
-- [x] Reproduction Engine: eligibility, Genesis AI mutations, offspring building, memory/trust inheritance, posthumous support
-- [x] Dynasty Analytics: cross-dynasty comparison, generational improvement, knowledge depth, dominant traits
-- [x] Death Protocol: 10-step sequence integrated into evaluation_engine._terminate_agent()
-- [x] Genesis cycle: real ReproductionEngine integration replacing stub
-- [x] Boot Sequence: dynasty creation for Gen 1 agents
-- [x] Offspring Orientation: reduced textbooks, mentor package, founding directive, lineage identity
-- [x] Dashboard API: 6 JSON endpoints for dynasties and memorials
-- [x] Config: 12 new Phase 3F variables in config.py and .env.example
-- [x] 45 new tests across 7 test files, all passing (599 total, 2 pre-existing library textbook failures)
-- [x] CLAUDE.md, CHANGELOG.md, CURRENT_STATUS.md updated
+### Completed This Session (Phase 7 — Arena Launch Preparation)
+- [x] Pre-flight checks: environment, database (41 tables), Redis, exchange (all 5 symbols), tests (601 pass)
+- [x] Boot sequence wired into Genesis run_cycle — auto-triggers on zero active agents
+- [x] Arena run script (`scripts/run_arena.py`) — starts all 5 processes, pre-flight checks, auto-restart, graceful shutdown
+- [x] Monitoring checklist (`docs/arena_monitoring.md`) — daily, Day 10, Day 21 protocols
+- [x] Arena log template (`docs/arena_log.md`) — 21-day structured observation log
+- [x] Clean slate: all agent data truncated, $500 treasury, GREEN alert, Redis flushed
+- [x] Trading mode verified: paper
+- [x] Kraken symbols verified: BTC/USDT, ETH/USDT, SOL/USDT, XRP/USDT, ADA/USDT all working
+
+### Blocker
+- [ ] **Anthropic API key invalid (401)** — need valid key before Stage 3 (Ignition)
+
+### Previously Completed (Phase 3F)
 
 ### Previously Completed (Phase 3E)
 - [x] Behavioral Profile: 7 traits from behavior, temperature evolution, reflection library, dynamic identity, relationship memory, divergence tracking
@@ -53,14 +52,16 @@
 ### Previously Completed (Phase 0)
 - [x] Full project scaffold, PostgreSQL, Redis, base agent, backup, heartbeat
 
-### What's Next — Phase 4: The Arena (Full Paper Trading Validation)
-- [ ] End-to-end system integration test (all agents running together)
-- [ ] Paper trading validation with real market data
-- [ ] Performance benchmarking and tuning
-- [ ] Generation 2+ lifecycle validation (reproduction + death cycle)
+### What's Next — Stage 3: Ignition
+- [ ] Get valid Anthropic API key
+- [ ] Run `python scripts/run_arena.py` — start the system
+- [ ] Watch Genesis auto-trigger boot sequence (5 agents, 3 waves)
+- [ ] Verify first agent cycles and Agora messages
+- [ ] Monitor for 21 days per `docs/arena_monitoring.md`
 
 ### Important Notes
-- **All module versions bumped to 1.2.0** for Phase 3F components
+- **Genesis version bumped to 1.3.0** — boot sequence auto-trigger added
+- **Arena launch command**: `python scripts/run_arena.py`
 - **Dynasty concentration**: 40% hard limit, 25% warning — prevents monoculture
 - **Memory inheritance**: 75% confidence discount + age decay — knowledge degrades across generations
 - **Trust inheritance**: 50% blend with neutral prior — offspring start with tempered trust
@@ -73,7 +74,8 @@
 - PostgreSQL binaries not in system PATH (located at C:/ProDesk/pgsql/bin/)
 - Memurai binaries not in system PATH (located at C:/Program Files/Memurai/)
 - PostgreSQL server must be manually started after system reboot
-- Exchange API keys not yet configured (paper trading available)
+- Exchange API keys configured (Kraken, paper trading only)
+- **Anthropic API key invalid** — needs replacement before Arena launch
 - SMTP not yet configured (email sends will be skipped)
 - RuntimeWarning in tests from mock Redis pipeline coroutines (cosmetic only)
 - DeprecationWarning from Starlette TemplateResponse parameter order (cosmetic only)
