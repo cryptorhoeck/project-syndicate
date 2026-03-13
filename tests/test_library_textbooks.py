@@ -27,10 +27,10 @@ def test_list_textbooks(library):
 
 
 def test_list_textbooks_status(library):
-    """All placeholders have status='placeholder'."""
+    """All textbooks have real content (status='available')."""
     books = library.list_textbooks()
     for book in books:
-        assert book["status"] == "placeholder"
+        assert book["status"] == "available", f"{book['title']} still placeholder"
 
 
 def test_get_textbook_by_topic(library):
@@ -68,8 +68,8 @@ def test_search_textbooks_no_results(library):
 
 
 def test_is_textbook_available(library):
-    """Placeholders return False."""
-    assert library.is_textbook_available("01_market_mechanics.md") is False
+    """Real textbooks return True."""
+    assert library.is_textbook_available("01_market_mechanics.md") is True
 
 
 def test_is_textbook_available_missing_file(library):
