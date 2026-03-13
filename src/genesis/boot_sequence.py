@@ -10,7 +10,7 @@ Each agent goes through orientation before the next wave can spawn.
 21-day survival clock for Gen 1.
 """
 
-__version__ = "0.9.0"
+__version__ = "1.2.0"
 
 import logging
 from datetime import datetime, timedelta, timezone
@@ -20,7 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.common.config import config
-from src.common.models import Agent, BootSequenceLog, Lineage
+from src.common.models import Agent, BootSequenceLog, Dynasty, Lineage
 
 logger = logging.getLogger(__name__)
 
@@ -283,12 +283,32 @@ class BootSequenceOrchestrator:
         session.add(agent)
         session.flush()
 
+        # Create dynasty for Gen 1 agent (each founder starts their own dynasty)
+        dynasty = Dynasty(
+            founder_id=agent.id,
+            founder_name=agent.name,
+            founder_role=agent.type,
+            dynasty_name=f"Dynasty {agent.name}",
+            status="active",
+            total_generations=1,
+            total_members=1,
+            living_members=1,
+            peak_members=1,
+        )
+        session.add(dynasty)
+        session.flush()
+
+        agent.dynasty_id = dynasty.id
+        session.add(agent)
+
         # Create lineage record
         lineage = Lineage(
             agent_id=agent.id,
+            agent_name=agent.name,
             parent_id=None,
             generation=1,
             lineage_path=str(agent.id),
+            dynasty_id=dynasty.id,
         )
         session.add(lineage)
         session.flush()

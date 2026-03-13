@@ -7,7 +7,7 @@ Validates the agent can produce a coherent first output.
 Sets initial watchlist based on role and first-cycle output.
 """
 
-__version__ = "0.9.0"
+__version__ = "1.2.0"
 
 import logging
 import os
@@ -18,7 +18,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from src.common.models import Agent
+from src.common.models import Agent, Dynasty, Lineage
 from src.agents.roles import get_role, format_actions_for_prompt, NORMAL_OUTPUT_SCHEMA
 from src.agents.output_validator import OutputValidator, ValidationResult
 from src.agents.context_assembler import count_tokens
@@ -84,6 +84,12 @@ class OrientationProtocol:
     async def orient_agent(self, agent: Agent) -> OrientationResult:
         """Run the orientation cycle for a newly spawned agent.
 
+        Offspring (parent_id is set) get a modified orientation:
+        - Only 1 textbook (thinking_efficiently)
+        - Mentor package injected
+        - Founding directive as a question
+        - Lineage identity in system prompt
+
         Args:
             agent: The agent to orient.
 
@@ -92,9 +98,13 @@ class OrientationProtocol:
         """
         cycle_start = time.time()
         role_def = get_role(agent.type)
+        is_offspring = agent.parent_id is not None
 
-        # Load textbook summaries
-        summaries = self._load_summaries(agent.type)
+        # Load textbook summaries (reduced for offspring)
+        if is_offspring:
+            summaries = self._load_summaries_offspring()
+        else:
+            summaries = self._load_summaries(agent.type)
         if not summaries:
             logger.error(f"No textbook summaries found for {agent.type}")
             self._mark_failed(agent, "no_textbook_summaries")
@@ -107,8 +117,12 @@ class OrientationProtocol:
             )
 
         # Build orientation prompts
-        system_prompt = self._build_system_prompt(agent, role_def)
-        user_prompt = self._build_user_prompt(agent, role_def, summaries)
+        if is_offspring:
+            system_prompt = self._build_offspring_system_prompt(agent, role_def)
+            user_prompt = self._build_offspring_user_prompt(agent, role_def, summaries)
+        else:
+            system_prompt = self._build_system_prompt(agent, role_def)
+            user_prompt = self._build_user_prompt(agent, role_def, summaries)
 
         # Make API call
         if not self.claude:
@@ -305,6 +319,9 @@ Demonstrate that you understand your role, the cost of thinking, and the rules o
         agent.initial_watchlist = watchlist
         agent.watched_markets = watchlist
         agent.status = "active"
+        # Phase 3F: consume founding directive after orientation
+        if agent.founding_directive:
+            agent.founding_directive_consumed = True
         self.db.add(agent)
         self.db.flush()
 
@@ -315,3 +332,135 @@ Demonstrate that you understand your role, the cost of thinking, and the rules o
         self.db.add(agent)
         self.db.flush()
         logger.warning(f"Orientation failed for {agent.name}: {reason}")
+
+    # ------------------------------------------------------------------
+    # Phase 3F: Offspring-specific orientation
+    # ------------------------------------------------------------------
+
+    def _load_summaries_offspring(self) -> dict[str, str]:
+        """Load reduced textbook set for offspring (only thinking_efficiently)."""
+        summaries = {}
+        path = os.path.join(SUMMARIES_DIR, "thinking_efficiently.md")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                summaries["thinking_efficiently"] = f.read()
+        except FileNotFoundError:
+            logger.warning(f"Summary not found: {path}")
+        return summaries
+
+    def _build_offspring_system_prompt(self, agent: Agent, role_def) -> str:
+        """Build orientation system prompt for offspring agents."""
+        action_list = format_actions_for_prompt(agent.type)
+
+        # Get parent and dynasty info
+        parent_name = "Unknown"
+        dynasty_name = "Unknown"
+        parent_prestige = "Unknown"
+        parent_evals = 0
+
+        parent = self.db.get(Agent, agent.parent_id) if agent.parent_id else None
+        if parent:
+            parent_name = parent.name
+            parent_prestige = parent.prestige_title or "None"
+            parent_evals = parent.evaluation_count or 0
+
+        if agent.dynasty_id:
+            dynasty = self.db.get(Dynasty, agent.dynasty_id)
+            if dynasty:
+                dynasty_name = dynasty.dynasty_name
+
+        return f"""You are {agent.name}, a newly created {agent.type} agent in Project Syndicate.
+Generation: {agent.generation} | Capital: ${agent.capital_allocated:.2f}
+Budget: ${agent.thinking_budget_daily:.4f}/day
+Your parent was {parent_name} (Gen {agent.generation - 1}), who survived \
+{parent_evals} evaluations with a {parent_prestige} title.
+You are part of {dynasty_name}.
+
+THIS IS YOUR FIRST CYCLE. You carry knowledge from your parent. \
+This knowledge is a starting point — not a prison.
+
+YOUR ROLE: {role_def.description}
+
+AVAILABLE ACTIONS:
+{action_list}
+
+WARDEN LIMITS:
+- Max position size: 25% of your capital
+- Per-agent kill limit: 50% loss of allocated capital
+- Thinking tax: every token costs money
+
+After reading the materials below, demonstrate your understanding by choosing \
+an appropriate first action. Review your inherited knowledge, assess current \
+conditions, and write a self-note about how you'll build on your parent's legacy.
+
+Respond ONLY in valid JSON matching this schema — no other text:
+{{"situation": "...", "confidence": {{"score": N, "reasoning": "..."}}, "recent_pattern": "...", "action": {{"type": "...", "params": {{...}}}}, "reasoning": "...", "self_note": "..."}}"""
+
+    def _build_offspring_user_prompt(
+        self, agent: Agent, role_def, summaries: dict[str, str],
+    ) -> str:
+        """Build orientation user prompt for offspring with mentor package."""
+        sections = []
+
+        # Reduced training materials (1 textbook)
+        if summaries:
+            sections.append("=== TRAINING MATERIALS ===\n")
+            for name, content in summaries.items():
+                title = name.replace("_", " ").title()
+                sections.append(f"--- {title} ---\n{content}\n")
+
+        # Mentor package from lineage record
+        lineage = self.db.get(Lineage, agent.id) if agent.id else None
+        if lineage and lineage.mentor_package_json:
+            import json
+            try:
+                mentor = json.loads(lineage.mentor_package_json)
+                sections.append("=== MENTOR PACKAGE (from your parent) ===\n")
+                if isinstance(mentor, dict):
+                    for key, val in mentor.items():
+                        sections.append(f"--- {key.replace('_', ' ').title()} ---\n{val}\n")
+                elif isinstance(mentor, str):
+                    sections.append(mentor)
+            except Exception:
+                pass
+
+        # Identity with lineage
+        parent_name = "Unknown"
+        if agent.parent_id:
+            parent = self.db.get(Agent, agent.parent_id)
+            if parent:
+                parent_name = parent.name
+
+        dynasty_name = "Unknown"
+        if agent.dynasty_id:
+            dynasty = self.db.get(Dynasty, agent.dynasty_id)
+            if dynasty:
+                dynasty_name = dynasty.dynasty_name
+
+        sections.append(f"""=== YOUR IDENTITY ===
+Name: {agent.name} | Role: {agent.type} | Generation: {agent.generation}
+Parent: {parent_name} | Dynasty: {dynasty_name}
+Capital: ${agent.capital_allocated:.2f}
+Daily thinking budget: ${agent.thinking_budget_daily:.4f}
+Survival clock: 14 days (your performance will be evaluated)""")
+
+        # Founding directive
+        if agent.founding_directive and not agent.founding_directive_consumed:
+            sections.append(f"""=== FOUNDING DIRECTIVE ===
+Genesis asks: {agent.founding_directive}
+This is a question to explore, not a command to follow.""")
+
+        sections.append("""=== YOUR FIRST ASSESSMENT ===
+You are Generation {gen} of {dynasty}. You carry knowledge from your parent. \
+Your parent's lessons are in your memory with reduced confidence. \
+Confirm what works, discard what doesn't.
+
+Your objectives:
+1. Review your inherited knowledge
+2. Assess current market conditions
+3. Choose your first action or go idle with a plan
+4. Write a self-note about how you'll build on your parent's legacy""".format(
+            gen=agent.generation, dynasty=dynasty_name,
+        ))
+
+        return "\n\n".join(sections)

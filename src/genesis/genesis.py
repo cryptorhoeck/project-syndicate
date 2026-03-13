@@ -6,7 +6,7 @@ spawning, evaluating, killing agents, capital allocation,
 market regime detection, and daily reporting.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.2.0"
 
 import json
 from datetime import date, datetime, timedelta, timezone
@@ -658,30 +658,29 @@ class GenesisAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     async def _check_reproduction(self) -> dict:
-        """Check if top performer qualifies for reproduction."""
+        """Check reproduction eligibility and execute if approved by Genesis AI."""
+        from src.dynasty.reproduction import ReproductionEngine
+
+        engine = ReproductionEngine()
+
         with self.db_session_factory() as session:
-            top_agent = session.execute(
-                select(Agent)
-                .where(Agent.status == "active")
-                .order_by(Agent.composite_score.desc())
-                .limit(1)
-            ).scalar_one_or_none()
+            result = await engine.check_and_reproduce(
+                session, agora_service=self.agora,
+            )
+            session.commit()
 
-            if top_agent is None:
-                return {"reproduction": False, "reason": "No active agents"}
-
-            if top_agent.prestige_title not in ("Veteran", "Elite", "Legendary"):
-                return {
-                    "reproduction": False,
-                    "reason": f"Top agent {top_agent.name} has insufficient prestige: {top_agent.prestige_title}",
-                }
-
-        return {
-            "reproduction": True,
-            "candidate": top_agent.name,
-            "prestige": top_agent.prestige_title,
-            "note": "Reproduction would be triggered here with Claude API mutation",
-        }
+        if result.reproduced:
+            return {
+                "reproduction": True,
+                "parent": result.parent.name if result.parent else "unknown",
+                "offspring": result.offspring.name if result.offspring else "unknown",
+                "generation": result.offspring.generation if result.offspring else 0,
+            }
+        else:
+            return {
+                "reproduction": False,
+                "reason": result.reason,
+            }
 
     # ------------------------------------------------------------------
     # Agora Monitoring

@@ -10,8 +10,8 @@ Project Syndicate is an autonomous, self-evolving multi-agent AI financial ecosy
 
 ## Current Status
 
-**Phase:** 3E — COMPLETE (Personality Through Experience)
-**Focus:** Behavioral profiling, temperature evolution, reflection library, dynamic identity, relationship memory, divergence tracking
+**Phase:** 3F — COMPLETE (First Death, First Reproduction, First Dynasty)
+**Focus:** Death protocol, reproduction engine, dynasty system, lineage tracking, memorials, offspring orientation
 **Last Updated:** 2026-03-12
 
 See `CURRENT_STATUS.md` for detailed session-by-session progress.
@@ -106,6 +106,22 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **Context Assembler** updated — portfolio awareness for Operators, one-time evaluation feedback injection.
 - **Models** updated — 7 new Agent columns, expanded Evaluation model (~25 new columns), RejectionTracking table, PostMortem table.
 
+### Dynasties & Reproduction (Phase 3F)
+- **Dynasty Manager** (`src/dynasty/dynasty_manager.py`) — create/update dynasties, record births/deaths, extinction detection, concentration checks. Dynasty = family tree of agent lineages. Each Gen 1 agent founds a dynasty. Extinct when last living member dies.
+- **Lineage Manager** (`src/dynasty/lineage_manager.py`) — individual lineage records within dynasties. Tracks parent chains, profile snapshots, death records. Handles both fresh creation and boot-sequence-compatible updates. Family tree builder.
+- **Memorial Manager** (`src/dynasty/memorial_manager.py`) — "The Fallen" memorial records. Best/worst metrics from evaluation, epitaphs, notable achievements, cause of death, lifespan calculation.
+- **Reproduction Engine** (`src/dynasty/reproduction.py`) — full reproduction lifecycle: eligibility checks (Expert+ prestige, top 50% composite, positive P&L, cooldown), dynasty concentration limits (40% hard/25% warning), Genesis AI mutation decisions (Claude API), offspring building with memory/trust inheritance, posthumous reproduction support.
+- **Dynasty Analytics** (`src/dynasty/dynasty_analytics.py`) — cross-dynasty comparisons, generational improvement tracking (parent→offspring peak composite), lineage knowledge depth, dominant trait aggregation, market focus distribution.
+- **Memory Inheritance** — 75% confidence discount + age decay (0.95^(days-30), floor 0.10). Source labeled "parent"/"grandparent".
+- **Trust Inheritance** — 50% blend with neutral prior (inherited = trust * 0.5 + 0.5 * 0.5).
+- **Temperature Mutation** — parent's temperature ±0.03 (or Genesis-specified), clamped to role bounds.
+- **Founding Directives** — QUESTIONS not instructions. Appear only in orientation, then consumed. Context Assembler enforces exclusion post-consumption.
+- **Offspring Orientation** — modified: 1 textbook (thinking_efficiently) + mentor package from lineage, founding directive as question, 14-day survival clock (not 21-day Gen 1 grace).
+- **Death Protocol** — 10-step sequence integrated into evaluation_engine._terminate_agent(): freeze → financial cleanup → relationship archival → post-mortem → knowledge preservation → lineage record → dynasty update → memorial → dynasty P&L → Agora announcement.
+- **Dashboard API** (`src/web/routes/api_dynasty.py`) — 6 JSON endpoints: dynasties list, dynasty detail, family tree, analytics, memorials list, memorial detail.
+- **Models updated:** Dynasty table, Memorial table, 16 Lineage extensions, 7 new Agent columns (dynasty_id, offspring_count, last_reproduction_at, reproduction_cooldown_until, founding_directive, founding_directive_consumed, posthumous_birth).
+- **Config:** 12 new variables for reproduction, inheritance, and dynasty thresholds.
+
 ### Personality Through Experience (Phase 3E)
 - **Behavioral Profile Calculator** (`src/personality/behavioral_profile.py`) — 7 traits computed from behavior, never self-reported: risk_appetite (position sizing/loss tolerance), market_focus (Shannon entropy of market distribution), timing (hour-of-day heatmap), decision_style (reasoning length × confidence variance), collaboration (pipeline outcome-weighted), learning_velocity (evaluation score trend), resilience (loss-to-recovery cycles). Agents NEVER see their own profile. Classification via threshold-based scoring with tier distance drift detection.
 - **Temperature Evolution Engine** (`src/personality/temperature_evolution.py`) — agent API temperature drifts ±0.05 per evaluation based on diversity-profitability Pearson correlation. 2-eval momentum requirement (same signal twice before drift). Role-specific bounds (scout 0.3–0.9, operator 0.1–0.4). History recorded on agent for dashboard visualization.
@@ -162,6 +178,7 @@ E:\project syndicate\
 │   ├── agora/                  ← Message bus, channels, persistence, web frontend
 │   ├── economy/                ← Internal economy, reputation, prestige system
 │   ├── library/                ← Knowledge bootstrap, educational materials
+│   ├── dynasty/               ← Dynasties, lineage, reproduction, memorials, analytics
 │   ├── personality/            ← Behavioral profiles, temperature, identity, relationships, divergence
 │   ├── social/                 ← Social media agent and integrations
 │   ├── reports/                ← Report generator, email sender, alert system
@@ -239,6 +256,7 @@ At the beginning of every script or module, include (or call) standard boilerpla
 | 3C | Paper Trading Infrastructure | **COMPLETE** |
 | 3D | Natural Selection (evaluation, survival, reproduction) | **COMPLETE** |
 | 3E | Personality Through Experience (profiles, temperature, identity, trust) | **COMPLETE** |
+| 3F | First Death, First Reproduction, First Dynasty | **COMPLETE** |
 | 4 | The Arena (full paper trading validation) | Pending |
 | 5 | Social Presence + Solana | Pending |
 | 6 | Owner Console + Polish | Pending |

@@ -10,7 +10,7 @@ Also handles role gap detection, capital reallocation,
 and prestige milestone checks.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import json
 import logging
@@ -32,6 +32,9 @@ from src.personality.behavioral_profile import BehavioralProfileCalculator
 from src.personality.temperature_evolution import TemperatureEvolution
 from src.personality.divergence import DivergenceCalculator
 from src.personality.relationship_manager import RelationshipManager
+from src.dynasty.dynasty_manager import DynastyManager
+from src.dynasty.lineage_manager import LineageManager
+from src.dynasty.memorial_manager import MemorialManager
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +76,10 @@ class EvaluationEngine:
         self.temp_evolution = TemperatureEvolution()
         self.divergence_calculator = DivergenceCalculator()
         self.relationship_manager = RelationshipManager()
+        # Phase 3F: dynasty and memorial management
+        self.dynasty_manager = DynastyManager()
+        self.lineage_manager = LineageManager()
+        self.memorial_manager = MemorialManager()
 
     async def evaluate_batch(
         self, session: Session, agents: list[Agent],
@@ -495,6 +502,22 @@ The warning will be shown to the agent if they survive."""
 
         # Phase 3E: Archive relationships for dead agent
         await self.relationship_manager.archive_dead_agent_relationships(session, agent.id)
+
+        # Phase 3F: Knowledge preservation — memories kept but marked
+        # (long-term memories NOT deleted, preserved for offspring inheritance)
+
+        # Phase 3F: Lineage death record
+        await self.lineage_manager.record_death(session, agent, evaluation)
+
+        # Phase 3F: Dynasty death record
+        await self.dynasty_manager.record_death(session, agent, agora_service=self.agora)
+
+        # Phase 3F: Memorial record (The Fallen)
+        await self.memorial_manager.create_memorial(session, agent, evaluation)
+
+        # Phase 3F: Dynasty P&L update
+        if agent.dynasty_id:
+            await self.dynasty_manager.update_dynasty_pnl(session, agent.dynasty_id)
 
         logger.info(f"Agent {agent.name} terminated: {agent.termination_reason}")
 

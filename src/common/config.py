@@ -5,7 +5,7 @@ All system configuration in one place, loaded from .env with sensible defaults.
 Uses pydantic-settings for validation and type coercion.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 from pydantic_settings import BaseSettings
 
@@ -182,6 +182,20 @@ class SyndicateConfig(BaseSettings):
 
     # Personality drift alarm
     personality_drift_tier_threshold: int = 2
+
+    # Phase 3F — Reproduction & Dynasties
+    reproduction_cooldown_evals: int = 3
+    reproduction_min_prestige: str = "Veteran"
+    dynasty_concentration_hard_limit: float = 0.40
+    dynasty_concentration_warning: float = 0.25
+    memory_inheritance_discount: float = 0.75
+    memory_age_decay_factor: float = 0.95
+    memory_age_decay_start_days: int = 30
+    memory_confidence_floor: float = 0.10
+    trust_inheritance_factor: float = 0.50
+    temperature_mutation_range: float = 0.03
+    max_reproductions_per_cycle: int = 1
+    offspring_survival_clock_days: int = 14
 
     # Logging
     log_level: str = "INFO"

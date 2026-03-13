@@ -2,24 +2,26 @@
 
 ## Last Updated: 2026-03-12
 
-## Phase: 3E — COMPLETE (Personality Through Experience)
+## Phase: 3F — COMPLETE (First Death, First Reproduction, First Dynasty)
 
-### Completed This Session (Phase 3E — Personality Through Experience)
-- [x] Behavioral Profile Calculator: 7 traits (risk_appetite, market_focus, timing, decision_style, collaboration, learning_velocity, resilience) computed from behavior
-- [x] Temperature Evolution Engine: ±0.05 drift per eval, 2-eval momentum, role-specific bounds, history recording
-- [x] Reflection Library Selector: targeted study sessions, weakness-based resource selection, 5-reflection cooldown, archive fallback
-- [x] Dynamic Identity Builder: facts-not-labels system prompt, 3 tiers (new/established/veteran), blocked label word validation
-- [x] Relationship Manager: Bayesian trust scoring, pipeline outcome tracking, self-note sentiment, dead agent archiving
-- [x] Divergence Calculator: cosine distance between profile vectors, same-role pairwise comparison, low divergence flagging
-- [x] Dashboard API: 4 JSON endpoints (profile, relationships, temperature-history, divergence)
-- [x] Context Assembler integration: dynamic identity, trust relationships, library injection
-- [x] Evaluation Engine integration: profile computation, drift detection, temperature evolution, divergence
-- [x] Action Executor integration: relationship tracking on position close
-- [x] Memory Manager integration: relationship extraction from reflection text
-- [x] Database: 4 new tables (behavioral_profiles, agent_relationships, divergence_scores, study_history), 4 new Agent columns
-- [x] Config: 22 new Phase 3E variables in config.py and .env.example
-- [x] 58 new tests across 6 test files, all passing (554 total, 2 pre-existing library textbook failures)
+### Completed This Session (Phase 3F — Dynasties & Reproduction)
+- [x] Database: Dynasty table, Memorial table, 16 Lineage extensions, 7 new Agent columns
+- [x] Dynasty Manager: create/update dynasties, birth/death recording, extinction detection, concentration checks
+- [x] Lineage Manager: lineage records, parent chains, profile snapshots, death records, family tree builder
+- [x] Memorial Manager: "The Fallen" records with metrics, epitaphs, achievements
+- [x] Reproduction Engine: eligibility, Genesis AI mutations, offspring building, memory/trust inheritance, posthumous support
+- [x] Dynasty Analytics: cross-dynasty comparison, generational improvement, knowledge depth, dominant traits
+- [x] Death Protocol: 10-step sequence integrated into evaluation_engine._terminate_agent()
+- [x] Genesis cycle: real ReproductionEngine integration replacing stub
+- [x] Boot Sequence: dynasty creation for Gen 1 agents
+- [x] Offspring Orientation: reduced textbooks, mentor package, founding directive, lineage identity
+- [x] Dashboard API: 6 JSON endpoints for dynasties and memorials
+- [x] Config: 12 new Phase 3F variables in config.py and .env.example
+- [x] 45 new tests across 7 test files, all passing (599 total, 2 pre-existing library textbook failures)
 - [x] CLAUDE.md, CHANGELOG.md, CURRENT_STATUS.md updated
+
+### Previously Completed (Phase 3E)
+- [x] Behavioral Profile: 7 traits from behavior, temperature evolution, reflection library, dynamic identity, relationship memory, divergence tracking
 
 ### Previously Completed (Phase 3D)
 - [x] Natural Selection: role-specific composites, 3-stage evaluation, rejection tracking, post-mortems, prestige milestones, probation, portfolio concentration
@@ -55,16 +57,17 @@
 - [ ] End-to-end system integration test (all agents running together)
 - [ ] Paper trading validation with real market data
 - [ ] Performance benchmarking and tuning
-- [ ] Generation 2+ lifecycle validation
+- [ ] Generation 2+ lifecycle validation (reproduction + death cycle)
 
 ### Important Notes
-- **All module versions bumped to 1.1.0** for Phase 3E components
-- **Dead code cleanup needed**: `_evaluate_agent` and `_claude_probation_decision` methods in genesis.py are now unused (replaced by EvaluationEngine)
-- **Facts not labels**: DynamicIdentityBuilder architecturally cannot import BehavioralProfile — agents see observations, not classifications
-- **Personality drift alarm**: 2+ tier label shift flagged but NOT auto-terminated — Genesis uses it as supplementary info
-- **Regime-stamped profiles**: each profile records dominant market regime so Genesis can distinguish context
-- **Trust is automatic**: agents don't choose who to trust, trust emerges from pipeline outcomes
-- **Temperature momentum**: needs same signal twice before drift occurs — prevents oscillation
+- **All module versions bumped to 1.2.0** for Phase 3F components
+- **Dynasty concentration**: 40% hard limit, 25% warning — prevents monoculture
+- **Memory inheritance**: 75% confidence discount + age decay — knowledge degrades across generations
+- **Trust inheritance**: 50% blend with neutral prior — offspring start with tempered trust
+- **Founding directives are QUESTIONS**: consumed after orientation, excluded from context post-consumption
+- **Posthumous reproduction**: valid if parent dies same Genesis cycle as reproduction check
+- **Offspring survival clock**: 14 days (not 21-day Gen 1 grace period)
+- **Naive datetime fix**: memorial_manager, lineage_manager, reproduction engine handle both naive and aware datetimes for SQLite test compatibility
 
 ### Known Issues
 - PostgreSQL binaries not in system PATH (located at C:/ProDesk/pgsql/bin/)
@@ -75,7 +78,7 @@
 - RuntimeWarning in tests from mock Redis pipeline coroutines (cosmetic only)
 - DeprecationWarning from Starlette TemplateResponse parameter order (cosmetic only)
 - LegacyAPIWarning from Query.get() usage in tests (cosmetic only)
-- 2 pre-existing test_library_textbooks failures (unrelated to Phase 3E)
+- 2 pre-existing test_library_textbooks failures (unrelated to Phase 3F)
 
 ### Environment Notes
 - Python venv: E:\project syndicate\.venv

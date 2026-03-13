@@ -3,7 +3,7 @@ Project Syndicate — Web Frontend
 Mission Control for an AI Trading Ecosystem
 """
 
-__version__ = "0.6.0"
+__version__ = "1.2.0"
 
 import os
 from contextlib import asynccontextmanager
@@ -66,6 +66,7 @@ def create_app() -> FastAPI:
     from src.web.routes.api_agents import router as api_agents_router
     from src.web.routes.api_system import router as api_system_router
     from src.web.routes.api_personality import router as api_personality_router
+    from src.web.routes.api_dynasty import router as api_dynasty_router
 
     app.include_router(pages_router)
     app.include_router(api_agora_router, prefix="/api/agora")
@@ -74,6 +75,7 @@ def create_app() -> FastAPI:
     app.include_router(api_agents_router, prefix="/api/agents")
     app.include_router(api_system_router, prefix="/api/system")
     app.include_router(api_personality_router, prefix="/api/personality")
+    app.include_router(api_dynasty_router, prefix="/api/dynasties")
 
     # Root redirect
     @app.get("/")

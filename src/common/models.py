@@ -7,7 +7,7 @@ Syndicate Improvement Proposals (SIPs), system state, lineage tracking,
 inherited positions, market regimes, and daily reports.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import os
 from datetime import date, datetime
@@ -136,6 +136,15 @@ class Agent(Base):
     temperature_history: Mapped[dict | None] = mapped_column(JSON, default=list)
     identity_tier: Mapped[str] = mapped_column(String(20), default="new")  # new, established, veteran
     behavioral_profile_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("behavioral_profiles.id"), nullable=True)
+
+    # Phase 3F additions — reproduction and dynasties
+    dynasty_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("dynasties.id"), nullable=True)
+    offspring_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_reproduction_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reproduction_cooldown_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    founding_directive: Mapped[str | None] = mapped_column(Text, nullable=True)
+    founding_directive_consumed: Mapped[bool] = mapped_column(Boolean, default=False)
+    posthumous_birth: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Relationships
     parent: Mapped["Agent | None"] = relationship(
@@ -372,6 +381,28 @@ class Lineage(Base):
     # Phase 2B additions
     mentor_package_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     mentor_package_generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Phase 3F additions — reproduction and dynasty tracking
+    agent_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    dynasty_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("dynasties.id"), nullable=True)
+    grandparent_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("agents.id"), nullable=True)
+    inherited_memories_count: Mapped[int] = mapped_column(Integer, default=0)
+    inherited_temperature: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mutations_applied: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    founding_directive: Mapped[str | None] = mapped_column(Text, nullable=True)
+    posthumous_birth: Mapped[bool] = mapped_column(Boolean, default=False)
+    parent_profile_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    parent_composite_at_reproduction: Mapped[float | None] = mapped_column(Float, nullable=True)
+    parent_prestige_at_reproduction: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    died_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cause_of_death: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    lifespan_days: Mapped[float | None] = mapped_column(Float, nullable=True)
+    final_composite: Mapped[float | None] = mapped_column(Float, nullable=True)
+    final_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    final_prestige: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # Additional relationships
+    grandparent: Mapped["Agent | None"] = relationship("Agent", foreign_keys=[grandparent_id])
 
     def __repr__(self) -> str:
         return f"<Lineage(agent_id={self.agent_id}, generation={self.generation}, path={self.lineage_path!r})>"
@@ -1361,3 +1392,79 @@ class StudyHistory(Base):
 
     def __repr__(self) -> str:
         return f"<StudyHistory(id={self.id}, agent_id={self.agent_id}, resource={self.resource_id!r})>"
+
+
+# ---------------------------------------------------------------------------
+# Dynasty — Phase 3F (Reproduction & Lineage)
+# ---------------------------------------------------------------------------
+
+class Dynasty(Base):
+    __tablename__ = "dynasties"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    founder_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    founder_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    founder_role: Mapped[str] = mapped_column(String(50), nullable=False)
+    dynasty_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    founded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active, extinct
+    extinct_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Aggregate stats (updated on every birth/death)
+    total_generations: Mapped[int] = mapped_column(Integer, default=1)
+    total_members: Mapped[int] = mapped_column(Integer, default=1)
+    living_members: Mapped[int] = mapped_column(Integer, default=1)
+    peak_members: Mapped[int] = mapped_column(Integer, default=1)
+    total_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    avg_lifespan_days: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longest_living_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("agents.id"), nullable=True)
+    best_performer_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("agents.id"), nullable=True)
+    best_performer_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    avg_generational_improvement: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    founder: Mapped["Agent"] = relationship("Agent", foreign_keys=[founder_id])
+    longest_living: Mapped["Agent | None"] = relationship("Agent", foreign_keys=[longest_living_id])
+    best_performer: Mapped["Agent | None"] = relationship("Agent", foreign_keys=[best_performer_id])
+
+    def __repr__(self) -> str:
+        return f"<Dynasty(id={self.id}, name={self.dynasty_name!r}, status={self.status!r}, members={self.living_members})>"
+
+
+# ---------------------------------------------------------------------------
+# Memorial — Phase 3F (The Fallen)
+# ---------------------------------------------------------------------------
+
+class Memorial(Base):
+    __tablename__ = "memorials"
+    __table_args__ = (
+        Index("ix_memorials_agent", "agent_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    agent_role: Mapped[str] = mapped_column(String(50), nullable=False)
+    dynasty_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    lifespan_days: Mapped[float] = mapped_column(Float, nullable=False)
+    cause_of_death: Mapped[str] = mapped_column(String(200), nullable=False)
+    total_cycles: Mapped[int] = mapped_column(Integer, default=0)
+    final_prestige: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    best_metric_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    best_metric_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    worst_metric_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    worst_metric_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    notable_achievement: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    epitaph: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Relationships
+    agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_id])
+
+    def __repr__(self) -> str:
+        return f"<Memorial(id={self.id}, agent={self.agent_name!r}, role={self.agent_role!r})>"

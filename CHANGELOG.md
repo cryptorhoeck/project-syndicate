@@ -2,6 +2,52 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [1.2.0] - 2026-03-12
+
+### Added — Phase 3F: First Death, First Reproduction, First Dynasty
+
+#### Dynasty System
+- **Dynasty Manager** (`src/dynasty/dynasty_manager.py`) — dynasty creation, birth/death recording, extinction detection, concentration checks (40% hard limit, 25% warning), P&L aggregation
+- **Lineage Manager** (`src/dynasty/lineage_manager.py`) — lineage records with parent chains, profile snapshots, death records, family tree builder, ancestor chain walker
+- **Memorial Manager** (`src/dynasty/memorial_manager.py`) — "The Fallen" memorial records with best/worst metrics, epitaphs, notable achievements, cause of death
+- **Dynasty Analytics** (`src/dynasty/dynasty_analytics.py`) — cross-dynasty comparison, generational improvement tracking, lineage knowledge depth, dominant trait aggregation
+
+#### Reproduction Engine
+- **Reproduction Engine** (`src/dynasty/reproduction.py`) — full lifecycle: eligibility (Expert+ prestige, top 50% composite, positive P&L, cooldown), Genesis AI mutation decisions, offspring building, memory/trust inheritance, posthumous reproduction
+- **Memory Inheritance** — 75% confidence discount + age decay (0.95^(days-30), floor 0.10), source labeled parent/grandparent
+- **Trust Inheritance** — 50% blend with neutral prior (inherited = trust * 0.5 + 0.5 * 0.5)
+- **Temperature Mutation** — parent's temp ± uniform(0, 0.03) clamped to role bounds
+- **Founding Directives** — QUESTIONS not instructions, consumed after orientation
+
+#### Death Protocol (10-step sequence)
+- Integrated into `evaluation_engine._terminate_agent()`: freeze → financial cleanup → relationship archival → post-mortem → knowledge preservation → lineage death record → dynasty death record → memorial creation → dynasty P&L update → Agora announcement
+
+#### Offspring Orientation
+- Modified orientation for offspring: 1 textbook (thinking_efficiently) + mentor package, lineage identity in system prompt, founding directive as question, 14-day survival clock
+
+#### Boot Sequence Dynasty Support
+- Each Gen 1 agent creates a Dynasty record during spawn
+- Lineage records include dynasty_id and agent_name
+
+#### Dashboard
+- **Dynasty API** (`src/web/routes/api_dynasty.py`) — 6 JSON endpoints: dynasties list, dynasty detail, family tree, analytics, memorials list, memorial detail
+
+#### Database Schema
+- **Dynasty table** — founder info, status (active/extinct), member counts, total P&L, avg lifespan, best performer, generational improvement
+- **Memorial table** — agent info, dynasty, metrics, epitaph, cause of death, notable achievement
+- **Lineage extensions** — 16 new columns: agent_name, dynasty_id, grandparent_id, inherited memories/temperature, mutations, founding directive, posthumous birth, parent profile snapshot, death fields
+- **Agent extensions** — 7 new columns: dynasty_id, offspring_count, last_reproduction_at, reproduction_cooldown_until, founding_directive, founding_directive_consumed, posthumous_birth
+
+#### Configuration
+- 12 new variables: reproduction_cooldown_evals, reproduction_min_prestige, dynasty_concentration_hard_limit, dynasty_concentration_warning, memory_inheritance_discount, memory_age_decay_factor, memory_age_decay_start_days, memory_confidence_floor, trust_inheritance_factor, temperature_mutation_range, max_reproductions_per_cycle, offspring_survival_clock_days
+
+#### Tests
+- 45 new tests across 7 test files (test_dynasty_manager, test_lineage_manager, test_memorial_manager, test_dynasty_analytics, test_offspring_orientation, test_reproduction_engine, test_death_protocol)
+- All 599 tests passing (2 pre-existing library textbook failures)
+
+#### Bug Fixes
+- Fixed naive vs timezone-aware datetime comparisons in memorial_manager, lineage_manager, and reproduction engine (SQLite compatibility)
+
 ## [1.1.0] - 2026-03-12
 
 ### Added — Phase 3E: Personality Through Experience
