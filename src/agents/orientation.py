@@ -7,7 +7,7 @@ Validates the agent can produce a coherent first output.
 Sets initial watchlist based on role and first-cycle output.
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import logging
 import os
@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.session import object_session
 
 from src.common.models import Agent, Dynasty, Lineage
 from src.agents.roles import get_role, format_actions_for_prompt, NORMAL_OUTPUT_SCHEMA
@@ -80,6 +81,15 @@ class OrientationProtocol:
         self.claude = claude_client
         self._config = config
         self.validator = OutputValidator()
+
+    def _session_for(self, agent: Agent) -> Session:
+        """Get the correct session for an agent.
+
+        Uses the agent's bound session if available (e.g. when called
+        from BootSequenceOrchestrator with a different session),
+        falls back to self.db.
+        """
+        return object_session(agent) or self.db
 
     async def orient_agent(self, agent: Agent) -> OrientationResult:
         """Run the orientation cycle for a newly spawned agent.
@@ -322,15 +332,17 @@ Demonstrate that you understand your role, the cost of thinking, and the rules o
         # Phase 3F: consume founding directive after orientation
         if agent.founding_directive:
             agent.founding_directive_consumed = True
-        self.db.add(agent)
-        self.db.flush()
+        session = self._session_for(agent)
+        session.add(agent)
+        session.flush()
 
     def _mark_failed(self, agent: Agent, reason: str) -> None:
         """Mark an agent's orientation as failed."""
         agent.orientation_failed = True
         agent.orientation_completed = False
-        self.db.add(agent)
-        self.db.flush()
+        session = self._session_for(agent)
+        session.add(agent)
+        session.flush()
         logger.warning(f"Orientation failed for {agent.name}: {reason}")
 
     # ------------------------------------------------------------------
@@ -358,14 +370,15 @@ Demonstrate that you understand your role, the cost of thinking, and the rules o
         parent_prestige = "Unknown"
         parent_evals = 0
 
-        parent = self.db.get(Agent, agent.parent_id) if agent.parent_id else None
+        session = self._session_for(agent)
+        parent = session.get(Agent, agent.parent_id) if agent.parent_id else None
         if parent:
             parent_name = parent.name
             parent_prestige = parent.prestige_title or "None"
             parent_evals = parent.evaluation_count or 0
 
         if agent.dynasty_id:
-            dynasty = self.db.get(Dynasty, agent.dynasty_id)
+            dynasty = session.get(Dynasty, agent.dynasty_id)
             if dynasty:
                 dynasty_name = dynasty.dynasty_name
 
@@ -410,7 +423,8 @@ Respond ONLY in valid JSON matching this schema — no other text:
                 sections.append(f"--- {title} ---\n{content}\n")
 
         # Mentor package from lineage record
-        lineage = self.db.get(Lineage, agent.id) if agent.id else None
+        session = self._session_for(agent)
+        lineage = session.get(Lineage, agent.id) if agent.id else None
         if lineage and lineage.mentor_package_json:
             import json
             try:
@@ -427,13 +441,13 @@ Respond ONLY in valid JSON matching this schema — no other text:
         # Identity with lineage
         parent_name = "Unknown"
         if agent.parent_id:
-            parent = self.db.get(Agent, agent.parent_id)
+            parent = session.get(Agent, agent.parent_id)
             if parent:
                 parent_name = parent.name
 
         dynasty_name = "Unknown"
         if agent.dynasty_id:
-            dynasty = self.db.get(Dynasty, agent.dynasty_id)
+            dynasty = session.get(Dynasty, agent.dynasty_id)
             if dynasty:
                 dynasty_name = dynasty.dynasty_name
 

@@ -58,6 +58,11 @@ PROCESSES = {
         "restart_delay": 30,  # Wait 30s before restarting Genesis
         "critical": True,
     },
+    "agents": {
+        "cmd": [PYTHON, os.path.join(PROJECT_ROOT, "scripts", "run_agents.py")],
+        "restart_delay": 10,  # Wait before restarting — let agents recover
+        "critical": True,
+    },
     "trading": {
         "cmd": [PYTHON, os.path.join(PROJECT_ROOT, "scripts", "run_trading.py")],
         "restart_delay": 5,
@@ -145,25 +150,26 @@ def _print_banner() -> None:
         btc_str = "unavailable"
 
     print()
-    print("  ╔══════════════════════════════════════════════╗")
-    print("  ║     PROJECT SYNDICATE — THE ARENA            ║")
-    print("  ║     Paper Trading Validation Run             ║")
-    print("  ╠══════════════════════════════════════════════╣")
-    print(f"  ║  Treasury:    $500.00                        ║")
-    print(f"  ║  Mode:        PAPER TRADING                  ║")
-    print(f"  ║  Agents:      0 (boot sequence pending)      ║")
-    print(f"  ║  Market:      BTC at {btc_str:<12s}           ║")
-    print(f"  ║  Dashboard:   http://localhost:8000           ║")
-    print("  ╠══════════════════════════════════════════════╣")
-    print("  ║  Processes:                                  ║")
-    print("  ║    ✓ Warden          (30 sec cycle)           ║")
-    print("  ║    ✓ Genesis         (5 min cycle)            ║")
-    print("  ║    ✓ Trading Monitors (10 sec cycle)          ║")
-    print("  ║    ✓ Dead Man Switch (heartbeat)              ║")
-    print("  ║    ✓ Dashboard       (port 8000)              ║")
-    print("  ╠══════════════════════════════════════════════╣")
-    print("  ║  Press Ctrl+C to shutdown gracefully          ║")
-    print("  ╚══════════════════════════════════════════════╝")
+    print("  +----------------------------------------------+")
+    print("  |     PROJECT SYNDICATE -- THE ARENA           |")
+    print("  |     Paper Trading Validation Run             |")
+    print("  +----------------------------------------------+")
+    print(f"  |  Treasury:    $500.00                        |")
+    print(f"  |  Mode:        PAPER TRADING                  |")
+    print(f"  |  Agents:      0 (boot sequence pending)      |")
+    print(f"  |  Market:      BTC at {btc_str:<12s}           |")
+    print(f"  |  Dashboard:   http://localhost:8000           |")
+    print("  +----------------------------------------------+")
+    print("  |  Processes:                                  |")
+    print("  |    * Warden          (30 sec cycle)           |")
+    print("  |    * Genesis         (5 min cycle)            |")
+    print("  |    * Agent Runner    (OODA loops)             |")
+    print("  |    * Trading Monitors (10 sec cycle)          |")
+    print("  |    * Dead Man Switch (heartbeat)              |")
+    print("  |    * Dashboard       (port 8000)              |")
+    print("  +----------------------------------------------+")
+    print("  |  Press Ctrl+C to shutdown gracefully          |")
+    print("  +----------------------------------------------+")
     print()
 
 
@@ -172,11 +178,19 @@ def start_process(name: str) -> subprocess.Popen:
     proc_def = PROCESSES[name]
     cmd = proc_def["cmd"]
     log.info("starting_process", name=name)
+    # Build a clean environment for subprocesses:
+    # - Force UTF-8 encoding (prevents UnicodeEncodeError on piped Unicode output)
+    # - Remove stale API keys from OS env so pydantic-settings reads .env file
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    for key in ["ANTHROPIC_API_KEY", "EXCHANGE_API_KEY", "EXCHANGE_API_SECRET"]:
+        env.pop(key, None)
     proc = subprocess.Popen(
         cmd,
         cwd=PROJECT_ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        env=env,
     )
     return proc
 
@@ -232,7 +246,7 @@ def main() -> None:
 
     # Graceful shutdown — reverse order of criticality
     log.info("arena_shutting_down")
-    shutdown_order = ["genesis", "trading", "dashboard", "heartbeat", "warden"]
+    shutdown_order = ["genesis", "agents", "trading", "dashboard", "heartbeat", "warden"]
     for name in shutdown_order:
         proc = _children.get(name)
         if proc and proc.poll() is None:

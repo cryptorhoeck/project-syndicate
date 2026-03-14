@@ -995,14 +995,21 @@ class GenesisAgent(BaseAgent):
 
         self.log.info("boot_sequence_triggered", reason="zero_active_agents")
 
+        from src.agents.claude_client import ClaudeClient
         from src.agents.orientation import OrientationProtocol
         from src.genesis.boot_sequence import BootSequenceOrchestrator
 
-        # Build orientation protocol with a session and Claude client
+        # Build ClaudeClient wrapper (orientation expects .call(), not raw SDK)
+        claude_client = ClaudeClient(api_key=config.anthropic_api_key)
+
+        # Orientation needs a db_session — use a dedicated session that the
+        # boot sequence orchestrator will also use via its own session_factory.
+        # The session here is a fallback; orient_agent uses _session_for(agent)
+        # to pick up the agent's bound session when called from the orchestrator.
         with self.db_session_factory() as session:
             orientation = OrientationProtocol(
                 db_session=session,
-                claude_client=self.claude,
+                claude_client=claude_client,
                 config=config,
             )
 
