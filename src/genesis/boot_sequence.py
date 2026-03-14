@@ -19,6 +19,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from src.agora.schemas import AgoraMessage
 from src.common.config import config
 from src.common.models import Agent, BootSequenceLog, Dynasty, Lineage
 
@@ -426,7 +427,7 @@ class BootSequenceOrchestrator:
 
         spawned_names = [a["name"] for a in result.get("agents_spawned", [])]
         try:
-            await self.agora.post_message(
+            await self.agora.post_message(AgoraMessage(
                 agent_id=0,
                 agent_name="Genesis",
                 channel="genesis-log",
@@ -438,7 +439,7 @@ class BootSequenceOrchestrator:
                 message_type="system",
                 importance=2,
                 metadata={"boot_result": result},
-            )
+            ))
         except Exception as e:
             logger.warning(f"Failed to post Genesis Record Zero: {e}")
 

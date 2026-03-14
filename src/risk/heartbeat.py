@@ -135,6 +135,10 @@ def check_heartbeat_freshness() -> bool:
                     log.warning("no_heartbeat_record_found")
                     return False
                 last_heartbeat = row[0]
+                if last_heartbeat is None:
+                    # First run — no heartbeat yet, allow bootstrap
+                    log.info("heartbeat_bootstrap", status="first_run")
+                    return True
                 if last_heartbeat.tzinfo is None:
                     last_heartbeat = last_heartbeat.replace(tzinfo=timezone.utc)
                 age = (datetime.now(timezone.utc) - last_heartbeat).total_seconds()
@@ -162,10 +166,9 @@ def _flag_issue_in_db(check_name: str) -> None:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE system_state SET health_status = %s, "
-                    "health_check_failed_at = NOW() "
+                    "UPDATE system_state SET alert_status = %s "
                     "WHERE id = (SELECT id FROM system_state LIMIT 1)",
-                    (f"CRITICAL:{check_name}",),
+                    (f"red",),
                 )
             conn.commit()
         finally:
@@ -198,7 +201,8 @@ def _update_heartbeat() -> None:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE system_state SET last_heartbeat_at = NOW() "
+                    "UPDATE system_state SET last_heartbeat_at = "
+                    "(NOW() AT TIME ZONE 'UTC') "
                     "WHERE id = (SELECT id FROM system_state LIMIT 1)"
                 )
             conn.commit()

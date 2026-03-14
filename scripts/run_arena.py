@@ -185,10 +185,14 @@ def start_process(name: str) -> subprocess.Popen:
     env["PYTHONIOENCODING"] = "utf-8"
     for key in ["ANTHROPIC_API_KEY", "EXCHANGE_API_KEY", "EXCHANGE_API_SECRET"]:
         env.pop(key, None)
+    # Write subprocess output to log files to avoid pipe buffer deadlock
+    log_dir = os.path.join(PROJECT_ROOT, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = open(os.path.join(log_dir, f"{name}.log"), "a", encoding="utf-8")
     proc = subprocess.Popen(
         cmd,
         cwd=PROJECT_ROOT,
-        stdout=subprocess.PIPE,
+        stdout=log_file,
         stderr=subprocess.STDOUT,
         env=env,
     )

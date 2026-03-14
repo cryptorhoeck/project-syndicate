@@ -84,6 +84,8 @@ class GenesisAgent(BaseAgent):
 
         # Track last hourly maintenance
         self._last_hourly_maintenance: datetime | None = None
+        # Track last daily budget reset
+        self._last_budget_reset_date: date | None = None
 
         self.log = logger.bind(component="genesis")
 
@@ -305,8 +307,12 @@ class GenesisAgent(BaseAgent):
             hibernating_count = sum(1 for a in agents if a.status == "hibernating")
 
             for agent in agents:
-                # Check survival clock
-                if agent.survival_clock_end and agent.survival_clock_end <= now:
+                # Check survival clock (handle naive/aware datetime mismatch)
+                clock_end = agent.survival_clock_end
+                if clock_end:
+                    if clock_end.tzinfo is None:
+                        clock_end = clock_end.replace(tzinfo=timezone.utc)
+                if clock_end and clock_end <= now:
                     if not agent.survival_clock_paused:
                         due_for_eval.append(agent.id)
 
@@ -764,6 +770,19 @@ class GenesisAgent(BaseAgent):
                 session.commit()
         except Exception as exc:
             self.log.warning("rejection_tracker_maintenance_failed", error=str(exc))
+
+        # Daily budget reset (once per calendar day UTC)
+        today = now.date()
+        if self._last_budget_reset_date != today:
+            try:
+                from src.agents.maintenance import MaintenanceService
+                maint = MaintenanceService(self.db_session_factory)
+                reset_count = maint.reset_daily_budgets()
+                self._last_budget_reset_date = today
+                if reset_count > 0:
+                    self.log.info("daily_budget_reset", agents_reset=reset_count)
+            except Exception as exc:
+                self.log.warning("daily_budget_reset_failed", error=str(exc))
 
         # Phase 3D: Post-mortem publication (publish after 6-hour delay)
         try:

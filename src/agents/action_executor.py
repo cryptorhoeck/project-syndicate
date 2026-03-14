@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from src.agora.schemas import AgoraMessage
 from src.common.models import Agent, Message, Opportunity, Plan
 
 logger = logging.getLogger(__name__)
@@ -279,7 +280,7 @@ class ActionExecutor:
 
         if self.agora:
             try:
-                await self.agora.post_message(
+                await self.agora.post_message(AgoraMessage(
                     agent_id=agent.id,
                     agent_name=agent.name,
                     channel="system-alerts",
@@ -287,7 +288,7 @@ class ActionExecutor:
                     message_type="alert",
                     importance=importance,
                     metadata={"action_type": action_type, "params": params},
-                )
+                ))
             except Exception:
                 self._write_message_directly(
                     agent, "system-alerts", content, action_type, params, importance
@@ -456,14 +457,14 @@ class ActionExecutor:
         """Post to Agora if available, otherwise write directly to DB."""
         if self.agora:
             try:
-                await self.agora.post_message(
+                await self.agora.post_message(AgoraMessage(
                     agent_id=agent.id,
                     agent_name=agent.name,
                     channel=channel,
                     content=content,
                     message_type=self._action_to_message_type(action_type),
                     metadata={"action_type": action_type, "params": params},
-                )
+                ))
                 return
             except Exception as e:
                 logger.warning(f"Agora post failed, writing directly: {e}")
