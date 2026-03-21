@@ -2,6 +2,54 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [1.4.0] - 2026-03-21
+
+### Added — Phase 3.5: API Cost Optimization
+
+#### Model Router
+- **Model Router** (`src/agents/model_router.py`) — deterministic Haiku/Sonnet selection based on role, cycle type, capital-at-risk, and alert level. Haiku ($1/$5) for routine work, Sonnet ($3/$15) for high-stakes decisions (Genesis evaluations, Critic reviews, Strategist plans, capital commitment, crisis mode, retry escalation)
+- **Kill switch:** `MODEL_ROUTING_ENABLED=false` reverts to all-Sonnet behavior
+
+#### Prompt Caching
+- **Cache control** integrated into `ClaudeClient.call()` and `call_repair()` — `cache_control: {"type": "ephemeral"}` on system prompts for 90% input token savings on repeated content
+- **Cache-aware cost calculation** — cache writes at 1.25x rate, cache reads at 0.1x rate
+- **Cache token tracking** — `cache_creation_tokens` and `cache_read_tokens` in `APIResponse` dataclass
+- **Kill switch:** `PROMPT_CACHING_ENABLED=false` disables cache_control
+
+#### Adaptive Cycle Frequency
+- **Regime-based multipliers** in `CycleScheduler` — volatile 0.5x (faster), trending 0.75x, ranging/crab 1.5x (slower), low_volatility 2.0x (slowest). Unknown defaults to 1.0x
+- **30-second floor** prevents cycles from running too frequently
+- **Kill switch:** `ADAPTIVE_FREQUENCY_ENABLED=false` uses fixed intervals
+
+#### Context Window Diet
+- **Haiku token budget** — 70% of normal budget when Haiku is selected (configurable via `HAIKU_CONTEXT_BUDGET_MULTIPLIER`)
+- **Output length guidance** — Haiku cycles get "2-3 sentences max" nudge, Sonnet gets "thorough but not verbose"
+- **Agora message truncation** — messages older than 5 cycles truncated to 100 chars
+
+#### Batch Processor
+- **Batch Processor** (`src/agents/batch_processor.py`) — foundation for Anthropic Batch API (50% savings). Submit, poll, retrieve pattern with timeout handling
+- **Disabled by default** (`BATCH_ENABLED=false`) — enable in Phase 4 for evaluations/reflections
+
+#### Cost Tracking & Dashboard
+- **Enhanced Accountant** — multi-model pricing, cache token tracking, savings calculation vs all-Sonnet baseline, today/all-time breakdowns
+- **System summary** includes: `estimated_savings_today`, `estimated_savings_alltime`, `model_distribution_today`, `haiku_ratio_today`, `avg_cost_per_cycle_today`
+- **Dashboard panel** — Cost Optimization section on system page: Haiku/Sonnet distribution, avg cost/cycle, savings today/all-time (30s HTMX refresh)
+
+#### Centralized Model Strings
+- Replaced hardcoded model strings in genesis.py, evaluation_engine.py, library_service.py, reproduction.py with `config.model_sonnet`
+- `MODEL_PRICING` dicts in both claude_client.py and accountant.py cover all known model IDs
+
+#### Database Schema
+- **AgentCycle** — 2 new columns: `model_used` (String(60)), `model_reason` (String(30))
+- **CycleData** — 2 new fields: `model_used`, `model_reason`
+
+#### Configuration
+- 12 new variables: `MODEL_DEFAULT`, `MODEL_SONNET`, `MODEL_ROUTING_ENABLED`, `HAIKU_INPUT_PRICE`, `HAIKU_OUTPUT_PRICE`, `SONNET_INPUT_PRICE`, `SONNET_OUTPUT_PRICE`, `PROMPT_CACHING_ENABLED`, `ADAPTIVE_FREQUENCY_ENABLED`, `MIN_CYCLE_INTERVAL_SECONDS`, `HAIKU_CONTEXT_BUDGET_MULTIPLIER`, `AGORA_MESSAGE_TRUNCATE_AFTER_CYCLES`, `AGORA_MESSAGE_TRUNCATE_LENGTH`, `BATCH_ENABLED`, `BATCH_POLL_INTERVAL_SECONDS`, `BATCH_TIMEOUT_SECONDS`
+
+#### Tests
+- 70 new tests: test_model_router.py (18), test_prompt_caching.py (9), test_adaptive_frequency.py (9), test_batch_processor.py (9), test_cost_tracking.py (9), plus existing test updates
+- Total: 671 tests passing
+
 ## [1.3.0] - 2026-03-12
 
 ### Added — Phase 7: The Arena (Launch Preparation)

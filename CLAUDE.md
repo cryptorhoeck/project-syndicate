@@ -10,8 +10,8 @@ Project Syndicate is an autonomous, self-evolving multi-agent AI financial ecosy
 
 ## Current Status
 
-**Phase:** 3F — COMPLETE (First Death, First Reproduction, First Dynasty)
-**Focus:** Death protocol, reproduction engine, dynasty system, lineage tracking, memorials, offspring orientation
+**Phase:** 3.5 — COMPLETE (API Cost Optimization)
+**Focus:** Tiered model routing, prompt caching, adaptive cycle frequency, context diet, batch API foundation
 **Last Updated:** 2026-03-12
 
 See `CURRENT_STATUS.md` for detailed session-by-session progress.
@@ -134,6 +134,17 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **Models updated:** 4 new tables (BehavioralProfile, AgentRelationship, DivergenceScore, StudyHistory), 4 new Agent columns (last_temperature_signal, temperature_history, identity_tier, behavioral_profile_id)
 - **Config:** 22 new variables for thresholds, bounds, and minimums
 
+### API Cost Optimization (Phase 3.5)
+- **Model Router** (`src/agents/model_router.py`) — deterministic routing: Haiku ($1/$5) for routine cycles, Sonnet ($3/$15) for high-stakes. Routes based on role + cycle type + capital-at-risk + alert level. Kill switch: `model_routing_enabled=False`.
+- **Prompt Caching** (integrated into `src/agents/claude_client.py`) — `cache_control: {"type": "ephemeral"}` on system prompts. 90% input savings on cache hits. Cache-aware cost calculation (1.25x write, 0.1x read). Kill switch: `prompt_caching_enabled=False`.
+- **Adaptive Cycle Frequency** (integrated into `src/agents/cycle_scheduler.py`) — regime-based multipliers: volatile 0.5x (faster), ranging/crab 1.5x (slower), low_volatility 2.0x (slowest). 30-second floor. Kill switch: `adaptive_frequency_enabled=False`.
+- **Context Window Diet** (integrated into `src/agents/context_assembler.py`) — Haiku gets 70% token budget. Output length guidance per model. Old Agora messages truncated to 100 chars.
+- **Batch Processor** (`src/agents/batch_processor.py`) — foundation for Anthropic Batch API (50% savings). Submit, poll, retrieve pattern. Disabled by default (`batch_enabled=False`), enable in Phase 4.
+- **Cost Tracking** (enhanced in `src/risk/accountant.py`) — multi-model pricing, cache token tracking, savings calculation vs all-Sonnet baseline. Dashboard: model distribution, cache hit rate, savings.
+- **Dashboard** — Cost Optimization panel on system page: Haiku/Sonnet distribution, avg cost/cycle, savings today/all-time.
+- **Config:** 12 new variables for model routing, caching, frequency, context diet, batch.
+- **Models:** `model_used` and `model_reason` columns on `agent_cycles` table.
+
 ### Thinking Cycle (Phase 3A)
 - **OODA Loop Engine** (`src/agents/thinking_cycle.py`) — master orchestrator: Budget → Observe → Orient+Decide → Validate → Act → Record
 - **Budget Gate** (`src/agents/budget_gate.py`) — pre-cycle check: NORMAL / SURVIVAL_MODE / SKIP_CYCLE
@@ -240,6 +251,10 @@ At the beginning of every script or module, include (or call) standard boilerpla
 | Web framework | FastAPI | Async-native for real-time agent data |
 | Dashboard (initial) | Static HTML + email | React dashboard deferred until revenue justifies it |
 | Blockchain ledger | Solana (Phase 5) | Deferred until social presence needs public verifiability |
+| Default model | Haiku 4.5 | 90% of Sonnet quality at 33% cost for routine work |
+| Model routing | Deterministic code | No AI needed to decide which AI to use |
+| Prompt caching | Automatic mode | Anthropic SDK manages cache breakpoints |
+| Batch API | Off by default | Enable in Phase 4 for evaluations/reflections |
 
 ## Phase Roadmap
 
@@ -257,6 +272,7 @@ At the beginning of every script or module, include (or call) standard boilerpla
 | 3D | Natural Selection (evaluation, survival, reproduction) | **COMPLETE** |
 | 3E | Personality Through Experience (profiles, temperature, identity, trust) | **COMPLETE** |
 | 3F | First Death, First Reproduction, First Dynasty | **COMPLETE** |
+| 3.5 | API Cost Optimization (model routing, caching, adaptive frequency) | **COMPLETE** |
 | 4 | The Arena (full paper trading validation) | Pending |
 | 5 | Social Presence + Solana | Pending |
 | 6 | Owner Console + Polish | Pending |

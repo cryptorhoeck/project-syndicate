@@ -6,7 +6,7 @@ Builds the agent's "mind" for each cycle — pure deterministic code, no AI.
 Assembles mandatory, priority, and long-term memory context within a token budget.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import enum
 import logging
@@ -26,6 +26,7 @@ from src.agents.roles import (
     NORMAL_OUTPUT_SCHEMA,
     REFLECTION_OUTPUT_SCHEMA,
 )
+from src.common.config import config as syndicate_config
 from src.personality.identity_builder import DynamicIdentityBuilder, extract_evaluation_facts
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,7 @@ class ContextAssembler:
         agent: Agent,
         budget_status: BudgetStatus = BudgetStatus.NORMAL,
         cycle_type: str = "normal",
+        model_selection=None,
     ) -> AssembledContext:
         """Assemble the full context for a thinking cycle.
 
@@ -112,6 +114,7 @@ class ContextAssembler:
             agent: The agent running this cycle.
             budget_status: Result from BudgetGate.
             cycle_type: "normal" or "reflection".
+            model_selection: ModelSelection from router (Phase 3.5).
 
         Returns:
             AssembledContext with system prompt, user prompt, and metadata.
@@ -122,13 +125,17 @@ class ContextAssembler:
         if budget_status == BudgetStatus.SURVIVAL_MODE:
             budget = budget // 2
 
+        # Phase 3.5: Haiku gets a smaller context budget
+        if model_selection and not model_selection.is_sonnet:
+            budget = int(budget * syndicate_config.haiku_context_budget_multiplier)
+
         mandatory_budget = int(budget * alloc[0])
         priority_budget = int(budget * alloc[1])
         memory_budget = int(budget * alloc[2])
         buffer_budget = int(budget * alloc[3])
 
         # Build each section
-        system_prompt = self._build_system_prompt(agent, mode, cycle_type)
+        system_prompt = self._build_system_prompt(agent, mode, cycle_type, model_selection)
         mandatory_text = self._build_mandatory_context(agent)
         priority_text = self._build_priority_context(agent, priority_budget + buffer_budget)
         memory_text = self._build_memory_context(agent, memory_budget)
@@ -151,7 +158,7 @@ class ContextAssembler:
             memory_tokens=count_tokens(memory_text),
         )
 
-    def _build_system_prompt(self, agent: Agent, mode: ContextMode, cycle_type: str) -> str:
+    def _build_system_prompt(self, agent: Agent, mode: ContextMode, cycle_type: str, model_selection=None) -> str:
         """Build the system prompt for the API call."""
         role_def = get_role(agent.type)
         prestige = agent.prestige_title or "Unranked"
@@ -177,6 +184,18 @@ class ContextAssembler:
         # Dynamic identity section (Phase 3E)
         identity = self._build_dynamic_identity(agent)
 
+        # Phase 3.5: Output length guidance based on model
+        if model_selection and not model_selection.is_sonnet:
+            output_guidance = (
+                "\nKeep your reasoning to 2-3 sentences maximum. "
+                "State your decision and key rationale only."
+            )
+        else:
+            output_guidance = (
+                "\nBe thorough but not verbose. "
+                "Every sentence should add information, not restate what you already said."
+            )
+
         return f"""{identity}
 Cycle: {agent.cycle_count} | Budget remaining today: ${budget_remaining:.4f}
 
@@ -184,7 +203,7 @@ YOUR ROLE: {role_def.description}
 
 Your thinking costs money. Every token in this response is deducted from your \
 budget as "thinking tax." Unproductive thinking accelerates your death. \
-Be decisive and concise.
+Be decisive and concise.{output_guidance}
 
 AVAILABLE ACTIONS:
 {action_list}
@@ -335,10 +354,16 @@ Watched markets: {agent.watched_markets or []}""" + self._build_evaluation_feedb
 
         if messages:
             agora_lines = ["=== AGORA FEED (Recent) ==="]
-            for msg in messages[:10]:  # top 10 most recent
+            truncate_len = syndicate_config.agora_message_truncate_length
+            for idx, msg in enumerate(messages[:10]):  # top 10 most recent
                 ts = msg.timestamp.strftime("%H:%M") if msg.timestamp else "??:??"
                 name = msg.agent_name or "System"
-                agora_lines.append(f"[{ts}] {name} ({msg.message_type}): {msg.content[:200]}")
+                # Phase 3.5: Truncate older messages to save tokens
+                if idx >= syndicate_config.agora_message_truncate_after_cycles:
+                    content = msg.content[:truncate_len] + "..." if len(msg.content) > truncate_len else msg.content
+                else:
+                    content = msg.content[:200]
+                agora_lines.append(f"[{ts}] {name} ({msg.message_type}): {content}")
                 # Check token budget
                 text_so_far = "\n".join(agora_lines)
                 if count_tokens(text_so_far) > token_budget // 2:

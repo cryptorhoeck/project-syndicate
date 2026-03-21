@@ -868,6 +868,9 @@ class AgentCycle(Base):
     cycle_duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     api_latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # Phase 3.5: Model routing tracking
+    model_used: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    model_reason: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
     # Relationships
     agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_id])

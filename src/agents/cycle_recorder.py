@@ -9,7 +9,7 @@ Writes everything from a cycle to permanent storage:
   4. Agent running stats
 """
 
-__version__ = "0.9.0"
+__version__ = "1.0.0"
 
 import json
 import logging
@@ -51,6 +51,8 @@ class CycleData:
     api_cost_usd: float = 0.0
     cycle_duration_ms: int = 0
     api_latency_ms: int = 0
+    model_used: str = ""
+    model_reason: str = ""
 
 
 class CycleRecorder:
@@ -93,6 +95,8 @@ class CycleRecorder:
             api_cost_usd=data.api_cost_usd,
             cycle_duration_ms=data.cycle_duration_ms,
             api_latency_ms=data.api_latency_ms,
+            model_used=data.model_used or None,
+            model_reason=data.model_reason or None,
         )
         self.db.add(cycle)
         self.db.flush()

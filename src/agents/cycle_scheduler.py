@@ -9,7 +9,7 @@ Manages agent thinking cycle scheduling:
   - Sequential cycle processing (one at a time for Phase 3A)
 """
 
-__version__ = "0.9.0"
+__version__ = "1.0.0"
 
 import enum
 import json
@@ -20,7 +20,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from src.common.models import Agent
+from src.common.config import config
+from src.common.models import Agent, SystemState
 from src.agents.roles import get_role
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,49 @@ class ScheduleResult:
     reason: str
     priority: CyclePriority = CyclePriority.SCHEDULED
     next_eligible_time: float | None = None
+
+
+# Interrupt trigger mapping: Agora event type → which roles to wake
+# Regime multipliers — stretch cycles in boring markets, compress in exciting ones
+REGIME_FREQUENCY_MULTIPLIERS = {
+    "trending_bull": 0.75,    # Faster cycles — things are moving
+    "trending_bear": 0.75,    # Faster cycles — things are moving (downward)
+    "volatile": 0.50,         # Much faster — need to react quickly
+    "ranging": 1.50,          # Slower — market is sideways, save money
+    "low_volatility": 2.00,   # Much slower — nothing happening, save a lot
+    "crab": 1.50,             # Crab market is sideways — save money
+    "unknown": 1.00,          # Default — no adjustment
+}
+
+
+def get_regime_multiplier(market_regime: str) -> float:
+    """Get the cycle frequency multiplier for a market regime.
+
+    Args:
+        market_regime: Current regime from RegimeDetector.
+
+    Returns:
+        Multiplier (< 1.0 = faster, > 1.0 = slower).
+    """
+    return REGIME_FREQUENCY_MULTIPLIERS.get(market_regime, 1.0)
+
+
+def get_adjusted_interval(base_interval: int, market_regime: str) -> int:
+    """Adjust cycle interval based on current market regime.
+
+    Args:
+        base_interval: The role's default interval in seconds.
+        market_regime: Current regime from RegimeDetector.
+
+    Returns:
+        Adjusted interval in seconds, with configurable floor.
+    """
+    if not config.adaptive_frequency_enabled:
+        return base_interval
+
+    multiplier = get_regime_multiplier(market_regime)
+    adjusted = int(base_interval * multiplier)
+    return max(adjusted, config.min_cycle_interval_seconds)
 
 
 # Interrupt trigger mapping: Agora event type → which roles to wake
@@ -194,14 +238,22 @@ class CycleScheduler:
         except Exception:
             return 0
 
+    def _get_current_regime(self) -> str:
+        """Get current market regime from database."""
+        try:
+            state = self.db.query(SystemState).first()
+            return state.current_regime if state else "unknown"
+        except Exception:
+            return "unknown"
+
     def get_cycle_interval(self, agent: Agent) -> int:
-        """Get the appropriate cycle interval for an agent.
+        """Get the appropriate cycle interval for an agent, adjusted for regime.
 
         Args:
             agent: The agent.
 
         Returns:
-            Cycle interval in seconds.
+            Cycle interval in seconds, adjusted for market conditions.
         """
         role = get_role(agent.type)
 
@@ -209,9 +261,11 @@ class CycleScheduler:
         if agent.type == "operator" and role.active_cycle_interval_seconds:
             # Check if operator has active positions (simplified check)
             if agent.capital_current > 0 and agent.capital_current != agent.capital_allocated:
-                return role.active_cycle_interval_seconds
+                base = role.active_cycle_interval_seconds
+                return get_adjusted_interval(base, self._get_current_regime())
 
-        return role.cycle_interval_seconds
+        base = role.cycle_interval_seconds
+        return get_adjusted_interval(base, self._get_current_regime())
 
     def schedule_all_active(self) -> list[int]:
         """Schedule cycles for all active agents based on their timers.

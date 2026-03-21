@@ -345,7 +345,7 @@ The warning will be shown to the agent if they survive."""
         try:
             client = anthropic.Anthropic(api_key=config.anthropic_api_key)
             response = client.messages.create(
-                model="claude-sonnet-4-5-20250514",
+                model=config.model_sonnet,
                 max_tokens=500,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -632,7 +632,7 @@ Respond with JSON:
 }}"""
 
             response = client.messages.create(
-                model="claude-sonnet-4-5-20250514",
+                model=config.model_sonnet,
                 max_tokens=1000,
                 messages=[{"role": "user", "content": prompt}],
             )

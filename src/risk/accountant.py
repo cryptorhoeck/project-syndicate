@@ -4,9 +4,10 @@ Project Syndicate — The Accountant
 Pure calculation engine. No LLM.
 Handles P&L tracking, Sharpe ratio, composite scoring, leaderboard,
 thinking tax collection, and system-wide financial summaries.
+Phase 3.5: Multi-model cost tracking, cache savings, optimization stats.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import math
 from datetime import datetime, timedelta, timezone
@@ -17,18 +18,23 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.common.config import config
-from src.common.models import Agent, SystemState, Transaction
+from src.common.models import Agent, AgentCycle, SystemState, Transaction
 
 logger = structlog.get_logger()
 
-# Claude Sonnet pricing (per million tokens)
+# Model pricing per million tokens
 MODEL_PRICING = {
+    "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
     "claude-sonnet-4-5-20250514": {"input": 3.0, "output": 15.0},
-    "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.0},
+    "claude-haiku-4-5-20251001": {"input": 1.0, "output": 5.0},
     # Default fallback
     "default": {"input": 3.0, "output": 15.0},
 }
+
+# Sonnet baseline rates for savings calculation
+SONNET_INPUT_RATE = 3.0
+SONNET_OUTPUT_RATE = 15.0
 
 
 class Accountant:
@@ -263,14 +269,41 @@ class Accountant:
         model: str,
         input_tokens: int,
         output_tokens: int,
+        cache_creation_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        model_reason: str = "",
     ) -> float:
-        """Track an API call cost. Returns the cost in USD."""
+        """Track an API call cost with full breakdown.
+
+        Args:
+            agent_id: The agent that made the call.
+            model: Model ID used for the call.
+            input_tokens: Standard input tokens.
+            output_tokens: Output tokens.
+            cache_creation_tokens: Tokens written to cache (1.25x rate).
+            cache_read_tokens: Tokens read from cache (0.1x rate).
+            model_reason: Why this model was selected (for logging).
+
+        Returns:
+            Actual cost in USD.
+        """
         pricing = MODEL_PRICING.get(model, MODEL_PRICING["default"])
-        cost = (
-            (input_tokens / 1_000_000) * pricing["input"]
-            + (output_tokens / 1_000_000) * pricing["output"]
+
+        # Calculate actual cost components
+        standard_input_cost = (input_tokens / 1_000_000) * pricing["input"]
+        output_cost = (output_tokens / 1_000_000) * pricing["output"]
+        cache_write_cost = (cache_creation_tokens / 1_000_000) * pricing["input"] * 1.25
+        cache_read_cost = (cache_read_tokens / 1_000_000) * pricing["input"] * 0.10
+
+        cost = round(standard_input_cost + output_cost + cache_write_cost + cache_read_cost, 6)
+
+        # Calculate what this WOULD have cost at Sonnet rates without caching
+        all_input = input_tokens + cache_creation_tokens + cache_read_tokens
+        unoptimized_cost = (
+            (all_input / 1_000_000) * SONNET_INPUT_RATE
+            + (output_tokens / 1_000_000) * SONNET_OUTPUT_RATE
         )
-        cost = round(cost, 6)
+        savings = round(unoptimized_cost - cost, 6)
 
         with self.db_session_factory() as session:
             # Log as transaction
@@ -295,9 +328,13 @@ class Accountant:
             "api_cost_tracked",
             agent_id=agent_id,
             model=model,
+            model_reason=model_reason,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+            cache_read_tokens=cache_read_tokens,
             cost=cost,
+            savings=savings,
         )
         return cost
 
@@ -306,7 +343,7 @@ class Accountant:
     # ------------------------------------------------------------------
 
     async def get_system_summary(self) -> dict:
-        """Get a full system financial summary."""
+        """Get a full system financial summary including cost optimization stats."""
         with self.db_session_factory() as session:
             state = session.execute(select(SystemState).limit(1)).scalar_one_or_none()
 
@@ -321,10 +358,19 @@ class Accountant:
                 select(func.count()).where(Agent.status == "hibernating")
             ).scalar() or 0
 
-            # Total API spend
+            # Total API spend (all time)
             total_api_spend = session.execute(
                 select(func.coalesce(func.sum(Transaction.amount), 0.0)).where(
                     Transaction.type == "api_cost"
+                )
+            ).scalar() or 0.0
+
+            # Today's API spend
+            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            today_api_spend = session.execute(
+                select(func.coalesce(func.sum(Transaction.amount), 0.0)).where(
+                    Transaction.type == "api_cost",
+                    Transaction.timestamp >= today_start,
                 )
             ).scalar() or 0.0
 
@@ -335,13 +381,99 @@ class Accountant:
                 cb_ratio = 1.0 - config.circuit_breaker_threshold
                 distance_from_cb = round((current_ratio - cb_ratio) / cb_ratio * 100, 1)
 
+            # Phase 3.5: Cost optimization stats from agent_cycles
+            # Model distribution today
+            try:
+                haiku_count = session.execute(
+                    select(func.count()).select_from(AgentCycle).where(
+                        AgentCycle.timestamp >= today_start,
+                        AgentCycle.model_used.like("%haiku%"),
+                    )
+                ).scalar() or 0
+            except Exception:
+                haiku_count = 0
+
+            try:
+                sonnet_count = session.execute(
+                    select(func.count()).select_from(AgentCycle).where(
+                        AgentCycle.timestamp >= today_start,
+                        AgentCycle.model_used.like("%sonnet%"),
+                    )
+                ).scalar() or 0
+            except Exception:
+                sonnet_count = 0
+
+            total_cycles_today = haiku_count + sonnet_count
+
+            # Average cost per cycle today
+            try:
+                avg_cost = session.execute(
+                    select(func.avg(AgentCycle.api_cost_usd)).where(
+                        AgentCycle.timestamp >= today_start,
+                        AgentCycle.api_cost_usd > 0,
+                    )
+                ).scalar() or 0.0
+            except Exception:
+                avg_cost = 0.0
+
+            # Estimate savings: what all-Sonnet would have cost
+            try:
+                total_input_today = session.execute(
+                    select(func.coalesce(func.sum(AgentCycle.input_tokens), 0)).where(
+                        AgentCycle.timestamp >= today_start,
+                    )
+                ).scalar() or 0
+                total_output_today = session.execute(
+                    select(func.coalesce(func.sum(AgentCycle.output_tokens), 0)).where(
+                        AgentCycle.timestamp >= today_start,
+                    )
+                ).scalar() or 0
+            except Exception:
+                total_input_today = 0
+                total_output_today = 0
+
+            sonnet_baseline_today = (
+                (total_input_today / 1_000_000) * SONNET_INPUT_RATE
+                + (total_output_today / 1_000_000) * SONNET_OUTPUT_RATE
+            )
+            savings_today = round(sonnet_baseline_today - float(today_api_spend), 4)
+
+            # All-time savings estimate (rough: total tokens * diff)
+            try:
+                total_input_all = session.execute(
+                    select(func.coalesce(func.sum(AgentCycle.input_tokens), 0))
+                ).scalar() or 0
+                total_output_all = session.execute(
+                    select(func.coalesce(func.sum(AgentCycle.output_tokens), 0))
+                ).scalar() or 0
+            except Exception:
+                total_input_all = 0
+                total_output_all = 0
+
+            sonnet_baseline_all = (
+                (total_input_all / 1_000_000) * SONNET_INPUT_RATE
+                + (total_output_all / 1_000_000) * SONNET_OUTPUT_RATE
+            )
+            savings_alltime = round(sonnet_baseline_all - float(total_api_spend), 4)
+
             return {
                 "total_treasury": round(total_treasury, 2),
                 "peak_treasury": round(peak_treasury, 2),
                 "total_api_spend": round(float(total_api_spend), 4),
+                "total_api_spend_today": round(float(today_api_spend), 4),
                 "active_agents": active_count,
                 "hibernating_agents": hibernating_count,
                 "alert_status": state.alert_status if state else "unknown",
                 "current_regime": state.current_regime if state else "unknown",
                 "distance_from_circuit_breaker_pct": distance_from_cb,
+                # Phase 3.5: Cost optimization stats
+                "estimated_savings_today": max(0, savings_today),
+                "estimated_savings_alltime": max(0, savings_alltime),
+                "model_distribution_today": {
+                    "haiku": haiku_count,
+                    "sonnet": sonnet_count,
+                },
+                "haiku_ratio_today": round(haiku_count / total_cycles_today * 100, 1) if total_cycles_today > 0 else 0.0,
+                "avg_cost_per_cycle_today": round(float(avg_cost), 6),
+                "total_cycles_today": total_cycles_today,
             }

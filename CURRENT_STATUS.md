@@ -1,23 +1,28 @@
 # Current Status — Project Syndicate
 
-## Last Updated: 2026-03-12
+## Last Updated: 2026-03-21
 
-## Phase: 7 — THE ARENA (Launch Preparation Complete, Awaiting API Key)
+## Phase: 3.5 — API Cost Optimization (COMPLETE)
 
-### Completed This Session (Phase 7 — Arena Launch Preparation)
-- [x] Pre-flight checks: environment, database (41 tables), Redis, exchange (all 5 symbols), tests (601 pass)
-- [x] Boot sequence wired into Genesis run_cycle — auto-triggers on zero active agents
-- [x] Arena run script (`scripts/run_arena.py`) — starts all 5 processes, pre-flight checks, auto-restart, graceful shutdown
-- [x] Monitoring checklist (`docs/arena_monitoring.md`) — daily, Day 10, Day 21 protocols
-- [x] Arena log template (`docs/arena_log.md`) — 21-day structured observation log
-- [x] Clean slate: all agent data truncated, $500 treasury, GREEN alert, Redis flushed
-- [x] Trading mode verified: paper
-- [x] Kraken symbols verified: BTC/USDT, ETH/USDT, SOL/USDT, XRP/USDT, ADA/USDT all working
+### Completed This Session (Phase 3.5 — API Cost Optimization)
+- [x] Model Router — deterministic Haiku/Sonnet routing by role, cycle type, alert level
+- [x] Prompt Caching — cache_control on system prompts, cache-aware cost calculation
+- [x] Adaptive Cycle Frequency — regime-based multipliers with 30s floor
+- [x] Context Window Diet — Haiku budget multiplier, output guidance, Agora truncation
+- [x] Batch Processor — foundation for Batch API (disabled by default)
+- [x] Cost Tracking — multi-model pricing, savings vs all-Sonnet baseline
+- [x] Dashboard — Cost Optimization panel on system page
+- [x] Centralized Model Strings — config.model_sonnet across all files
+- [x] DB schema — model_used/model_reason on agent_cycles
+- [x] Config — 12+ new variables with kill switches
+- [x] Tests — 70 new tests, 671 total passing
+- [x] Documentation — CLAUDE.md, CHANGELOG.md, .env.example updated
 
-### Blocker
-- [ ] **Anthropic API key invalid (401)** — need valid key before Stage 3 (Ignition)
+### Previously Completed (Phase 7 — Arena Launch Preparation)
+- [x] Boot sequence wired into Genesis, Arena run script, monitoring checklist, clean slate
 
 ### Previously Completed (Phase 3F)
+- [x] Death protocol, reproduction engine, dynasty system, lineage tracking, memorials
 
 ### Previously Completed (Phase 3E)
 - [x] Behavioral Profile: 7 traits from behavior, temperature evolution, reflection library, dynamic identity, relationship memory, divergence tracking
@@ -52,23 +57,25 @@
 ### Previously Completed (Phase 0)
 - [x] Full project scaffold, PostgreSQL, Redis, base agent, backup, heartbeat
 
-### What's Next — Stage 3: Ignition
+### What's Next — The Arena (Phase 4/7)
 - [ ] Get valid Anthropic API key
 - [ ] Run `python scripts/run_arena.py` — start the system
 - [ ] Watch Genesis auto-trigger boot sequence (5 agents, 3 waves)
-- [ ] Verify first agent cycles and Agora messages
-- [ ] Monitor for 21 days per `docs/arena_monitoring.md`
+- [ ] Verify model routing in cycle logs (Haiku vs Sonnet selection)
+- [ ] Monitor cost savings in dashboard Cost Optimization panel
+- [ ] Enable Batch API for reflections/evaluations after validation
+
+### Kill Switches (Phase 3.5)
+- `MODEL_ROUTING_ENABLED=false` → All cycles use Sonnet (old behavior)
+- `PROMPT_CACHING_ENABLED=false` → No cache_control sent (old behavior)
+- `ADAPTIVE_FREQUENCY_ENABLED=false` → Fixed intervals (old behavior)
 
 ### Important Notes
 - **Genesis version bumped to 1.3.0** — boot sequence auto-trigger added
 - **Arena launch command**: `python scripts/run_arena.py`
-- **Dynasty concentration**: 40% hard limit, 25% warning — prevents monoculture
-- **Memory inheritance**: 75% confidence discount + age decay — knowledge degrades across generations
-- **Trust inheritance**: 50% blend with neutral prior — offspring start with tempered trust
-- **Founding directives are QUESTIONS**: consumed after orientation, excluded from context post-consumption
-- **Posthumous reproduction**: valid if parent dies same Genesis cycle as reproduction check
-- **Offspring survival clock**: 14 days (not 21-day Gen 1 grace period)
-- **Naive datetime fix**: memorial_manager, lineage_manager, reproduction engine handle both naive and aware datetimes for SQLite test compatibility
+- **Expected savings**: 60-75% reduction in daily API spend
+- **Haiku is the default model** — Sonnet only for high-stakes (evaluations, plans, reviews, trades, crises)
+- **All optimization is transparent** — every cycle logs model_used and model_reason
 
 ### Known Issues
 - PostgreSQL binaries not in system PATH (located at C:/ProDesk/pgsql/bin/)
@@ -80,7 +87,7 @@
 - RuntimeWarning in tests from mock Redis pipeline coroutines (cosmetic only)
 - DeprecationWarning from Starlette TemplateResponse parameter order (cosmetic only)
 - LegacyAPIWarning from Query.get() usage in tests (cosmetic only)
-- 2 pre-existing test_library_textbooks failures (unrelated to Phase 3F)
+- 2 pre-existing test_library_textbooks failures (unrelated to Phase 3.5)
 
 ### Environment Notes
 - Python venv: E:\project syndicate\.venv

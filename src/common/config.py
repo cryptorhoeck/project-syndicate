@@ -5,7 +5,7 @@ All system configuration in one place, loaded from .env with sensible defaults.
 Uses pydantic-settings for validation and type coercion.
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 from pydantic_settings import BaseSettings
 
@@ -196,6 +196,35 @@ class SyndicateConfig(BaseSettings):
     temperature_mutation_range: float = 0.03
     max_reproductions_per_cycle: int = 1
     offspring_survival_clock_days: int = 14
+
+    # Phase 3.5: Cost Optimization
+    # Model routing
+    model_default: str = "claude-haiku-4-5-20251001"
+    model_sonnet: str = "claude-sonnet-4-20250514"
+    model_routing_enabled: bool = True
+
+    # Pricing (per million tokens)
+    haiku_input_price: float = 1.00
+    haiku_output_price: float = 5.00
+    sonnet_input_price: float = 3.00
+    sonnet_output_price: float = 15.00
+
+    # Prompt caching
+    prompt_caching_enabled: bool = True
+
+    # Adaptive frequency
+    adaptive_frequency_enabled: bool = True
+    min_cycle_interval_seconds: int = 30
+
+    # Context diet
+    haiku_context_budget_multiplier: float = 0.70
+    agora_message_truncate_after_cycles: int = 5
+    agora_message_truncate_length: int = 100
+
+    # Batch processing
+    batch_enabled: bool = False
+    batch_poll_interval_seconds: int = 30
+    batch_timeout_seconds: int = 3600
 
     # Logging
     log_level: str = "INFO"

@@ -4,7 +4,7 @@ Project Syndicate — System API Fragment Routes
 Returns HTML fragments for system status page and nav status pill.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 from datetime import datetime, timezone
 
@@ -15,11 +15,13 @@ from sqlalchemy import func, select
 
 from src.common.models import (
     Agent,
+    AgentCycle,
     GamingFlag,
     IntelSignal,
     Message,
     ReviewRequest,
     SystemState,
+    Transaction,
 )
 
 router = APIRouter()
@@ -211,4 +213,118 @@ async def system_alerts(request: Request):
     return templates.TemplateResponse(
         "fragments/agora_messages.html",
         {"request": request, "messages": messages},
+    )
+
+
+@router.get("/cost-optimization", response_class=HTMLResponse)
+async def cost_optimization(request: Request):
+    """Cost optimization stats panel for the system dashboard."""
+    factory = request.app.state.db_session_factory
+
+    with factory() as session:
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # Model distribution today
+        try:
+            haiku_count = session.execute(
+                select(func.count()).select_from(AgentCycle).where(
+                    AgentCycle.timestamp >= today_start,
+                    AgentCycle.model_used.like("%haiku%"),
+                )
+            ).scalar() or 0
+        except Exception:
+            haiku_count = 0
+
+        try:
+            sonnet_count = session.execute(
+                select(func.count()).select_from(AgentCycle).where(
+                    AgentCycle.timestamp >= today_start,
+                    AgentCycle.model_used.like("%sonnet%"),
+                )
+            ).scalar() or 0
+        except Exception:
+            sonnet_count = 0
+
+        total_cycles = haiku_count + sonnet_count
+        haiku_pct = round(haiku_count / total_cycles * 100, 1) if total_cycles > 0 else 0
+
+        # Average cost per cycle
+        try:
+            avg_cost = session.execute(
+                select(func.avg(AgentCycle.api_cost_usd)).where(
+                    AgentCycle.timestamp >= today_start,
+                    AgentCycle.api_cost_usd > 0,
+                )
+            ).scalar() or 0.0
+        except Exception:
+            avg_cost = 0.0
+
+        # Today's total spend
+        today_spend = session.execute(
+            select(func.coalesce(func.sum(Transaction.amount), 0.0)).where(
+                Transaction.type == "api_cost",
+                Transaction.timestamp >= today_start,
+            )
+        ).scalar() or 0.0
+
+        # Estimated savings (tokens * Sonnet rate - actual spend)
+        try:
+            total_input = session.execute(
+                select(func.coalesce(func.sum(AgentCycle.input_tokens), 0)).where(
+                    AgentCycle.timestamp >= today_start,
+                )
+            ).scalar() or 0
+            total_output = session.execute(
+                select(func.coalesce(func.sum(AgentCycle.output_tokens), 0)).where(
+                    AgentCycle.timestamp >= today_start,
+                )
+            ).scalar() or 0
+        except Exception:
+            total_input = 0
+            total_output = 0
+
+        sonnet_baseline = (total_input / 1_000_000) * 3.0 + (total_output / 1_000_000) * 15.0
+        savings = max(0, round(sonnet_baseline - float(today_spend), 4))
+
+        # All-time savings
+        total_spend_all = session.execute(
+            select(func.coalesce(func.sum(Transaction.amount), 0.0)).where(
+                Transaction.type == "api_cost",
+            )
+        ).scalar() or 0.0
+        try:
+            total_input_all = session.execute(
+                select(func.coalesce(func.sum(AgentCycle.input_tokens), 0))
+            ).scalar() or 0
+            total_output_all = session.execute(
+                select(func.coalesce(func.sum(AgentCycle.output_tokens), 0))
+            ).scalar() or 0
+        except Exception:
+            total_input_all = 0
+            total_output_all = 0
+
+        sonnet_baseline_all = (total_input_all / 1_000_000) * 3.0 + (total_output_all / 1_000_000) * 15.0
+        savings_all = max(0, round(sonnet_baseline_all - float(total_spend_all), 4))
+
+    return HTMLResponse(
+        f'<div class="grid grid-cols-2 md:grid-cols-4 gap-4 p-4">'
+        f'<div class="text-center">'
+        f'  <div class="text-xs text-slate-400">Model Distribution</div>'
+        f'  <div class="font-mono text-sm text-slate-200">Haiku: {haiku_count} | Sonnet: {sonnet_count}</div>'
+        f'  <div class="text-xs text-emerald-400">{haiku_pct}% Haiku</div>'
+        f'</div>'
+        f'<div class="text-center">'
+        f'  <div class="text-xs text-slate-400">Avg Cost/Cycle</div>'
+        f'  <div class="font-mono text-lg text-slate-200">${float(avg_cost):.4f}</div>'
+        f'</div>'
+        f'<div class="text-center">'
+        f'  <div class="text-xs text-slate-400">Savings Today</div>'
+        f'  <div class="font-mono text-lg text-emerald-400">${savings:.4f}</div>'
+        f'</div>'
+        f'<div class="text-center">'
+        f'  <div class="text-xs text-slate-400">Savings All-Time</div>'
+        f'  <div class="font-mono text-lg text-emerald-400">${savings_all:.2f}</div>'
+        f'</div>'
+        f'</div>'
     )

@@ -582,7 +582,7 @@ class GenesisAgent(BaseAgent):
                 f"Should it get another chance? Answer SURVIVE or TERMINATE, then explain why."
             )
             response = self.claude.messages.create(
-                model="claude-sonnet-4-5-20250514",
+                model=config.model_sonnet,
                 max_tokens=200,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -590,7 +590,7 @@ class GenesisAgent(BaseAgent):
 
             await self.accountant.track_api_call(
                 agent_id=0,
-                model="claude-sonnet-4-5-20250514",
+                model=config.model_sonnet,
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
             )
@@ -637,7 +637,7 @@ class GenesisAgent(BaseAgent):
                 f"Answer YES or NO, then explain."
             )
             response = self.claude.messages.create(
-                model="claude-sonnet-4-5-20250514",
+                model=config.model_sonnet,
                 max_tokens=300,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -645,7 +645,7 @@ class GenesisAgent(BaseAgent):
 
             await self.accountant.track_api_call(
                 agent_id=0,
-                model="claude-sonnet-4-5-20250514",
+                model=config.model_sonnet,
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
             )
@@ -869,7 +869,7 @@ class GenesisAgent(BaseAgent):
                     f"Data: {json.dumps(report_data, default=str)}"
                 )
                 response = self.claude.messages.create(
-                    model="claude-sonnet-4-5-20250514",
+                    model=config.model_sonnet,
                     max_tokens=1000,
                     messages=[{"role": "user", "content": prompt}],
                 )
@@ -877,7 +877,7 @@ class GenesisAgent(BaseAgent):
 
                 await self.accountant.track_api_call(
                     agent_id=0,
-                    model="claude-sonnet-4-5-20250514",
+                    model=config.model_sonnet,
                     input_tokens=response.usage.input_tokens,
                     output_tokens=response.usage.output_tokens,
                 )

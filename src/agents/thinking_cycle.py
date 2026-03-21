@@ -7,7 +7,7 @@ Runs the OODA loop: Budget → Observe → Orient+Decide → Validate → Act �
 This is the single most important piece of code in the entire project.
 """
 
-__version__ = "0.9.0"
+__version__ = "1.0.0"
 
 import logging
 import time
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from src.common.models import Agent
+from src.common.models import Agent, SystemState
 from src.agents.budget_gate import BudgetGate, BudgetStatus
 from src.agents.claude_client import ClaudeClient, APIResponse
 from src.agents.context_assembler import ContextAssembler, AssembledContext
@@ -23,6 +23,7 @@ from src.agents.output_validator import OutputValidator, ValidationResult
 from src.agents.action_executor import ActionExecutor, ActionResult
 from src.agents.cycle_recorder import CycleRecorder, CycleData
 from src.agents.memory_manager import MemoryManager
+from src.agents.model_router import ModelRouter
 from src.agents.roles import get_role
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,8 @@ class CycleResult:
     reason: str = ""
     api_cost: float = 0.0
     cycle_number: int = 0
+    model_used: str | None = None
+    model_reason: str | None = None
 
 
 class ThinkingCycle:
@@ -76,10 +79,38 @@ class ThinkingCycle:
         self.action_executor = ActionExecutor(db_session, agora_service, warden)
         self.cycle_recorder = CycleRecorder(db_session, redis_client, agora_service)
         self.memory_manager = MemoryManager(db_session, redis_client)
+        self.model_router = ModelRouter()
 
         # Config
         self.reflection_interval = getattr(config, "reflection_every_n_cycles", 10)
         self.retry_tax_multiplier = getattr(config, "retry_tax_multiplier", 2.0)
+
+    def _get_alert_level(self) -> str:
+        """Get current system alert level from database."""
+        try:
+            state = self.db.query(SystemState).first()
+            return state.alert_status if state else "green"
+        except Exception:
+            return "green"
+
+    def _has_pending_trade(self, agent: Agent) -> bool:
+        """Check if an operator agent has a pending trade execution.
+
+        Looks for approved plans awaiting execution by this operator.
+        """
+        if agent.type != "operator":
+            return False
+        try:
+            from src.common.models import Plan
+            pending = (
+                self.db.query(Plan)
+                .filter(Plan.status == "approved")
+                .limit(1)
+                .first()
+            )
+            return pending is not None
+        except Exception:
+            return False
 
     async def run(self, agent_id: int) -> CycleResult:
         """Run a complete thinking cycle for an agent.
@@ -122,11 +153,22 @@ class ThinkingCycle:
         if budget_result.status == BudgetStatus.SURVIVAL_MODE:
             cycle_type = "survival" if not is_reflection else "reflection"
 
+        # ── Model Selection (Phase 3.5) ──
+        model_selection = self.model_router.select_model(
+            agent_role=agent.type,
+            cycle_type=cycle_type,
+            context={
+                "has_pending_trade": self._has_pending_trade(agent),
+                "alert_level": self._get_alert_level(),
+            },
+        )
+
         # ── Phase 1: Observe (Context Assembly) ──
         context = self.context_assembler.assemble(
             agent,
             budget_status=budget_result.status,
             cycle_type=cycle_type,
+            model_selection=model_selection,
         )
 
         # ── Phase 2: Orient + Decide (API Call) ──
@@ -139,18 +181,22 @@ class ThinkingCycle:
                 system_prompt=context.system_prompt,
                 user_prompt=context.user_prompt,
                 temperature=temperature,
+                model=model_selection.model_id,
             )
         except Exception as e:
             logger.error(f"API call failed for {agent.name}: {e}")
             # Record failed cycle
             self._record_failed_cycle(
-                agent, cycle_number, cycle_type, context, str(e), cycle_start
+                agent, cycle_number, cycle_type, context, str(e), cycle_start,
+                model_selection.model_id, model_selection.reason,
             )
             return CycleResult(
                 success=False,
                 failed=True,
                 reason=f"api_error: {e}",
                 cycle_number=cycle_number,
+                model_used=model_selection.model_id,
+                model_reason=model_selection.reason,
             )
         api_latency = int((time.time() - api_start) * 1000)
 
@@ -166,6 +212,15 @@ class ThinkingCycle:
 
         if not validation.passed and validation.retryable:
             # One retry with repair prompt — costs double thinking tax
+            # Retry escalates to Sonnet via model router
+            retry_selection = self.model_router.select_model(
+                agent_role=agent.type,
+                cycle_type="retry",
+                context={
+                    "has_pending_trade": self._has_pending_trade(agent),
+                    "alert_level": self._get_alert_level(),
+                },
+            )
             repair_prompt = self.output_validator.build_repair_prompt(
                 api_response.content, validation.failure_detail
             )
@@ -175,6 +230,7 @@ class ThinkingCycle:
                     original_user_prompt=context.user_prompt,
                     repair_prompt=repair_prompt,
                     temperature=0.2,
+                    model=retry_selection.model_id,
                 )
                 total_cost += repair_response.cost_usd * self.retry_tax_multiplier
 
@@ -192,8 +248,10 @@ class ThinkingCycle:
                     output_tokens=api_response.output_tokens + repair_response.output_tokens,
                     cost_usd=total_cost,
                     latency_ms=api_latency + repair_response.latency_ms,
-                    model=api_response.model,
+                    model=retry_selection.model_id,
                     stop_reason=repair_response.stop_reason,
+                    cache_creation_tokens=api_response.cache_creation_tokens + repair_response.cache_creation_tokens,
+                    cache_read_tokens=api_response.cache_read_tokens + repair_response.cache_read_tokens,
                 )
             except Exception as e:
                 logger.warning(f"Repair call failed for {agent.name}: {e}")
@@ -216,6 +274,8 @@ class ThinkingCycle:
                 api_cost_usd=total_cost,
                 cycle_duration_ms=cycle_duration,
                 api_latency_ms=api_latency,
+                model_used=model_selection.model_id,
+                model_reason=model_selection.reason,
             )
             self.cycle_recorder.record_failed(data)
             self.db.commit()
@@ -226,6 +286,8 @@ class ThinkingCycle:
                 reason=f"validation_failed: {validation.failure_type.value if validation.failure_type else 'unknown'}",
                 api_cost=total_cost,
                 cycle_number=cycle_number,
+                model_used=model_selection.model_id,
+                model_reason=model_selection.reason,
             )
 
         parsed = validation.parsed
@@ -272,6 +334,8 @@ class ThinkingCycle:
                 api_cost_usd=total_cost,
                 cycle_duration_ms=cycle_duration,
                 api_latency_ms=api_latency,
+                model_used=model_selection.model_id,
+                model_reason=model_selection.reason,
             )
         else:
             data = CycleData(
@@ -296,6 +360,8 @@ class ThinkingCycle:
                 api_cost_usd=total_cost,
                 cycle_duration_ms=cycle_duration,
                 api_latency_ms=api_latency,
+                model_used=model_selection.model_id,
+                model_reason=model_selection.reason,
             )
 
         self.cycle_recorder.record(data)
@@ -310,6 +376,8 @@ class ThinkingCycle:
                 "action": action_type,
                 "cost": total_cost,
                 "duration_ms": cycle_duration,
+                "model": model_selection.model_id,
+                "model_reason": model_selection.reason,
             },
         )
 
@@ -318,6 +386,8 @@ class ThinkingCycle:
             action_type=action_type,
             api_cost=total_cost,
             cycle_number=cycle_number,
+            model_used=model_selection.model_id,
+            model_reason=model_selection.reason,
         )
 
     def _record_failed_cycle(
@@ -328,6 +398,8 @@ class ThinkingCycle:
         context: AssembledContext,
         error: str,
         cycle_start: float,
+        model_used: str = "",
+        model_reason: str = "",
     ) -> None:
         """Record a cycle that failed at the API call stage."""
         cycle_duration = int((time.time() - cycle_start) * 1000)
@@ -342,6 +414,8 @@ class ThinkingCycle:
             situation=f"API error: {error[:200]}",
             validation_passed=False,
             cycle_duration_ms=cycle_duration,
+            model_used=model_used,
+            model_reason=model_reason,
         )
         self.cycle_recorder.record_failed(data)
         try:
