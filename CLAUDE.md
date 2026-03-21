@@ -10,8 +10,8 @@ Project Syndicate is an autonomous, self-evolving multi-agent AI financial ecosy
 
 ## Current Status
 
-**Phase:** 3.5 — COMPLETE (API Cost Optimization)
-**Focus:** Tiered model routing, prompt caching, adaptive cycle frequency, context diet, batch API foundation
+**Phase:** 6A — COMPLETE (The Command Center)
+**Focus:** Sci-fi dashboard reskin, SSE live feed, constellation view, agent character cards
 **Last Updated:** 2026-03-12
 
 See `CURRENT_STATUS.md` for detailed session-by-session progress.
@@ -80,16 +80,21 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **All economy events posted to Agora** with message_type=ECONOMY
 - **BaseAgent integration:** create_intel_signal(), endorse_intel(), request_strategy_review(), accept_and_submit_review(), get_my_reputation() — graceful no-op if EconomyService is None
 
-### Web Frontend (Phase 2D)
-- **Public-ready dashboard** — two-tier routes (`/` public, `/admin/` admin) for future auth separation
-- **Tech:** FastAPI + Jinja2 + HTMX + Tailwind CSS (Play CDN)
-- **Dark theme default** with light toggle. Preference in localStorage
-- **5 pages:** Agora (live feed), Leaderboard (rankings), Library (knowledge base), Agents (population), System (health)
-- **HTMX auto-refresh:** Agora 10s, System 30s, Leaderboard/Agents 60s
-- **All API routes** return HTML fragments for HTMX swap (prefix: `/api/`)
-- **Design:** "Mission Control for AI Colony" — JetBrains Mono + IBM Plex Sans, agent-type color coding
-- **App factory:** `src/web/app.py`, runner: `python scripts/run_web.py` (port 8000)
-- **No auth in Phase 2D** — running on localhost. Auth comes in Phase 6
+### Web Frontend (Phase 6A — Command Center)
+- **Complete visual overhaul** — sci-fi command center aesthetic (Stellaris meets Bloomberg Terminal)
+- **Dark theme only** (deep navy `#080c18`). No light mode toggle.
+- **Home page:** Command Center with agent cards, live SSE feed, constellation, leaderboard, system stats
+- **Agent cards:** hex avatars, survival bars, sparklines, visual states (active glow/hibernating dim/dying cracks/dead greyscale+stamp)
+- **Live Feed:** Server-Sent Events (`/api/events/stream`) for real-time Agora message streaming
+- **Constellation:** Canvas-based force-directed ecosystem graph (`static/js/constellation.js`)
+- **Event Banners:** Full-width alerts for major events (death, birth, Black Swan, circuit breaker)
+- **Sticky top bar:** PROJECT SYNDICATE + LIVE badge + nav tabs + system vitals (treasury, alert, regime, agents)
+- **Fonts:** JetBrains Mono (data/metrics) + Inter (UI text)
+- **Color palette:** cyan (scout), amber (strategist), red (critic), green (operator), purple (dynasty)
+- **Tech unchanged:** FastAPI + Jinja2 + HTMX + Tailwind CSS (Play CDN) + vanilla JS
+- **Cost optimization panel** shows Phase 3.5 savings data (Haiku routing %, savings, avg cost/cycle)
+- **API endpoints:** `/api/system/topbar`, `/api/system/constellation`, `/api/events/stream` (SSE)
+- **App factory:** `src/web/app.py` v2.0.0, runner: `python scripts/run_web.py` (port 8000)
 
 ### Natural Selection (Phase 3D)
 - **Role Metrics** (`src/genesis/role_metrics.py`) — role-specific composite scoring: Operator (Sharpe/P&L/Efficiency/Consistency), Scout (Conversion/Profitability/Signal Quality/Efficiency/Activity), Strategist (Approval/Profitability/Efficiency/Revision/Thinking), Critic (Rejection Value/Approval Accuracy/Risk Flags/Throughput/Thinking). Normalization helper with configurable ranges.
@@ -275,7 +280,8 @@ At the beginning of every script or module, include (or call) standard boilerpla
 | 3.5 | API Cost Optimization (model routing, caching, adaptive frequency) | **COMPLETE** |
 | 4 | The Arena (full paper trading validation) | Pending |
 | 5 | Social Presence + Solana | Pending |
-| 6 | Owner Console + Polish | Pending |
+| 6A | The Command Center (sci-fi dashboard) | **COMPLETE** |
+| 6B | Owner Console + Auth | Pending |
 | 7 | The Arena (full paper trading validation) | Pending |
 | 8 | Go Live (real capital) | Pending |
 

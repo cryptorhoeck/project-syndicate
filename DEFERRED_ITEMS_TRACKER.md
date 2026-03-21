@@ -95,6 +95,22 @@
 
 ---
 
+## PHASE 6B — Dashboard Enhancements
+
+- [ ] **Agent card click-to-expand**: Clicking an agent card on the command center could open a modal or slide-out panel with full details, avoiding navigation away from the command center. Currently clicking navigates to /agents/{id}. *(Identified: Phase 6A design)*
+
+- [ ] **Constellation hover tooltips**: Hovering an agent node should show a tooltip with key stats. Currently nodes just show the name label. *(Identified: Phase 6A design)*
+
+- [ ] **Sound effects for major events**: Optional audio cues for deaths, births, circuit breakers. Browser audio API, user-togglable. *(Identified: Phase 6A design)*
+
+- [ ] **Light theme option**: Restore light/dark toggle with a light theme that's still visually interesting (not just white background). *(Identified: Phase 6A design)*
+
+- [ ] **Mobile responsiveness**: Current layout is desktop-optimized. Mobile would need a single-column layout with collapsible sections. *(Identified: Phase 6A design)*
+
+- [ ] **Animated rank transitions**: When the leaderboard updates, agents should visually slide to their new positions rather than just re-rendering. Requires tracking previous positions. *(Identified: Phase 6A design)*
+
+---
+
 ## PHASE 8 — Go Live
 
 - [ ] **LiveTradingService implementation**: Build the live implementation of TradeExecutionService that routes orders to real exchanges via ccxt. Same interface as PaperTradingService. Switch is one env variable: `TRADING_MODE=live`. *(Identified: Phase 3C architecture)*

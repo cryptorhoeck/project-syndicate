@@ -1,0 +1,49 @@
+{#
+    Hex Avatar Macro — generates deterministic hexagonal SVG avatar per agent.
+    Usage: {% with av_id=agent.id, av_role=agent.type, av_status=agent.status, av_survival=agent.survival_days|default(14), av_size=48 %}
+           {% include "components/hex_avatar.html" %}
+           {% endwith %}
+#}
+{% set role_colors = {'scout': '#00e5ff', 'strategist': '#ffb300', 'critic': '#ff3d3d', 'operator': '#00e676', 'genesis': '#ffffff'} %}
+{% set rc = role_colors.get(av_role|default('scout'), '#00e5ff') %}
+{% set sz = av_size|default(48) %}
+{% set r = sz / 2 %}
+{% set cr = r * 0.75 %}
+{% set is_dead = av_status|default('active') in ['terminated', 'dead'] %}
+{% set is_dying = (av_survival|default(14)|float) < 3 and not is_dead %}
+{% set is_active = not is_dead and av_status|default('active') != 'hibernating' %}
+{# Simple hash from id + role for deterministic segments #}
+{% set seed = ((av_id|default(1)|int * 2654435761) % (2**32)) %}
+<svg width="{{ sz }}" height="{{ sz }}" viewBox="0 0 {{ sz }} {{ sz }}"
+     style="{% if is_dead %}filter: grayscale(1); opacity: 0.4;{% endif %} display: block;">
+    {% for i in range(6) %}
+    {% set bit = ((seed|int // (16 ** i)) % 16) %}
+    {% set op = 0.2 + (bit / 15.0) * 0.8 %}
+    {% set a1_deg = 60 * i - 90 %}
+    {% set a2_deg = 60 * (i + 1) - 90 %}
+    {# Precomputed approximate cos/sin for 0,60,120,180,240,300 degree offsets from -90 #}
+    {% set cos_vals = [0, 0.866, 0.866, 0, -0.866, -0.866, 0] %}
+    {% set sin_vals = [-1, -0.5, 0.5, 1, 0.5, -0.5, -1] %}
+    {% set x1 = r + cr * cos_vals[i] %}
+    {% set y1 = r + cr * sin_vals[i] %}
+    {% set x2 = r + cr * cos_vals[i + 1] %}
+    {% set y2 = r + cr * sin_vals[i + 1] %}
+    <path d="M{{ r }},{{ r }}L{{ "%.1f"|format(x1) }},{{ "%.1f"|format(y1) }}L{{ "%.1f"|format(x2) }},{{ "%.1f"|format(y2) }}Z"
+          fill="{{ rc }}" opacity="{{ "%.2f"|format(op) }}" />
+    {% endfor %}
+    <circle cx="{{ r }}" cy="{{ r }}" r="{{ "%.1f"|format(cr) }}" fill="none" stroke="{{ rc }}" stroke-width="1" opacity="0.6" />
+    {% if is_active and not is_dead %}
+    <circle cx="{{ r }}" cy="{{ r }}" r="{{ "%.1f"|format(cr + 3) }}" fill="none" stroke="{{ rc }}" stroke-width="1.5" opacity="0.3">
+        <animate attributeName="r" values="{{ "%.1f"|format(cr + 2) }};{{ "%.1f"|format(cr + 6) }};{{ "%.1f"|format(cr + 2) }}" dur="2s" repeatCount="indefinite" />
+        <animate attributeName="opacity" values="0.4;0.1;0.4" dur="2s" repeatCount="indefinite" />
+    </circle>
+    {% endif %}
+    {% if is_dying and not is_dead %}
+    <line x1="{{ "%.1f"|format(r - cr * 0.6) }}" y1="{{ "%.1f"|format(r - cr * 0.3) }}"
+          x2="{{ "%.1f"|format(r + cr * 0.2) }}" y2="{{ "%.1f"|format(r + cr * 0.5) }}"
+          stroke="#ff3d3d" stroke-width="1" opacity="0.6" />
+    <line x1="{{ "%.1f"|format(r + cr * 0.3) }}" y1="{{ "%.1f"|format(r - cr * 0.5) }}"
+          x2="{{ "%.1f"|format(r - cr * 0.1) }}" y2="{{ "%.1f"|format(r + cr * 0.4) }}"
+          stroke="#ff3d3d" stroke-width="0.8" opacity="0.4" />
+    {% endif %}
+</svg>

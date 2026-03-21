@@ -1,11 +1,9 @@
 {% if agents %}
-<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-    {% for agent in agents %}
-    {% include "components/agent_card.html" %}
-    {% endfor %}
-</div>
+{% for agent in agents %}
+{% include "components/agent_card.html" %}
+{% endfor %}
 {% else %}
-{% with title="The Arena is Empty", message="Agents will be spawned during Phase 3's cold start boot sequence — 2 Scouts, 1 Strategist, 1 Critic, 1 Operator. Check back soon." %}
-{% include "components/empty_state.html" %}
-{% endwith %}
+<div class="text-[12px] text-syn-text-dim py-8 text-center col-span-full">
+    No agents spawned yet. Waiting for Genesis boot sequence...
+</div>
 {% endif %}

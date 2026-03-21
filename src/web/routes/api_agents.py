@@ -2,9 +2,10 @@
 Project Syndicate — Agents API Fragment Routes
 
 Returns HTML fragments for Agent cards and detail views.
+Phase 6A: Enriched agent card data for Command Center.
 """
 
-__version__ = "0.6.0"
+__version__ = "1.0.0"
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
@@ -12,6 +13,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
 from src.common.models import Agent, Message, ReputationTransaction
+from src.web.routes.pages import _build_agent_card_data
 
 router = APIRouter()
 
@@ -28,20 +30,7 @@ async def agent_cards(request: Request, include_dead: bool = False):
         stmt = stmt.order_by(Agent.composite_score.desc())
         rows = list(session.execute(stmt).scalars().all())
 
-        agents = [
-            {
-                "id": a.id,
-                "name": a.name,
-                "type": a.type,
-                "status": a.status,
-                "generation": a.generation,
-                "prestige_title": a.prestige_title,
-                "total_true_pnl": a.total_true_pnl or 0.0,
-                "reputation_score": a.reputation_score or 0.0,
-                "composite_score": a.composite_score or 0.0,
-            }
-            for a in rows
-        ]
+        agents = [_build_agent_card_data(a, session) for a in rows]
 
     return templates.TemplateResponse(
         "fragments/agent_cards.html",
@@ -107,19 +96,19 @@ async def agent_reputation(request: Request, agent_id: int, limit: int = 20):
 
         if not rows:
             return HTMLResponse(
-                '<div class="p-4 text-sm text-slate-500">No reputation transactions yet.</div>'
+                '<div class="p-4 text-[11px] text-syn-text-dim">No reputation transactions yet.</div>'
             )
 
         html_parts = []
         for t in rows:
             is_incoming = t.to_agent_id == agent_id and t.from_agent_id != agent_id
             amount_str = f"+{t.amount:.1f}" if is_incoming else f"-{t.amount:.1f}"
-            color = "text-emerald-400" if is_incoming else "text-rose-400"
+            color = "color: #00e676;" if is_incoming else "color: #ff3d3d;"
             html_parts.append(
-                f'<div class="flex items-center justify-between px-4 py-2 border-b border-slate-700/50">'
-                f'<span class="font-mono text-sm {color}">{amount_str}</span>'
-                f'<span class="text-xs text-slate-400 truncate max-w-xs">{t.reason or "—"}</span>'
-                f'<span class="font-mono text-xs text-slate-500" data-timestamp="{t.timestamp}">{t.timestamp}</span>'
+                f'<div class="flex items-center justify-between px-4 py-2" style="border-bottom: 1px solid #1a244440;">'
+                f'<span class="font-mono text-sm" style="{color}">{amount_str}</span>'
+                f'<span class="text-xs truncate max-w-xs" style="color:#8892b0;">{t.reason or "—"}</span>'
+                f'<span class="font-mono text-xs text-syn-text-dim" data-timestamp="{t.timestamp}">{t.timestamp}</span>'
                 f'</div>'
             )
 

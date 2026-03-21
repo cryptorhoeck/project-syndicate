@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,20 +8,29 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
-            darkMode: 'class',
             theme: {
                 extend: {
                     fontFamily: {
                         mono: ['"JetBrains Mono"', 'monospace'],
-                        sans: ['"IBM Plex Sans"', 'sans-serif'],
+                        sans: ['"Inter"', '-apple-system', 'sans-serif'],
                     },
                     colors: {
-                        'agent-genesis': { DEFAULT: '#fbbf24', light: '#b45309' },
-                        'agent-scout': { DEFAULT: '#38bdf8', light: '#0369a1' },
-                        'agent-strategist': { DEFAULT: '#a78bfa', light: '#6d28d9' },
-                        'agent-critic': { DEFAULT: '#fb923c', light: '#c2410c' },
-                        'agent-operator': { DEFAULT: '#34d399', light: '#047857' },
-                        'agent-system': { DEFAULT: '#f43f5e', light: '#be123c' },
+                        syn: {
+                            bg: '#080c18',
+                            panel: '#0d1225',
+                            card: '#111832',
+                            border: '#1a2444',
+                            glow: '#2a3a6a',
+                            cyan: '#00e5ff',
+                            amber: '#ffb300',
+                            red: '#ff3d3d',
+                            green: '#00e676',
+                            purple: '#b388ff',
+                            silver: '#8892b0',
+                            text: '#ccd6f6',
+                            'text-sec': '#8892b0',
+                            'text-dim': '#4a5580',
+                        }
                     }
                 }
             }
@@ -30,29 +39,44 @@
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
 
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+
+    <style>
+        * { box-sizing: border-box; }
+        body { background: #080c18; color: #ccd6f6; font-family: 'Inter', -apple-system, sans-serif; margin: 0; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #1a2444; border-radius: 2px; }
+
+        .htmx-indicator { opacity: 0; transition: opacity 200ms ease-in; }
+        .htmx-request .htmx-indicator { opacity: 1; }
+
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+        @keyframes pulse-dot { 0%,100%{transform:scale(1);opacity:0.5} 50%{transform:scale(1.8);opacity:1} }
+        @keyframes card-in { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes feed-in { from{opacity:0;transform:translateX(-10px)} to{opacity:1;transform:translateX(0)} }
+        @keyframes banner-in { from{transform:translateY(-100%)} to{transform:translateY(0)} }
+        @keyframes glow-pulse { 0%,100%{box-shadow: inset 0 0 20px var(--glow-color, transparent)} 50%{box-shadow: inset 0 0 40px var(--glow-color, transparent)} }
+        @keyframes flash-red { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+        .flash-circuit { animation: flash-red 1s ease-in-out infinite; }
+
+        .importance-critical { border-left: 3px solid #ff3d3d; }
+        .importance-important { border-left: 3px solid #ffb300; }
+    </style>
+
     <script>
-        if (localStorage.getItem('theme') === 'light') {
-            document.documentElement.classList.remove('dark');
-        }
-        function toggleTheme() {
-            const html = document.documentElement;
-            if (html.classList.contains('dark')) {
-                html.classList.remove('dark');
-                localStorage.setItem('theme', 'light');
-            } else {
-                html.classList.add('dark');
-                localStorage.setItem('theme', 'dark');
-            }
-        }
         function timeAgo(isoStr) {
             if (!isoStr) return '';
             const date = new Date(isoStr);
             const now = new Date();
             const seconds = Math.floor((now - date) / 1000);
+            if (seconds < 0) return 'just now';
             if (seconds < 60) return seconds + 's ago';
             const minutes = Math.floor(seconds / 60);
             if (minutes < 60) return minutes + 'm ago';
@@ -61,48 +85,89 @@
             const days = Math.floor(hours / 24);
             return days + 'd ago';
         }
-        document.addEventListener('DOMContentLoaded', function() {
+        function updateTimestamps() {
             document.querySelectorAll('[data-timestamp]').forEach(function(el) {
                 el.textContent = timeAgo(el.getAttribute('data-timestamp'));
                 el.title = el.getAttribute('data-timestamp');
             });
-        });
-        document.addEventListener('htmx:afterSwap', function() {
-            document.querySelectorAll('[data-timestamp]').forEach(function(el) {
-                el.textContent = timeAgo(el.getAttribute('data-timestamp'));
-                el.title = el.getAttribute('data-timestamp');
-            });
-        });
+        }
+        document.addEventListener('DOMContentLoaded', updateTimestamps);
+        document.addEventListener('htmx:afterSwap', updateTimestamps);
     </script>
-
-    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-
-    <style>
-        body { font-family: 'IBM Plex Sans', sans-serif; }
-        .font-mono { font-family: 'JetBrains Mono', monospace; }
-        .htmx-indicator { opacity: 0; transition: opacity 200ms ease-in; }
-        .htmx-request .htmx-indicator { opacity: 1; }
-        * { transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease; }
-        .dark ::-webkit-scrollbar { width: 8px; }
-        .dark ::-webkit-scrollbar-track { background: #1e293b; }
-        .dark ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
-        .importance-critical { border-left: 3px solid #f43f5e; }
-        .importance-important { border-left: 3px solid #fbbf24; }
-        @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        .pulse-live { animation: pulse-dot 2s ease-in-out infinite; }
-        @keyframes flash-red { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
-        .flash-circuit { animation: flash-red 1s ease-in-out infinite; }
-    </style>
 </head>
-<body class="bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100 font-sans min-h-screen">
+<body class="min-h-screen">
 
-    <div class="flex min-h-screen">
-        {% include "components/nav.html" %}
-
-        <main class="flex-1 ml-64 p-6">
-            {% block content %}{% endblock %}
-        </main>
+    <!-- Event Banner (hidden, shown by JS) -->
+    <div id="event-banner" style="display:none; position:fixed; top:0; left:0; right:0; z-index:100;
+        border-bottom: 1px solid; padding: 10px 20px; text-align:center;
+        animation: banner-in 0.5s ease; backdrop-filter: blur(10px);"
+        class="flex items-center justify-center gap-3">
+        <span id="banner-icon" style="font-size:18px;"></span>
+        <span id="banner-text" class="font-mono" style="font-size:13px; font-weight:600; letter-spacing:0.5px;"></span>
     </div>
+
+    <!-- Sticky Top Bar -->
+    <header class="sticky top-0 z-50 flex items-center gap-5 px-5 border-b border-syn-border"
+            style="background: #0d1225; height: 48px;">
+        <!-- Logo + LIVE badge -->
+        <div class="flex items-center gap-2.5 shrink-0">
+            <a href="/" class="font-mono font-bold text-[15px] tracking-[2px] text-syn-text no-underline hover:text-white transition-colors">
+                PROJECT SYNDICATE
+            </a>
+            <div class="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-semibold"
+                 style="background: #00e67620; border: 1px solid #00e67640; color: #00e676;">
+                <div class="w-[5px] h-[5px] rounded-full bg-syn-green" style="animation: blink 1.5s infinite;"></div>
+                LIVE
+            </div>
+        </div>
+
+        <!-- Nav Tabs -->
+        <nav class="flex items-center gap-1 ml-4">
+            {% set nav_items = [
+                ('/', 'command_center', 'Command Center'),
+                ('/agora', 'agora', 'Agora'),
+                ('/agents', 'agents', 'Agents'),
+                ('/library', 'library', 'Library'),
+                ('/system', 'system', 'System'),
+            ] %}
+            {% for href, page_id, label in nav_items %}
+            <a href="{{ href }}"
+               class="px-3 py-1.5 text-[12px] font-medium rounded transition-colors
+                      {% if current_page == page_id %}text-syn-cyan border-b-2 border-syn-cyan{% else %}text-syn-text-sec hover:text-syn-text{% endif %}">
+                {{ label }}
+            </a>
+            {% endfor %}
+        </nav>
+
+        <div class="flex-1"></div>
+
+        <!-- System Vitals -->
+        <div class="flex items-center gap-5 shrink-0"
+             hx-get="/api/system/topbar" hx-trigger="load, every 30s" hx-swap="innerHTML">
+            {% include "fragments/topbar_vitals.html" %}
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Event Banner JS -->
+    <script>
+        function showEventBanner(event) {
+            var banner = document.getElementById('event-banner');
+            var icon = document.getElementById('banner-icon');
+            var text = document.getElementById('banner-text');
+            icon.textContent = event.icon;
+            text.textContent = event.text;
+            text.style.color = '#ccd6f6';
+            banner.style.display = 'flex';
+            banner.style.background = 'linear-gradient(90deg, ' + event.color + '20, ' + event.color + '08)';
+            banner.style.borderBottomColor = event.color + '60';
+            setTimeout(function() { banner.style.display = 'none'; }, 6000);
+        }
+    </script>
 
 </body>
 </html>

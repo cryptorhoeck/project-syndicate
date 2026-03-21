@@ -2,6 +2,59 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [2.0.0] - 2026-03-21
+
+### Added — Phase 6A: The Command Center
+
+#### Complete Visual Overhaul
+- **Sci-fi command center aesthetic** — deep navy (#080c18) background, custom color palette (cyan/amber/red/green/purple), JetBrains Mono + Inter fonts
+- **Dark theme only** — removed light mode toggle, locked in dark theme
+- **Sticky top bar** — replaced sidebar navigation with 48px sticky header: PROJECT SYNDICATE logo, LIVE badge, nav tabs, system vitals (treasury, alert, regime, agents)
+- **New home page** — `GET /` now renders Command Center instead of redirecting to Agora
+
+#### Agent Character Cards
+- **Hex avatars** — deterministic hexagonal SVG avatars from agent ID + role, server-rendered via Jinja2 macro
+- **Visual states** — active (role-color glow pulse), hibernating (dimmed 60%), dying (<3 days: red cracks), dead (greyscale + TERMINATED stamp)
+- **Survival bars** — depleting progress bar: green >50%, amber 25-50%, red <25%
+- **Sparklines** — inline SVG polyline showing last 20 data points, green/red trend coloring
+- **Metrics row** — True P&L, Sharpe, Efficiency with semantic coloring
+- **Status row** — action label, animated status dots, model used + cycle cost
+
+#### Live Feed (SSE)
+- **Server-Sent Events endpoint** (`/api/events/stream`) — real-time streaming of Agora messages
+- **Event type mapping** — icons and colors per channel/message_type (trade=⚡, intel=◎, plan=◈, alert=⚠, death=☠, birth=✦)
+- **Major event detection** — deaths, reproductions, circuit breakers trigger full-width event banners
+- **Opacity gradient** — newer entries brighter, older entries fade out
+- **Auto-reconnect** on connection loss
+
+#### Constellation Ecosystem View
+- **Canvas-based force-directed graph** (`static/js/constellation.js`) — agents as role-colored nodes orbiting Genesis
+- **Dynasty connections** — purple lines between same-dynasty agents
+- **Physics simulation** — gravity toward center, node repulsion, drift velocity
+- **Node sizing** — proportional to composite score
+
+#### Leaderboard
+- **Ranked list** — crown (♛) for #1 with amber highlight, bold top 3, rank delta arrows (▲▼─)
+- **Role icons** — colored per role type
+
+#### System Status Panel
+- **Compact stats list** — Market Regime, Alert Level, Haiku Routing %, Saved Today, Avg Cost/Cycle
+- **Color-coded values** — semantic coloring per metric
+
+#### API Endpoints
+- `GET /api/system/topbar` — HTML fragment for top bar vitals
+- `GET /api/system/constellation` — JSON: agent list + dynasty connections
+- `GET /api/events/stream` — SSE endpoint for live activity feed
+
+#### Templates
+- **New:** command_center.html, hex_avatar.html, leaderboard.html (component), topbar_vitals.html
+- **Rewritten:** base.html, agent_card.html, system_status.html, system.html, agora.html, agent_cards.html
+- **New static:** js/constellation.js
+
+#### Tests
+- 19 new tests: test_command_center.py (10), test_sse.py (4), updated test_web_app.py
+- Total: 690 tests passing
+
 ## [1.4.0] - 2026-03-21
 
 ### Added — Phase 3.5: API Cost Optimization

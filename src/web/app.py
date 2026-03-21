@@ -1,9 +1,9 @@
 """
 Project Syndicate — Web Frontend
-Mission Control for an AI Trading Ecosystem
+Command Center for an AI Trading Ecosystem
 """
 
-__version__ = "1.2.0"
+__version__ = "2.0.0"
 
 import os
 from contextlib import asynccontextmanager
@@ -47,7 +47,7 @@ def create_app() -> FastAPI:
     """Application factory."""
     app = FastAPI(
         title="Project Syndicate",
-        description="Mission Control for an AI Trading Ecosystem",
+        description="Command Center for an AI Trading Ecosystem",
         version=__version__,
         lifespan=lifespan,
     )
@@ -67,6 +67,7 @@ def create_app() -> FastAPI:
     from src.web.routes.api_system import router as api_system_router
     from src.web.routes.api_personality import router as api_personality_router
     from src.web.routes.api_dynasty import router as api_dynasty_router
+    from src.web.routes.api_sse import router as api_sse_router
 
     app.include_router(pages_router)
     app.include_router(api_agora_router, prefix="/api/agora")
@@ -76,11 +77,7 @@ def create_app() -> FastAPI:
     app.include_router(api_system_router, prefix="/api/system")
     app.include_router(api_personality_router, prefix="/api/personality")
     app.include_router(api_dynasty_router, prefix="/api/dynasties")
-
-    # Root redirect
-    @app.get("/")
-    async def root():
-        return RedirectResponse(url="/agora", status_code=302)
+    app.include_router(api_sse_router, prefix="/api/events")
 
     # Admin catch-all redirect (Phase 6 adds auth)
     @app.get("/admin/{path:path}")

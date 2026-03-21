@@ -1,0 +1,29 @@
+{# Leaderboard — Phase 6A Command Center design #}
+{% set role_colors = {'scout': '#00e5ff', 'strategist': '#ffb300', 'critic': '#ff3d3d', 'operator': '#00e676', 'genesis': '#ffffff'} %}
+{% set role_icons = {'scout': '◎', 'strategist': '◈', 'critic': '◆', 'operator': '▣', 'genesis': '◇'} %}
+<div class="text-[11px] text-syn-text-dim tracking-[2px] mb-2.5">LEADERBOARD</div>
+{% if agents|default([])|length == 0 %}
+<div class="text-[11px] text-syn-text-dim py-4">No agents ranked yet.</div>
+{% else %}
+{% for a in agents %}
+{% set rc = role_colors.get(a.type, '#00e5ff') %}
+{% set ri = role_icons.get(a.type, '◎') %}
+{% set rank = loop.index %}
+{% set delta = a.rank_delta|default(0)|int %}
+<div class="flex items-center gap-2.5 py-1.5 px-2.5 rounded-md mb-0.5"
+     style="{{ 'background: #ffb30010; border-left: 2px solid #ffb300;' if rank == 1 else 'border-left: 2px solid transparent;' }}">
+    <span class="text-[12px] font-bold font-mono min-w-[18px] text-right"
+          style="color: {{ '#ffb300' if rank == 1 else '#ccd6f6' if rank <= 3 else '#4a5580' }};">
+        {{ '♛' if rank == 1 else rank ~ '.' }}
+    </span>
+    <span class="text-[10px]" style="color:{{ rc }};">{{ ri }}</span>
+    <span class="text-[12px] flex-1 {{ 'font-semibold' if rank <= 3 else '' }}" style="color:#ccd6f6;">{{ a.name }}</span>
+    <span class="text-[10px] font-mono" style="color: {{ '#00e676' if delta > 0 else '#ff3d3d' if delta < 0 else '#4a5580' }};">
+        {{ '▲' ~ delta if delta > 0 else '▼' ~ delta|abs if delta < 0 else '─' }}
+    </span>
+    <span class="text-[11px] font-mono min-w-[36px] text-right" style="color:#8892b0;">
+        {{ "%.2f"|format(a.composite_score|default(0)) }}
+    </span>
+</div>
+{% endfor %}
+{% endif %}

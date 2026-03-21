@@ -4,7 +4,7 @@ Project Syndicate — System API Fragment Routes
 Returns HTML fragments for system status page and nav status pill.
 """
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 from datetime import datetime, timezone
 
@@ -328,3 +328,91 @@ async def cost_optimization(request: Request):
         f'</div>'
         f'</div>'
     )
+
+
+@router.get("/topbar", response_class=HTMLResponse)
+async def topbar_vitals(request: Request):
+    """System vitals for the sticky top bar."""
+    templates = request.app.state.templates
+    factory = request.app.state.db_session_factory
+
+    ctx = {"request": request}
+    try:
+        with factory() as session:
+            state = session.execute(select(SystemState)).scalars().first()
+            if state:
+                ctx["treasury_balance"] = state.total_treasury or 0.0
+                ctx["alert_status"] = state.alert_status or "green"
+                ctx["current_regime"] = state.current_regime or "unknown"
+                ctx["active_agent_count"] = state.active_agent_count or 0
+            else:
+                ctx["treasury_balance"] = 0.0
+                ctx["alert_status"] = "green"
+                ctx["current_regime"] = "unknown"
+                ctx["active_agent_count"] = 0
+    except Exception:
+        ctx["treasury_balance"] = 0.0
+        ctx["alert_status"] = "green"
+        ctx["current_regime"] = "unknown"
+        ctx["active_agent_count"] = 0
+
+    return templates.TemplateResponse(
+        "fragments/topbar_vitals.html", ctx
+    )
+
+
+@router.get("/constellation")
+async def constellation_data(request: Request):
+    """JSON endpoint for the constellation ecosystem view."""
+    from fastapi.responses import JSONResponse
+    factory = request.app.state.db_session_factory
+
+    with factory() as session:
+        agents = list(
+            session.execute(
+                select(Agent).where(
+                    Agent.id != 0,
+                    Agent.status.in_(["active", "hibernating"]),
+                )
+            ).scalars().all()
+        )
+
+        agent_list = []
+        for a in agents:
+            dynasty_name = "House of Genesis"
+            if a.dynasty_id:
+                try:
+                    from src.common.models import Dynasty
+                    dynasty = session.get(Dynasty, a.dynasty_id)
+                    if dynasty and dynasty.founder_name:
+                        dynasty_name = f"House of {dynasty.founder_name}"
+                except Exception:
+                    pass
+
+            agent_list.append({
+                "id": a.id,
+                "name": a.name,
+                "role": a.type,
+                "dynasty": dynasty_name,
+                "composite_score": int((a.composite_score or 0) * 100) if (a.composite_score or 0) <= 1 else int(a.composite_score or 0),
+                "status": a.status,
+            })
+
+        # Dynasty connections
+        connections = []
+        for i, a1 in enumerate(agent_list):
+            for j, a2 in enumerate(agent_list):
+                if j <= i:
+                    continue
+                if a1["dynasty"] == a2["dynasty"] and a1["dynasty"]:
+                    connections.append({
+                        "from": a1["id"],
+                        "to": a2["id"],
+                        "type": "dynasty",
+                        "strength": 1.0,
+                    })
+
+    return JSONResponse({
+        "agents": agent_list,
+        "connections": connections,
+    })

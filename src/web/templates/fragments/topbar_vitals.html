@@ -1,0 +1,15 @@
+{% set alert_colors = {'green': '#00e676', 'yellow': '#ffb300', 'red': '#ff3d3d', 'circuit_breaker': '#ff3d3d'} %}
+{% set alert_color = alert_colors.get(alert_status|default('green'), '#00e676') %}
+{% set regime_color = '#00e5ff' if 'bull' in (current_regime|default('unknown'))|lower else '#ff3d3d' if 'bear' in (current_regime|default('unknown'))|lower else '#ffb300' if 'volatile' in (current_regime|default('unknown'))|lower else '#8892b0' %}
+{% set vitals = [
+    ('TREASURY', '$' ~ "%.2f"|format(treasury_balance|default(0)), '#00e676'),
+    ('ALERT', (alert_status|default('green'))|upper, alert_color),
+    ('REGIME', (current_regime|default('unknown'))|upper, regime_color),
+    ('AGENTS', (active_agent_count|default(0))|string, '#8892b0'),
+] %}
+{% for label, value, color in vitals %}
+<div class="flex flex-col items-center">
+    <span class="text-[9px] text-syn-text-dim tracking-[1.5px] mb-px">{{ label }}</span>
+    <span class="text-[12px] font-semibold font-mono" style="color: {{ color }};">{{ value }}</span>
+</div>
+{% endfor %}

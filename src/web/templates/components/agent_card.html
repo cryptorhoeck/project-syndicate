@@ -1,40 +1,143 @@
-{# Parameters: agent (dict) #}
-{% set type_colors = {
-    'genesis': 'text-agent-genesis', 'scout': 'text-agent-scout',
-    'strategist': 'text-agent-strategist', 'critic': 'text-agent-critic',
-    'operator': 'text-agent-operator',
+{# Agent Card — Phase 6A Command Center design #}
+{% set role_colors = {'scout': '#00e5ff', 'strategist': '#ffb300', 'critic': '#ff3d3d', 'operator': '#00e676', 'genesis': '#ffffff'} %}
+{% set role_icons = {'scout': '◎', 'strategist': '◈', 'critic': '◆', 'operator': '▣', 'genesis': '◇'} %}
+{% set prestige_map = {
+    'Unproven': {'stars': 0, 'color': '#4a5580'},
+    'Apprentice': {'stars': 1, 'color': '#8892b0'},
+    'Journeyman': {'stars': 1, 'color': '#8892b0'},
+    'Proven': {'stars': 1, 'color': '#8892b0'},
+    'Veteran': {'stars': 2, 'color': '#ffb300'},
+    'Expert': {'stars': 2, 'color': '#ffb300'},
+    'Elite': {'stars': 3, 'color': '#00e5ff'},
+    'Master': {'stars': 3, 'color': '#00e5ff'},
+    'Legendary': {'stars': 4, 'color': '#b388ff'},
+    'Grandmaster': {'stars': 4, 'color': '#b388ff'},
 } %}
-{% set prestige_colors = {
-    'Proven': 'text-slate-400', 'Veteran': 'text-sky-400',
-    'Elite': 'text-violet-400', 'Legendary': 'text-amber-400',
-} %}
-<a href="/agents/{{ agent.id }}" class="block bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-4 hover:border-slate-400 dark:hover:border-slate-500 transition-colors">
-    <div class="flex items-center justify-between mb-2">
-        <div class="flex items-center gap-2">
-            {% if agent.status == 'active' %}
-            <span class="w-2 h-2 rounded-full bg-emerald-400 pulse-live"></span>
-            {% elif agent.status == 'hibernating' %}
-            <span class="text-sky-400 text-xs">&#10052;</span>
-            {% else %}
-            <span class="w-2 h-2 rounded-full bg-slate-500"></span>
-            {% endif %}
-            <span class="{{ type_colors.get(agent.type, 'text-slate-400') }} font-medium">{{ agent.name }}</span>
-        </div>
-        <span class="text-xs text-slate-400 font-mono">Gen {{ agent.generation }}</span>
-    </div>
-    {% if agent.prestige_title %}
-    <div class="text-xs {{ prestige_colors.get(agent.prestige_title, 'text-slate-400') }} mb-2">{{ agent.prestige_title }}</div>
+{% set rc = role_colors.get(agent.type, '#00e5ff') %}
+{% set ri = role_icons.get(agent.type, '◎') %}
+{% set pres = prestige_map.get(agent.prestige_title|default('Unproven'), {'stars': 0, 'color': '#4a5580'}) %}
+{% set is_dead = agent.status in ['terminated', 'dead'] %}
+{% set survival = agent.survival_days|default(14)|float %}
+{% set is_dying = survival < 3 and not is_dead %}
+{% set is_hibernating = agent.status == 'hibernating' %}
+{% set is_active = not is_dead and not is_hibernating %}
+{% set border_color = '#4a5580' if is_dead else '#ff3d3d' if is_dying else '#4a5580' if is_hibernating else rc %}
+{% set glow_opacity = 0 if is_dead else 0.4 if is_dying else 0.05 if is_hibernating else 0.2 %}
+{% set card_opacity = 0.5 if is_dead else 0.6 if is_hibernating else 1 %}
+{% set card_idx = loop.index0 if loop is defined else 0 %}
+
+<a href="/agents/{{ agent.id }}" class="block no-underline"
+   style="animation: card-in 0.5s ease {{ card_idx * 0.1 }}s both;">
+<div style="background: {{ '#0a0d18' if is_dead else '#111832' }};
+            border: 1px solid {{ border_color }}{{ '30' if is_dead else '60' }};
+            border-radius: 12px; padding: 14px 16px; position: relative; overflow: hidden;
+            opacity: {{ card_opacity }}; transition: all 0.3s ease;
+            {{ 'filter: grayscale(0.8);' if is_dead else '' }}">
+
+    {# Inner glow #}
+    <div style="position:absolute; inset:-1px; border-radius:12px;
+                box-shadow: inset 0 0 30px {{ border_color }}{{ '%02x'|format((glow_opacity * 255)|int) }};
+                pointer-events:none;"></div>
+
+    {# TERMINATED stamp #}
+    {% if is_dead %}
+    <div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%) rotate(-15deg);
+                font-size:11px; font-weight:700; color:#ff3d3d; opacity:0.6; letter-spacing:4px;
+                border:2px solid #ff3d3d60; padding:4px 16px; border-radius:4px;
+                font-family:'JetBrains Mono',monospace; z-index:2;">TERMINATED</div>
     {% endif %}
-    <div class="grid grid-cols-2 gap-2 text-xs">
-        <div>
-            <span class="text-slate-500 dark:text-slate-400">P&L</span>
-            <span class="font-mono ml-1 {% if agent.total_true_pnl >= 0 %}text-emerald-400{% else %}text-rose-400{% endif %}">
-                {{ "%+.2f"|format(agent.total_true_pnl) }}
-            </span>
+
+    {# Header: Avatar + Name #}
+    <div class="flex gap-3 mb-2.5">
+        <div class="shrink-0">
+            {% with av_id=agent.id, av_role=agent.type, av_status=agent.status, av_survival=survival, av_size=48 %}
+            {% include "components/hex_avatar.html" %}
+            {% endwith %}
         </div>
-        <div>
-            <span class="text-slate-500 dark:text-slate-400">Rep</span>
-            <span class="font-mono ml-1 text-slate-200">{{ "%.0f"|format(agent.reputation_score) }}</span>
+        <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-1.5 mb-0.5">
+                <span class="text-[10px] font-mono opacity-70" style="color:{{ rc }};">{{ ri }} {{ agent.type|upper }}</span>
+                <span class="text-[10px] text-syn-text-dim ml-auto">Gen {{ agent.generation }}</span>
+            </div>
+            <div class="text-[14px] font-semibold text-syn-text tracking-wide mb-0.5 truncate">{{ agent.name }}</div>
+            <div class="text-[10px] opacity-70" style="color:#b388ff;">{{ agent.dynasty|default('House of Genesis') }}</div>
         </div>
     </div>
+
+    {# Survival Bar #}
+    {% set max_days = agent.max_survival_days|default(21) %}
+    {% set surv_pct = [0, [100, (survival / max_days * 100)]|min]|max if max_days > 0 else 0 %}
+    {% set bar_color = '#00e676' if surv_pct > 50 else '#ffb300' if surv_pct > 25 else '#ff3d3d' %}
+    <div class="flex items-center gap-2 text-[11px] mb-2">
+        <div class="flex-1 h-1 rounded-sm overflow-hidden" style="background:#1a2444;">
+            <div style="width:{{ surv_pct }}%; height:100%; background:{{ bar_color }}; border-radius:2px;
+                        transition:width 1s ease; box-shadow:0 0 6px {{ bar_color }}40;"></div>
+        </div>
+        <span class="font-mono min-w-[50px] text-right" style="color:{{ bar_color }};">{{ "%.1f"|format(survival) }}d</span>
+    </div>
+
+    {# Prestige #}
+    <div class="flex items-center gap-1 mb-1.5">
+        <span class="text-[10px] font-mono" style="color:{{ pres.color }};">{{ agent.prestige_title|default('Unproven') }}</span>
+        <span class="text-[10px]" style="color:{{ pres.color }};">{{ '★' * pres.stars }}{{ '☆' * (4 - pres.stars) }}</span>
+    </div>
+
+    {# Metrics row #}
+    {% set pnl = agent.total_true_pnl|default(0)|float %}
+    {% set sharpe = agent.sharpe_ratio|default(0)|float %}
+    {% set efficiency = agent.thinking_efficiency|default(0)|float %}
+    <div class="grid grid-cols-3 gap-2 mb-2">
+        <div>
+            <div class="text-[9px] text-syn-text-dim tracking-[1px] mb-0.5">TRUE P&L</div>
+            <div class="text-[13px] font-semibold font-mono" style="color:{{ '#00e676' if pnl >= 0 else '#ff3d3d' }};">
+                {{ "%+.2f"|format(pnl) }}
+            </div>
+        </div>
+        <div>
+            <div class="text-[9px] text-syn-text-dim tracking-[1px] mb-0.5">SHARPE</div>
+            <div class="text-[13px] font-semibold font-mono" style="color:{{ '#00e676' if sharpe > 1 else '#ffb300' if sharpe > 0 else '#ff3d3d' }};">
+                {{ "%.2f"|format(sharpe) }}
+            </div>
+        </div>
+        <div>
+            <div class="text-[9px] text-syn-text-dim tracking-[1px] mb-0.5">EFFICIENCY</div>
+            <div class="text-[13px] font-semibold font-mono" style="color:{{ '#00e676' if efficiency > 1 else '#ff3d3d' }};">
+                {{ "%.1f"|format(efficiency) }}x
+            </div>
+        </div>
+    </div>
+
+    {# Sparkline #}
+    {% set spark = agent.sparkline_data|default([50]*20) %}
+    {% set spark_min = spark|min %}
+    {% set spark_max = spark|max %}
+    {% set spark_range = spark_max - spark_min if spark_max != spark_min else 1 %}
+    {% set spark_trend = '#00e676' if spark[-1] > spark[0] else '#ff3d3d' %}
+    <svg width="120" height="28" style="display:block; margin-bottom:8px;">
+        <polyline
+            points="{% for v in spark %}{{ "%.1f"|format((loop.index0 / (spark|length - 1)) * 120) }},{{ "%.1f"|format(28 - ((v - spark_min) / spark_range) * 28) }} {% endfor %}"
+            fill="none" stroke="{{ spark_trend }}" stroke-width="1.5"
+            stroke-linejoin="round" stroke-linecap="round" opacity="0.8"/>
+    </svg>
+
+    {# Status row #}
+    {% set status_label = agent.last_status|default('MONITORING')|upper %}
+    <div class="flex justify-between items-center">
+        <div class="flex items-center gap-1.5">
+            <span class="text-[10px] font-mono" style="color:{{ '#4a5580' if is_hibernating else rc }};">{{ status_label }}</span>
+            <div class="flex items-center gap-1">
+                {% for i in range(5) %}
+                <div style="width:5px; height:5px; border-radius:50%;
+                            background:{{ ('#4a5580' if is_hibernating else '#00e5ff') if i == 2 else 'transparent' }};
+                            border:1px solid {{ '#4a558060' if is_hibernating else '#00e5ff60' }};
+                            {{ '' if is_hibernating else 'animation: pulse-dot 1.5s ease-in-out ' ~ (i * 0.2) ~ 's infinite;' }}
+                            opacity:{{ 0.3 if is_hibernating else 1 }};"></div>
+                {% endfor %}
+            </div>
+        </div>
+        <span class="text-[9px] text-syn-text-dim font-mono">
+            {{ agent.model_used|default('—') }} · ${{ "%.4f"|format(agent.last_cycle_cost|default(0)) }}
+        </span>
+    </div>
+</div>
 </a>

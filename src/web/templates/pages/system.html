@@ -2,71 +2,79 @@
 {% block title %}System — Project Syndicate{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-mono font-bold mb-6">System Status</h1>
+<div class="p-6">
+<h1 class="text-xl font-mono font-bold text-syn-text mb-6">System Status</h1>
 
 <!-- Status banner -->
 <div id="system-status-banner"
      hx-get="/api/system/status" hx-trigger="load, every 30s" hx-swap="innerHTML">
-    <div class="bg-emerald-500/20 border border-emerald-500/30 rounded-lg px-6 py-4 mb-6 text-center">
-        <span class="font-mono font-bold text-emerald-400 text-lg">NOMINAL</span>
+    {% set alert = alert_status|default('green') %}
+    {% set alert_colors = {'green': '#00e676', 'yellow': '#ffb300', 'red': '#ff3d3d', 'circuit_breaker': '#ff3d3d'} %}
+    {% set alert_labels = {'green': 'NOMINAL', 'yellow': 'YELLOW ALERT', 'red': 'RED ALERT', 'circuit_breaker': 'CIRCUIT BREAKER'} %}
+    <div class="rounded-lg px-6 py-4 mb-6 text-center {{ 'flash-circuit' if alert == 'circuit_breaker' else '' }}"
+         style="background: {{ alert_colors.get(alert, '#00e676') }}20; border: 1px solid {{ alert_colors.get(alert, '#00e676') }}30;">
+        <span class="font-mono font-bold text-lg" style="color: {{ alert_colors.get(alert, '#00e676') }};">
+            {{ alert_labels.get(alert, 'NOMINAL') }}
+        </span>
     </div>
 </div>
 
 <!-- Metric cards -->
 <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-    {% with label="Treasury", value="${%.2f"|format(treasury_balance|default(0)) + "}", subtitle="Reserve: " + "%.0f"|format(reserve_pct|default(0)) + "%" %}
-    {% include "components/stat_card.html" %}
-    {% endwith %}
-    {% with label="Market Regime", value=(current_regime|default("UNKNOWN"))|upper %}
-    {% include "components/stat_card.html" %}
-    {% endwith %}
-    {% with label="Circuit Breaker", value="%.1f"|format(circuit_breaker_pct|default(0)) + "% from peak",
-            color="text-emerald-400" if (circuit_breaker_pct|default(0)) < 30 else ("text-amber-400" if (circuit_breaker_pct|default(0)) < 60 else "text-rose-400") %}
-    {% include "components/stat_card.html" %}
-    {% endwith %}
+    {% for label, value in [
+        ('Treasury', '$' ~ "%.2f"|format(treasury_balance|default(0))),
+        ('Market Regime', (current_regime|default('UNKNOWN'))|upper),
+        ('Circuit Breaker', "%.1f"|format(circuit_breaker_pct|default(0)) ~ '% from peak'),
+    ] %}
+    <div class="rounded-lg p-4" style="background: #111832; border: 1px solid #1a2444;">
+        <div class="text-[10px] text-syn-text-dim tracking-[1px] mb-1">{{ label|upper }}</div>
+        <div class="text-lg font-mono font-bold text-syn-text">{{ value }}</div>
+    </div>
+    {% endfor %}
 </div>
 
 <!-- Processes -->
-<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg mb-6">
-    <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
-        <h2 class="text-sm font-mono font-semibold text-slate-400">PROCESSES</h2>
+<div class="rounded-lg mb-6" style="background: #111832; border: 1px solid #1a2444;">
+    <div class="px-4 py-3" style="border-bottom: 1px solid #1a2444;">
+        <h2 class="text-[11px] font-mono font-semibold text-syn-text-dim tracking-[2px]">PROCESSES</h2>
     </div>
     <div id="process-health"
          hx-get="/api/system/processes" hx-trigger="load, every 30s" hx-swap="innerHTML">
-        <div class="p-4 text-sm text-slate-400">Loading...</div>
+        <div class="p-4 text-sm text-syn-text-dim">Loading...</div>
     </div>
 </div>
 
-<!-- Cost optimization (Phase 3.5) -->
-<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg mb-6">
-    <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
-        <h2 class="text-sm font-mono font-semibold text-slate-400">COST OPTIMIZATION</h2>
+<!-- Cost optimization -->
+<div class="rounded-lg mb-6" style="background: #111832; border: 1px solid #1a2444;">
+    <div class="px-4 py-3" style="border-bottom: 1px solid #1a2444;">
+        <h2 class="text-[11px] font-mono font-semibold text-syn-text-dim tracking-[2px]">COST OPTIMIZATION</h2>
     </div>
     <div id="cost-optimization"
          hx-get="/api/system/cost-optimization" hx-trigger="load, every 30s" hx-swap="innerHTML">
-        <div class="p-4 text-sm text-slate-400">Loading...</div>
+        <div class="p-4 text-sm text-syn-text-dim">Loading...</div>
     </div>
 </div>
 
 <!-- Economy overview -->
-<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg mb-6">
-    <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
-        <h2 class="text-sm font-mono font-semibold text-slate-400">ECONOMY</h2>
+<div class="rounded-lg mb-6" style="background: #111832; border: 1px solid #1a2444;">
+    <div class="px-4 py-3" style="border-bottom: 1px solid #1a2444;">
+        <h2 class="text-[11px] font-mono font-semibold text-syn-text-dim tracking-[2px]">ECONOMY</h2>
     </div>
     <div id="economy-overview"
          hx-get="/api/system/economy" hx-trigger="load, every 30s" hx-swap="innerHTML">
-        <div class="p-4 text-sm text-slate-400">Loading...</div>
+        <div class="p-4 text-sm text-syn-text-dim">Loading...</div>
     </div>
 </div>
 
 <!-- Recent alerts -->
-<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg mb-6">
-    <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
-        <h2 class="text-sm font-mono font-semibold text-slate-400">RECENT ALERTS</h2>
+<div class="rounded-lg mb-6" style="background: #111832; border: 1px solid #1a2444;">
+    <div class="px-4 py-3" style="border-bottom: 1px solid #1a2444;">
+        <h2 class="text-[11px] font-mono font-semibold text-syn-text-dim tracking-[2px]">RECENT ALERTS</h2>
     </div>
     <div id="system-alerts"
          hx-get="/api/system/alerts" hx-trigger="load, every 30s" hx-swap="innerHTML">
-        <div class="p-4 text-sm text-slate-400">Loading...</div>
+        <div class="p-4 text-sm text-syn-text-dim">Loading...</div>
     </div>
+</div>
 </div>
 {% endblock %}
