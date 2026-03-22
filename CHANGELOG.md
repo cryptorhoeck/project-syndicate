@@ -2,6 +2,41 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [2.1.0] - 2026-03-21
+
+### Added — Phase 8A: The Syndicate CLI Launcher
+
+#### CLI Application
+- **`syndicate.bat`** — one-click desktop launcher (4 lines, calls syndicate_cli.py via venv Python)
+- **`scripts/syndicate_cli.py`** — rich terminal menu with 9 options: Launch All, Shutdown All, Open Dashboard, System Status, Backup Now, View Logs, Clean Slate, Settings, Exit
+- **Live status display** — green/red status indicators for PostgreSQL, Memurai, Arena in the menu
+- **Exit options** — leave services running (exit CLI only) or shut everything down first
+
+#### Configuration & Detection
+- **`scripts/syndicate_config.py`** — auto-detects PostgreSQL, Memurai, project paths, venv
+- **First-run wizard** — interactive setup that finds everything automatically, asks user only for missing paths
+- **Config persistence** — `scripts/syndicate_config.json` (gitignored), editable via Settings menu
+- **Path detection** — searches PATH, known install locations, glob patterns for PostgreSQL versions
+
+#### Service Management
+- **`scripts/syndicate_services.py`** — start/stop/health-check for PostgreSQL (pg_ctl), Memurai (net start/stop), Arena (subprocess with CREATE_NEW_PROCESS_GROUP)
+- **Health gates** — sequential startup waits for each service to accept connections before proceeding
+- **Clean Slate** — database reset with safety confirmation (type YES), truncates all agent tables, resets treasury to $500, flushes Redis
+
+#### PID Tracking
+- **`scripts/syndicate_pids.py`** — JSON-based PID tracking survives CLI restarts
+- **Stale PID cleanup** — automatically removes entries for dead processes on startup
+- **Windows Service detection** — Memurai tracked as service (no PID needed)
+
+#### Operational Features
+- **View Logs** — tail last 50 lines of arena/postgresql logs, live tail with Ctrl+C
+- **Backup Now** — triggers existing backup system from menu
+- **Settings** — view/edit config, re-run auto-detection, toggle browser-on-launch
+
+#### Tests
+- 16 new tests: config save/load/detect, PID record/remove/alive/cleanup, service port checks, status dict structure
+- Total: 706 tests passing
+
 ## [2.0.0] - 2026-03-21
 
 ### Added — Phase 6A: The Command Center

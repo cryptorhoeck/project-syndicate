@@ -2,71 +2,54 @@
 
 ## Last Updated: 2026-03-21
 
-## Phase: 6A — The Command Center (COMPLETE)
+## Phase: 8A — The Syndicate CLI Launcher (COMPLETE)
 
-### Completed This Session (Phase 6A — The Command Center)
-- [x] Complete visual overhaul — sci-fi command center aesthetic (deep navy, custom palette)
-- [x] Sticky top bar replacing sidebar — PROJECT SYNDICATE + LIVE badge + nav tabs + system vitals
-- [x] Hex avatar generator — deterministic hexagonal SVG per agent, role-colored, state-aware
-- [x] Agent character cards — avatar, survival bar, sparklines, prestige, metrics, status dots, visual states
-- [x] Live feed via SSE — real-time Agora message streaming with event type mapping
-- [x] Event banner system — full-width alerts for deaths, births, Black Swan, circuit breaker
-- [x] Constellation ecosystem view — canvas force-directed graph with dynasty connections
-- [x] Animated leaderboard — crown #1, rank deltas, role icons
-- [x] System status panel — regime, alert, Haiku routing, savings, avg cost
-- [x] Command Center as home page — GET / renders full dashboard
-- [x] New API endpoints — topbar, constellation, SSE stream
-- [x] Dark theme only — removed light mode toggle
-- [x] Color/typography reskin on Agora, System pages
-- [x] Tests — 19 new, 690 total passing
-- [x] Documentation — CLAUDE.md, CHANGELOG.md updated
+### Completed This Session (Phase 8A — CLI Launcher)
+- [x] syndicate.bat — double-click desktop launcher
+- [x] syndicate_cli.py — rich terminal menu (9 options)
+- [x] syndicate_config.py — auto-detection + first-run wizard
+- [x] syndicate_pids.py — PID tracking survives CLI restarts
+- [x] syndicate_services.py — health-gated service lifecycle
+- [x] Launch All: PG → Memurai → Arena with health gates
+- [x] Shutdown All: graceful reverse order
+- [x] Clean Slate: database reset with safety confirmation
+- [x] View Logs: tail + live tail
+- [x] Backup Now from menu
+- [x] Settings: view/edit/re-detect
+- [x] Tests — 16 new, 706 total passing
+- [x] Documentation updated
+
+### Previously Completed (Phase 6A — Command Center)
+- [x] Sci-fi dashboard, SSE live feed, constellation view, agent character cards
 
 ### Previously Completed (Phase 3.5 — API Cost Optimization)
-- [x] Model Router, Prompt Caching, Adaptive Frequency, Context Diet, Batch Processor, Cost Tracking
+- [x] Model Router, Prompt Caching, Adaptive Frequency, Context Diet, Batch Processor
 
 ### Previously Completed (Phase 7 — Arena Launch Preparation)
-- [x] Boot sequence wired into Genesis, Arena run script, monitoring checklist, clean slate
+- [x] Boot sequence, Arena run script, monitoring checklist, clean slate
 
-### Previously Completed (Phase 3F)
-- [x] Death protocol, reproduction engine, dynasty system, lineage tracking, memorials
+### Previously Completed (Phases 3F-3A)
+- [x] Death/reproduction/dynasties, personality, natural selection, paper trading, boot sequence, thinking cycle
 
-### Previously Completed (Phase 3E)
-- [x] Behavioral Profile: 7 traits, temperature evolution, reflection library, dynamic identity, relationship memory, divergence
-
-### Previously Completed (Phase 3D)
-- [x] Natural Selection: role-specific composites, 3-stage evaluation, rejection tracking, post-mortems, prestige, probation
-
-### Previously Completed (Phase 3C)
-- [x] Paper Trading: PriceCache, FeeSchedule, SlippageModel, PaperTradingService, monitors, snapshots
-
-### Previously Completed (Phase 3B)
-- [x] Boot Sequence: spawn waves, orientation protocol, pipeline handoffs, health checks
-
-### Previously Completed (Phase 3A)
-- [x] Thinking Cycle Engine: OODA loop, Budget Gate, Context Assembler, Output Validator, Action Executor, Cycle Recorder
-
-### Previously Completed (Phase 2D/2C/2B/2A/1/0)
-- [x] Web Frontend, Internal Economy, Library, Agora, Genesis + Risk Desk, Foundation
+### Previously Completed (Phases 2D-0)
+- [x] Web frontend, economy, library, Agora, Genesis + Risk Desk, foundation
 
 ### What's Next — The Arena
 - [ ] Get valid Anthropic API key
-- [ ] Run `python scripts/run_arena.py`
-- [ ] Watch Command Center dashboard come alive with real agent data
-- [ ] Verify SSE live feed shows real-time cycle events
-- [ ] Monitor cost optimization panel for Haiku/Sonnet distribution
+- [ ] Double-click syndicate.bat → Launch All
+- [ ] Watch Command Center dashboard at http://localhost:8000
+- [ ] Monitor cost optimization: Haiku/Sonnet distribution
+- [ ] Let it run for 21 days per Arena monitoring protocol
 
 ### Known Issues
-- PostgreSQL binaries not in system PATH (located at C:/ProDesk/pgsql/bin/)
-- Memurai binaries not in system PATH (located at C:/Program Files/Memurai/)
-- PostgreSQL server must be manually started after system reboot
 - **Anthropic API key invalid** — needs replacement before Arena launch
 - SMTP not yet configured (email sends will be skipped)
-- DeprecationWarning from Starlette TemplateResponse parameter order (cosmetic only)
+- DeprecationWarning from Starlette TemplateResponse parameter order (cosmetic)
 
 ### Environment Notes
 - Python venv: E:\project syndicate\.venv
-- PostgreSQL data: C:/ProDesk/pgsql/data
-- PostgreSQL binaries: C:/ProDesk/pgsql/bin/
-- Memurai: C:/Program Files/Memurai/
+- PostgreSQL: C:/ProDesk/pgsql/bin/ (data: C:/ProDesk/pgsql/data)
+- Memurai: C:/Program Files/Memurai/ (Windows Service)
 - Database: syndicate (PostgreSQL, user: postgres, localhost:5432)
-- Web frontend: http://localhost:8000 (via `python scripts/run_web.py`)
+- Web: http://localhost:8000
+- CLI: syndicate.bat or scripts/syndicate_cli.py

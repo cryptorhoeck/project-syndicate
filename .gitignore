@@ -36,3 +36,7 @@ htmlcov/
 Thumbs.db
 .DS_Store
 logs/
+
+# CLI Launcher runtime files
+scripts/syndicate_config.json
+scripts/.syndicate_pids.json

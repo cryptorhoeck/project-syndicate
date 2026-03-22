@@ -10,8 +10,8 @@ Project Syndicate is an autonomous, self-evolving multi-agent AI financial ecosy
 
 ## Current Status
 
-**Phase:** 6A — COMPLETE (The Command Center)
-**Focus:** Sci-fi dashboard reskin, SSE live feed, constellation view, agent character cards
+**Phase:** 8A — COMPLETE (The Syndicate CLI Launcher)
+**Focus:** One-click startup, rich terminal menu, service lifecycle management
 **Last Updated:** 2026-03-12
 
 See `CURRENT_STATUS.md` for detailed session-by-session progress.
@@ -204,7 +204,18 @@ E:\project syndicate\
 ├── data/                       ← Local data, agent archives, Library content
 ├── backups/                    ← Timestamped backups (pre-change)
 ├── tests/                      ← Unit and integration tests
-└── scripts/                    ← Deployment, backup automation, resurrection protocol
+├── syndicate.bat               ← Double-click to launch CLI Command Center
+├── logs/                       ← Service logs (gitignored)
+└── scripts/
+    ├── syndicate_cli.py        ← CLI launcher main app (rich terminal menu)
+    ├── syndicate_config.py     ← Config detection and management
+    ├── syndicate_pids.py       ← PID tracking for service management
+    ├── syndicate_services.py   ← Service start/stop/health logic
+    ├── syndicate_config.json   ← Auto-generated config (gitignored)
+    ├── .syndicate_pids.json    ← Runtime PID file (gitignored)
+    ├── run_arena.py            ← Arena process launcher
+    ├── run_web.py              ← Web dashboard standalone launcher
+    └── backup.py               ← Database/config backup
 ```
 
 ## Mandatory Boilerplate — EVERY Script
@@ -283,11 +294,15 @@ At the beginning of every script or module, include (or call) standard boilerpla
 | 6A | The Command Center (sci-fi dashboard) | **COMPLETE** |
 | 6B | Owner Console + Auth | Pending |
 | 7 | The Arena (full paper trading validation) | Pending |
+| 8A | CLI Launcher (one-click startup) | **COMPLETE** |
 | 8 | Go Live (real capital) | Pending |
 
 ## Useful Commands
 
 ```cmd
+REM ══ THE EASY WAY — double-click syndicate.bat or: ══
+.venv\Scripts\python.exe scripts\syndicate_cli.py
+
 REM Activate virtual environment
 .venv\Scripts\activate
 

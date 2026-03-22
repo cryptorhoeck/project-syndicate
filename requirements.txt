@@ -27,3 +27,4 @@ aiofiles
 markdown
 tiktoken
 jsonschema
+rich>=13.0.0
