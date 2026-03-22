@@ -497,6 +497,50 @@ The warning will be shown to the agent if they survive."""
             f"Pre-filter: {result.pre_filter_result}"
         )
 
+        # Phase 8B: Generate last words before final death
+        if config.death_last_words_enabled:
+            try:
+                client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+                last_words_response = client.messages.create(
+                    model=config.death_last_words_model,
+                    max_tokens=150,
+                    system=(
+                        f"You are {agent.name}. You have been terminated. This is your last cycle. "
+                        f"Your evaluation: composite {evaluation.composite_score:.3f}. "
+                        f"Genesis reasoning: {result.genesis_reasoning or result.pre_filter_result or 'underperformance'}. "
+                        f"Leave ONE lesson under 100 words for surviving agents. Make it count."
+                    ),
+                    messages=[{"role": "user", "content": "Speak your last words."}],
+                )
+                words = last_words_response.content[0].text
+                agent.last_words = str(words)[:500] if words else None
+            except Exception as e:
+                logger.debug(f"Last words generation failed for {agent.name}: {e}")
+
+        # Phase 8B: Dissolve alliances on death
+        try:
+            from src.agents.alliance_manager import AllianceManager
+            from src.common.models import AgentAlliance
+            from sqlalchemy import or_ as sa_or
+            # Sync dissolution — avoid async in this context
+            alliances = list(session.execute(
+                select(AgentAlliance).where(
+                    AgentAlliance.status == "active",
+                    sa_or(
+                        AgentAlliance.proposer_agent_id == agent.id,
+                        AgentAlliance.target_agent_id == agent.id,
+                    ),
+                )
+            ).scalars().all())
+            for alliance in alliances:
+                alliance.status = "dissolved"
+                alliance.dissolved_at = now
+                alliance.dissolved_by = agent.id
+                alliance.dissolution_reason = "Partner terminated"
+            session.flush()
+        except Exception as e:
+            logger.debug(f"Alliance dissolution failed for {agent.name}: {e}")
+
         # Generate post-mortem
         await self._generate_post_mortem(session, agent, evaluation, result)
 
@@ -593,6 +637,17 @@ The warning will be shown to the agent if they survive."""
         }
 
         agent.composite_score = evaluation.composite_score or 0.0
+
+        # Phase 8C: Update genome fitness after evaluation
+        try:
+            from src.genome.genome_manager import GenomeManager
+            genome_mgr = GenomeManager()
+            import asyncio
+            asyncio.get_event_loop().run_until_complete(
+                genome_mgr.update_fitness(agent.id, agent.composite_score, session)
+            )
+        except Exception:
+            pass
 
     def _check_prestige(self, agent: Agent, evaluation: Evaluation):
         """Check if agent has reached a prestige milestone."""

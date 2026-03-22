@@ -236,6 +236,19 @@ class GenesisAgent(BaseAgent):
                 except Exception as exc:
                     self.log.warning("settlement_cycle_failed", error=str(exc))
 
+            # 9c. INTEL ACCURACY SETTLEMENT (Phase 8B)
+            try:
+                from src.economy.intel_tracker import IntelAccuracyTracker
+                tracker = IntelAccuracyTracker()
+                with self.db_session_factory() as intel_session:
+                    settled = await tracker.settle_pending_intel(intel_session)
+                    challenged = await tracker.settle_challenges(intel_session)
+                    intel_session.commit()
+                    if settled or challenged:
+                        self.log.info("intel_settlement", settled=settled, challenges=challenged)
+            except Exception as exc:
+                self.log.debug("intel_settlement_skipped", error=str(exc))
+
             # 10. HOURLY MAINTENANCE (expired messages cleanup)
             await self._maybe_run_hourly_maintenance()
 
@@ -707,6 +720,47 @@ class GenesisAgent(BaseAgent):
             sips = await self.read_agora("sip-proposals", only_unread=True)
             self.log.info("sip_proposals_found", count=len(sips))
             await self.mark_agora_read("sip-proposals")
+
+            # Phase 8B: Genesis reviews pending SIPs (max 2 per cycle)
+            try:
+                from src.common.models import SystemImprovementProposal
+                with self.db_session_factory() as sip_session:
+                    pending_sips = list(sip_session.execute(
+                        select(SystemImprovementProposal)
+                        .where(
+                            SystemImprovementProposal.status == "proposed",
+                            SystemImprovementProposal.genesis_verdict.is_(None),
+                        )
+                        .limit(2)
+                    ).scalars().all())
+
+                    for sip in pending_sips:
+                        try:
+                            response = self.claude.messages.create(
+                                model=config.death_last_words_model,  # Haiku for cost efficiency
+                                max_tokens=200,
+                                system="You are Genesis, evaluating a System Improvement Proposal for an AI trading ecosystem.",
+                                messages=[{"role": "user", "content": (
+                                    f"Proposer: {sip.proposer_agent_name}\n"
+                                    f"Title: {sip.title}\nCategory: {sip.category}\n"
+                                    f"Proposal: {sip.proposal[:500]}\nRationale: {sip.rationale[:300]}\n\n"
+                                    f"Respond in JSON: {{\"verdict\": \"approve|reject|defer\", \"reasoning\": \"under 100 words\"}}"
+                                )}],
+                            )
+                            import json
+                            try:
+                                verdict_data = json.loads(response.content[0].text)
+                                sip.genesis_verdict = verdict_data.get("verdict", "defer")
+                                sip.genesis_reasoning = verdict_data.get("reasoning", "")[:500]
+                            except json.JSONDecodeError:
+                                sip.genesis_verdict = "defer"
+                                sip.genesis_reasoning = response.content[0].text[:500]
+                            sip.status = "reviewed"
+                        except Exception as e:
+                            self.log.debug(f"SIP review failed: {e}")
+                    sip_session.commit()
+            except Exception as e:
+                self.log.debug(f"SIP review cycle failed: {e}")
 
         # Get overall message count for the report
         with self.db_session_factory() as session:

@@ -314,6 +314,34 @@ class BootSequenceOrchestrator:
         session.add(lineage)
         session.flush()
 
+        # Phase 8C: Create initial genome for Gen 1 agent
+        try:
+            from src.genome.genome_manager import GenomeManager
+            import asyncio
+            genome_mgr = GenomeManager()
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Schedule as task — will run in the current event loop
+                    asyncio.ensure_future(genome_mgr.create_genome(
+                        agent_id=agent.id, role=agent.type, db_session=session,
+                    ))
+                else:
+                    loop.run_until_complete(genome_mgr.create_genome(
+                        agent_id=agent.id, role=agent.type, db_session=session,
+                    ))
+            except RuntimeError:
+                # No event loop — create genome synchronously
+                from src.genome.genome_schema import create_random_genome
+                from src.common.models import AgentGenome
+                genome_data = create_random_genome(agent.type)
+                session.add(AgentGenome(
+                    agent_id=agent.id, genome_version=1, genome_data=genome_data,
+                ))
+                session.flush()
+        except Exception as e:
+            logger.warning(f"Genome creation failed for {agent.name}: {e}")
+
         logger.info(
             f"Spawned {spec['name']} (wave {wave_num}): "
             f"${per_agent:.2f} capital, {GEN1_SURVIVAL_DAYS}-day clock"

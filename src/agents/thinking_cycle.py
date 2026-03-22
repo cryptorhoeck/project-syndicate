@@ -182,6 +182,55 @@ class ThinkingCycle:
             model_selection=model_selection,
         )
 
+        # ── Phase 1.5: Pre-Compute (run scheduled tools) ──
+        try:
+            from src.common.models import AgentGenome, AgentTool
+            from src.sandbox.runner import execute_script
+            from src.sandbox.data_api import SandboxDataAPI
+            from sqlalchemy import select as sa_select
+
+            genome_rec = self.db.execute(
+                sa_select(AgentGenome).where(AgentGenome.agent_id == agent.id)
+            ).scalar_one_or_none()
+            tool_schedule = []
+            if genome_rec and genome_rec.genome_data:
+                tool_schedule = genome_rec.genome_data.get("behavioral", {}).get("tool_schedule", [])
+
+            if tool_schedule:
+                tool_results = []
+                watchlist = agent.watched_markets if hasattr(agent, "watched_markets") and agent.watched_markets else []
+                for tool_name in tool_schedule[:config.sandbox_max_pre_compute_tools]:
+                    tool = self.db.execute(
+                        sa_select(AgentTool).where(
+                            AgentTool.agent_id == agent.id,
+                            AgentTool.tool_name == tool_name,
+                            AgentTool.is_active == True,
+                        )
+                    ).scalar_one_or_none()
+                    if not tool:
+                        continue
+                    data_api = SandboxDataAPI(agent.id, watchlist)
+                    await data_api.prefetch_all(self.db)
+                    result = await execute_script(tool.script, data_api, agent.id, f"precompute:{tool_name}")
+                    if result.success and result.output is not None:
+                        import json
+                        tool_results.append(f"- {tool_name}: {json.dumps(result.output)[:300]}")
+
+                if tool_results:
+                    precompute_text = "\n=== TOOL RESULTS (auto-run) ===\n" + "\n".join(tool_results)
+                    # Append to user prompt
+                    context = AssembledContext(
+                        system_prompt=context.system_prompt,
+                        user_prompt=context.user_prompt + precompute_text,
+                        mode=context.mode,
+                        total_tokens=context.total_tokens,
+                        mandatory_tokens=context.mandatory_tokens,
+                        priority_tokens=context.priority_tokens,
+                        memory_tokens=context.memory_tokens,
+                    )
+        except Exception:
+            pass  # Pre-compute failures don't block the cycle
+
         # ── Phase 2: Orient + Decide (API Call) ──
         role_def = get_role(agent.type)
         temperature = agent.api_temperature or role_def.default_temperature

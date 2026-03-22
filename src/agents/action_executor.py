@@ -107,9 +107,9 @@ class ActionExecutor:
             # Phase 8B: Survival actions
             "propose_sip": self._handle_propose_sip,
             "offer_intel": self._handle_offer_intel,
-            "request_alliance": self._handle_broadcast,
-            "accept_alliance": self._handle_broadcast,
-            "dissolve_alliance": self._handle_broadcast,
+            "request_alliance": self._handle_request_alliance,
+            "accept_alliance": self._handle_accept_alliance,
+            "dissolve_alliance": self._handle_dissolve_alliance,
             "strategic_hibernate": self._handle_strategic_hibernate,
             "poison_intel": self._handle_poison_intel,
             "challenge_evaluation_criteria": self._handle_propose_sip,
@@ -619,6 +619,54 @@ class ActionExecutor:
             action_type=action_type,
             details=f"Intel shared: {market} (confidence {confidence}/10)",
         )
+
+    async def _handle_request_alliance(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Propose an alliance via AllianceManager."""
+        from src.agents.alliance_manager import AllianceManager
+        mgr = AllianceManager()
+        target = params.get("target_agent", "")
+        offer = params.get("offer", "")
+        request = params.get("request", "")
+
+        result = await mgr.propose_alliance(agent, target, offer, request, self.db)
+        if result["success"]:
+            summary = f"[ALLIANCE PROPOSAL] {agent.name} → {target}. Offer: {offer[:100]}. Request: {request[:100]}."
+            await self._post_to_agora(agent, "agent-chat", summary, "system", params)
+            return ActionResult(success=True, action_type=action_type, details=f"Alliance proposed to {target}")
+        return ActionResult(success=False, action_type=action_type, details=result.get("error", "Failed"))
+
+    async def _handle_accept_alliance(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Accept a pending alliance via AllianceManager."""
+        from src.agents.alliance_manager import AllianceManager
+        mgr = AllianceManager()
+        alliance_id = params.get("alliance_id", 0)
+
+        result = await mgr.accept_alliance(agent, alliance_id, self.db)
+        if result["success"]:
+            summary = f"[ALLIANCE FORMED] {agent.name} accepted alliance #{alliance_id}"
+            await self._post_to_agora(agent, "agent-chat", summary, "system", params)
+            return ActionResult(success=True, action_type=action_type, details=f"Alliance #{alliance_id} accepted")
+        return ActionResult(success=False, action_type=action_type, details=result.get("error", "Failed"))
+
+    async def _handle_dissolve_alliance(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Dissolve an active alliance via AllianceManager."""
+        from src.agents.alliance_manager import AllianceManager
+        mgr = AllianceManager()
+        alliance_id = params.get("alliance_id", 0)
+        reason = params.get("reason", "")
+
+        result = await mgr.dissolve_alliance(agent, alliance_id, reason, self.db)
+        if result["success"]:
+            summary = f"[ALLIANCE DISSOLVED] {agent.name} ended alliance #{alliance_id}: {reason[:100]}"
+            await self._post_to_agora(agent, "agent-chat", summary, "system", params)
+            return ActionResult(success=True, action_type=action_type, details=f"Alliance #{alliance_id} dissolved")
+        return ActionResult(success=False, action_type=action_type, details=result.get("error", "Failed"))
 
     async def _handle_strategic_hibernate(
         self, agent: Agent, action_type: str, params: dict

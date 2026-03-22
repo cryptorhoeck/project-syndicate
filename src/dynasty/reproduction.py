@@ -412,6 +412,60 @@ Respond in JSON:
         # Update dynasty stats
         await self.dynasty_mgr.record_birth(session, parent, offspring)
 
+        # Phase 8C: Inherit and mutate parent genome
+        try:
+            from src.genome.genome_manager import GenomeManager
+            from src.common.models import AgentGenome
+            genome_mgr = GenomeManager()
+            parent_genome_record = session.execute(
+                __import__("sqlalchemy", fromlist=["select"]).select(AgentGenome)
+                .where(AgentGenome.agent_id == parent.id)
+            ).scalar_one_or_none()
+            if parent_genome_record:
+                await genome_mgr.create_genome(
+                    agent_id=offspring.id,
+                    role=offspring.type,
+                    parent_genome_id=parent_genome_record.id,
+                    parent_genome_data=parent_genome_record.genome_data,
+                    db_session=session,
+                )
+        except Exception as e:
+            logger.warning(f"Genome inheritance failed for {offspring.name}: {e}")
+
+        # Phase 8C: Inherit parent's active tools (stats halved)
+        try:
+            from src.common.models import AgentTool
+            from src.sandbox.security import hash_script
+            parent_tools = list(session.execute(
+                __import__("sqlalchemy", fromlist=["select"]).select(AgentTool)
+                .where(AgentTool.agent_id == parent.id, AgentTool.is_active == True)
+            ).scalars().all())
+            for tool in parent_tools:
+                discount = config.tool_inheritance_stat_discount
+                child_tool = AgentTool(
+                    agent_id=offspring.id,
+                    tool_name=tool.tool_name,
+                    description=tool.description,
+                    script=tool.script,
+                    script_hash=tool.script_hash,
+                    version=tool.version,
+                    times_executed=int((tool.times_executed or 0) * discount),
+                    times_succeeded=int((tool.times_succeeded or 0) * discount),
+                    times_failed=int((tool.times_failed or 0) * discount),
+                    avg_execution_ms=tool.avg_execution_ms,
+                    times_before_profitable=int((tool.times_before_profitable or 0) * discount),
+                    times_before_unprofitable=int((tool.times_before_unprofitable or 0) * discount),
+                    estimated_win_rate=tool.estimated_win_rate,
+                    inherited_from_agent_id=parent.id,
+                    original_author_id=tool.original_author_id or parent.id,
+                    generation_created=tool.generation_created,
+                    is_active=True,
+                )
+                session.add(child_tool)
+            session.flush()
+        except Exception as e:
+            logger.warning(f"Tool inheritance failed for {offspring.name}: {e}")
+
         # Update parent
         if parent.status == "active":
             parent.last_reproduction_at = now

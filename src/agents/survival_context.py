@@ -25,24 +25,24 @@ logger = logging.getLogger(__name__)
 class SurvivalContextAssembler:
     """Assembles competitive landscape context for an agent."""
 
-    async def assemble(self, agent: Agent, db_session: Session) -> str:
+    def assemble(self, agent: Agent, db_session: Session) -> str:
         """Build the full survival status string (~200-300 tokens)."""
         sections = []
 
         sections.append(self._build_countdown(agent))
-        sections.append(await self._build_standing(agent, db_session))
-        sections.append(await self._build_competition(agent, db_session))
-        sections.append(await self._build_death_feed(db_session))
-        sections.append(await self._build_ecosystem_pulse(db_session))
+        sections.append(self._build_standing(agent, db_session))
+        sections.append(self._build_competition(agent, db_session))
+        sections.append(self._build_death_feed(db_session))
+        sections.append(self._build_ecosystem_pulse(db_session))
 
         return "\n\n".join([s for s in sections if s])
 
-    async def assemble_compressed(self, agent: Agent, db_session: Session) -> str:
+    def assemble_compressed(self, agent: Agent, db_session: Session) -> str:
         """Compressed version for SURVIVAL_MODE (~50 tokens)."""
         parts = []
 
         # Rank
-        rank, total = await self._get_role_rank(agent, db_session)
+        rank, total = self._get_role_rank(agent, db_session)
         parts.append(f"Rank: #{rank}/{total} {agent.type}s")
 
         # Days remaining
@@ -56,11 +56,11 @@ class SurvivalContextAssembler:
 
         return " | ".join(parts)
 
-    async def build_pressure_addenda(self, agent: Agent, db_session: Session) -> str:
+    def build_pressure_addenda(self, agent: Agent, db_session: Session) -> str:
         """Extra text when agent is in danger. Empty if safe."""
         lines = []
 
-        rank, total = await self._get_role_rank(agent, db_session)
+        rank, total = self._get_role_rank(agent, db_session)
         days = self._get_days_remaining(agent)
 
         # Ranked last
@@ -124,7 +124,7 @@ class SurvivalContextAssembler:
         remaining = (end - datetime.now(timezone.utc)).total_seconds() / 86400
         return max(0, remaining)
 
-    async def _get_role_rank(self, agent: Agent, db_session: Session) -> tuple[int, int]:
+    def _get_role_rank(self, agent: Agent, db_session: Session) -> tuple[int, int]:
         """Get agent's rank among same-role active agents."""
         try:
             peers = list(
@@ -158,9 +158,9 @@ class SurvivalContextAssembler:
             warning = " ⚠️ EVALUATION IMMINENT."
         return f"EVALUATION COUNTDOWN: {days:.1f} days until your next evaluation.{warning}"
 
-    async def _build_standing(self, agent: Agent, db_session: Session) -> str:
+    def _build_standing(self, agent: Agent, db_session: Session) -> str:
         """Build agent's standing section."""
-        rank, total = await self._get_role_rank(agent, db_session)
+        rank, total = self._get_role_rank(agent, db_session)
         pnl = agent.total_true_pnl or 0.0
         api_cost = agent.total_api_cost or 0.0
         efficiency = (pnl / api_cost) if api_cost > 0 else 0.0
@@ -181,7 +181,7 @@ class SurvivalContextAssembler:
 
         return "\n".join(lines)
 
-    async def _build_competition(self, agent: Agent, db_session: Session) -> str:
+    def _build_competition(self, agent: Agent, db_session: Session) -> str:
         """Build competition section showing same-role agents."""
         try:
             peers = list(
@@ -220,7 +220,7 @@ class SurvivalContextAssembler:
 
         return "\n".join(lines)
 
-    async def _build_death_feed(self, db_session: Session) -> str:
+    def _build_death_feed(self, db_session: Session) -> str:
         """Build recent deaths section."""
         cutoff = datetime.now(timezone.utc) - timedelta(days=config.death_feed_lookback_days)
 
@@ -254,7 +254,7 @@ class SurvivalContextAssembler:
 
         return "\n".join(lines)
 
-    async def _build_ecosystem_pulse(self, db_session: Session) -> str:
+    def _build_ecosystem_pulse(self, db_session: Session) -> str:
         """Build ecosystem health pulse."""
         try:
             state = db_session.execute(select(SystemState).limit(1)).scalar_one_or_none()

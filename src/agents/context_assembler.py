@@ -140,8 +140,11 @@ class ContextAssembler:
         priority_text = self._build_priority_context(agent, priority_budget + buffer_budget)
         memory_text = self._build_memory_context(agent, memory_budget)
 
-        # Phase 8B: Build survival context
+        # Phase 8B: Build survival context (sync — no asyncio hack needed)
         survival_text = self._build_survival_context(agent, budget_status)
+
+        # Phase 8B: Build alliance context
+        alliance_text = self._build_alliance_context(agent)
 
         # Build user prompt from sections
         if cycle_type == "strategic_review":
@@ -149,7 +152,7 @@ class ContextAssembler:
         elif cycle_type == "reflection":
             user_prompt = self._build_reflection_user_prompt(agent, mandatory_text, priority_text, memory_text)
         else:
-            user_prompt = self._build_normal_user_prompt(mandatory_text, priority_text, memory_text, survival_text)
+            user_prompt = self._build_normal_user_prompt(mandatory_text, priority_text, memory_text, survival_text, alliance_text)
 
         total_tokens = count_tokens(system_prompt) + count_tokens(user_prompt)
 
@@ -201,20 +204,12 @@ class ContextAssembler:
                 "Every sentence should add information, not restate what you already said."
             )
 
-        # Phase 8B: Build pressure addenda
+        # Phase 8B: Build pressure addenda (sync — no asyncio hack)
         pressure_addenda = ""
         try:
             from src.agents.survival_context import SurvivalContextAssembler
-            import asyncio
             sca = SurvivalContextAssembler()
-            try:
-                loop = asyncio.get_event_loop()
-                if not loop.is_running():
-                    pressure_addenda = loop.run_until_complete(
-                        sca.build_pressure_addenda(agent, self.db)
-                    )
-            except RuntimeError:
-                pass
+            pressure_addenda = sca.build_pressure_addenda(agent, self.db)
         except Exception:
             pass
 
@@ -480,40 +475,85 @@ Watched markets: {agent.watched_markets or []}""" + self._build_evaluation_feedb
         return "\n".join(lines)
 
     def _build_survival_context(self, agent: Agent, budget_status) -> str:
-        """Build survival context section (Phase 8B)."""
+        """Build survival context section (Phase 8B). Sync — no asyncio needed."""
         try:
             from src.agents.survival_context import SurvivalContextAssembler
-            import asyncio
             sca = SurvivalContextAssembler()
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    return ""
-            except RuntimeError:
-                pass
 
             if budget_status == BudgetStatus.SURVIVAL_MODE:
-                text = asyncio.get_event_loop().run_until_complete(
-                    sca.assemble_compressed(agent, self.db)
-                )
+                text = sca.assemble_compressed(agent, self.db)
             else:
-                text = asyncio.get_event_loop().run_until_complete(
-                    sca.assemble(agent, self.db)
-                )
+                text = sca.assemble(agent, self.db)
+
             return f"=== YOUR SURVIVAL STATUS ===\n{text}" if text else ""
         except Exception:
             return ""
 
+    def _build_alliance_context(self, agent: Agent) -> str:
+        """Build alliance context section (Phase 8B)."""
+        try:
+            from src.agents.alliance_manager import AllianceManager
+            from src.common.models import AgentAlliance
+            from sqlalchemy import or_, select
+
+            # Active alliances
+            active = list(self.db.execute(
+                select(AgentAlliance).where(
+                    AgentAlliance.status == "active",
+                    or_(
+                        AgentAlliance.proposer_agent_id == agent.id,
+                        AgentAlliance.target_agent_id == agent.id,
+                    ),
+                )
+            ).scalars().all())
+
+            # Pending proposals TO this agent
+            proposals = list(self.db.execute(
+                select(AgentAlliance).where(
+                    AgentAlliance.status == "proposed",
+                    AgentAlliance.target_agent_id == agent.id,
+                )
+            ).scalars().all())
+
+            if not active and not proposals:
+                return ""
+
+            lines = []
+            if active:
+                lines.append("=== ALLIANCES ===")
+                for a in active:
+                    partner_name = a.target_agent_name if a.proposer_agent_id == agent.id else a.proposer_agent_name
+                    partner_id = a.target_agent_id if a.proposer_agent_id == agent.id else a.proposer_agent_id
+                    partner = self.db.get(Agent, partner_id)
+                    if partner:
+                        lines.append(
+                            f"  Allied with {partner_name} ({partner.type}). "
+                            f"Score: {partner.composite_score or 0:.2f}. P&L: ${partner.total_true_pnl or 0:.2f}."
+                        )
+
+            if proposals:
+                lines.append("ALLIANCE PROPOSALS (awaiting your response):")
+                for p in proposals:
+                    lines.append(
+                        f"  #{p.id} from {p.proposer_agent_name}: "
+                        f"Offer: {p.proposer_offer[:80]}. Request: {p.proposer_request[:80]}."
+                    )
+
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
     def _build_normal_user_prompt(
-        self, mandatory: str, priority: str, memory: str, survival: str = ""
+        self, mandatory: str, priority: str, memory: str, survival: str = "", alliance: str = ""
     ) -> str:
         """Build the user prompt for a normal cycle."""
         survival_section = f"\n\n{survival}" if survival else ""
+        alliance_section = f"\n\n{alliance}" if alliance else ""
         return f"""{mandatory}
 
 {priority}
 
-{memory}{survival_section}
+{memory}{survival_section}{alliance_section}
 
 === YOUR ASSESSMENT ===
 Analyze the situation and choose your action."""
