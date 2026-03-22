@@ -602,7 +602,11 @@ def get_system_status(config: dict) -> dict:
 
 
 def clean_slate(config: dict, console: Console) -> bool:
-    """Reset database for a fresh Arena run."""
+    """Reset database for a fresh Arena run.
+
+    Each step runs in its own transaction so a failure in one
+    (e.g. table doesn't exist) doesn't poison subsequent steps.
+    """
     if check_arena(config):
         console.print("  [red]Arena is still running. Stop it first.[/red]")
         return False
@@ -613,62 +617,108 @@ def clean_slate(config: dict, console: Console) -> bool:
         load_dotenv(str(PROJECT_ROOT / ".env"))
 
         pg = config.get("postgresql", {})
-        db_url = f"postgresql://{pg.get('user', 'postgres')}@localhost:{pg.get('port', 5432)}/{pg.get('database', 'syndicate')}"
+        db_url = (
+            f"postgresql://{pg.get('user', 'postgres')}"
+            f"@localhost:{pg.get('port', 5432)}"
+            f"/{pg.get('database', 'syndicate')}"
+        )
         engine = create_engine(db_url)
 
-        # Tables to truncate in FK-safe order
+        # All tables to truncate — FK-safe order (children before parents).
+        # Includes Phase 8B/8C tables. Missing tables are silently skipped.
         tables = [
-            "agent_cycles", "agent_long_term_memory", "agent_reflections",
-            "agora_read_receipts", "messages",
+            # Phase 8C
+            "sandbox_executions", "agent_tools", "agent_genomes",
+            # Phase 8B
+            "intel_accuracy_tracking", "intel_challenges",
+            "agent_alliances", "system_improvement_proposals",
+            # Phase 3E
+            "behavioral_profiles", "agent_relationships",
+            "divergence_scores", "study_history",
+            # Phase 3D
+            "rejection_tracking", "post_mortems",
+            # Phase 3F
+            "memorials", "lineages", "dynasties",
+            # Phase 3C
             "positions", "orders", "limit_orders", "equity_snapshots",
-            "transactions", "evaluations", "post_mortems",
+            # Phase 3A
+            "agent_cycles", "agent_long_term_memory", "agent_reflections",
+            # Phase 3B
             "opportunities", "plans",
+            # Phase 2C
             "intel_signals", "intel_endorsements",
             "review_requests", "reputation_transactions",
             "gaming_flags",
-            "behavioral_profiles", "agent_relationships",
-            "divergence_scores", "study_history",
-            "rejection_tracking",
-            "memorials", "lineages", "dynasties",
+            # Phase 2B
             "library_contributions", "library_views",
+            # Phase 2A
+            "agora_read_receipts",
+            # Core
+            "messages", "evaluations", "transactions",
         ]
 
-        with engine.connect() as conn:
-            for table in tables:
-                try:
+        truncated = 0
+        skipped = 0
+
+        # Step 1: Truncate each table in its own transaction
+        for table in tables:
+            try:
+                with engine.connect() as conn:
                     conn.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
-                except Exception:
-                    pass  # Table may not exist
+                    conn.commit()
+                    truncated += 1
+            except Exception:
+                skipped += 1
 
-            # Reset agents (keep Genesis)
-            conn.execute(text("DELETE FROM agents WHERE id != 0"))
+        console.print(f"  Truncated {truncated} tables ({skipped} skipped)")
 
-            # Reset system state
-            conn.execute(text("""
-                UPDATE system_state SET
-                    total_treasury = 500.0,
-                    peak_treasury = 500.0,
-                    alert_status = 'green',
-                    active_agent_count = 0,
-                    current_regime = 'unknown'
-                WHERE id = 1
-            """))
+        # Step 2: Delete agents (keep Genesis id=0)
+        try:
+            with engine.connect() as conn:
+                deleted = conn.execute(text("DELETE FROM agents WHERE id != 0"))
+                conn.commit()
+                console.print(f"  Deleted {deleted.rowcount} agents")
+        except Exception as e:
+            console.print(f"  [yellow]Agent cleanup: {e}[/yellow]")
 
-            conn.commit()
+        # Step 3: Reset system state
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("""
+                    UPDATE system_state SET
+                        total_treasury = 500.0,
+                        peak_treasury = 500.0,
+                        alert_status = 'green',
+                        active_agent_count = 0,
+                        current_regime = 'unknown'
+                    WHERE id = 1
+                """))
+                conn.commit()
+                console.print("  System state reset to $500 / GREEN")
+        except Exception as e:
+            console.print(f"  [yellow]System state reset: {e}[/yellow]")
+
+        # Step 4: Reset sequences so new agent IDs start fresh
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT setval('agents_id_seq', 1, false)"))
+                conn.commit()
+        except Exception:
+            pass
 
         engine.dispose()
 
-        # Flush Redis/Memurai
+        # Step 5: Flush Redis/Memurai
         if check_memurai(config):
-            cli_path = config.get("memurai", {}).get("cli_path")
-            if cli_path and os.path.isfile(cli_path):
-                subprocess.run([cli_path, "FLUSHDB"], capture_output=True, timeout=5)
-            else:
-                # Try default redis-cli
-                try:
+            try:
+                cli_path = config.get("memurai", {}).get("cli_path")
+                if cli_path and os.path.isfile(cli_path):
+                    subprocess.run([cli_path, "FLUSHDB"], capture_output=True, timeout=5)
+                else:
                     subprocess.run(["redis-cli", "FLUSHDB"], capture_output=True, timeout=5)
-                except Exception:
-                    pass
+                console.print("  Redis flushed")
+            except Exception:
+                console.print("  [dim]Redis flush skipped[/dim]")
 
         console.print("  [green]Clean slate complete.[/green] Ready for a fresh Arena run.")
         return True
