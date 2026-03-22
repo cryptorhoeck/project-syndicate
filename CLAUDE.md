@@ -10,8 +10,8 @@ Project Syndicate is an autonomous, self-evolving multi-agent AI financial ecosy
 
 ## Current Status
 
-**Phase:** 8A — COMPLETE (The Syndicate CLI Launcher)
-**Focus:** One-click startup, rich terminal menu, service lifecycle management
+**Phase:** 8B — COMPLETE (Survival Instinct)
+**Focus:** Competitive context injection, survival actions, alliances, intel tracking, SIP system
 **Last Updated:** 2026-03-12
 
 See `CURRENT_STATUS.md` for detailed session-by-session progress.
@@ -138,6 +138,20 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **Integration points:** Context Assembler (dynamic identity + trust relationships + library injection), Evaluation Engine (profile computation + drift detection + temperature evolution + divergence), Action Executor (relationship tracking on position close), Memory Manager (relationship extraction from reflections)
 - **Models updated:** 4 new tables (BehavioralProfile, AgentRelationship, DivergenceScore, StudyHistory), 4 new Agent columns (last_temperature_signal, temperature_history, identity_tier, behavioral_profile_id)
 - **Config:** 22 new variables for thresholds, bounds, and minimums
+
+### Survival Instinct (Phase 8B)
+- **Survival Context** (`src/agents/survival_context.py`) — injects rank, competition, death feed, pipeline status, evaluation countdown into every cycle. Pressure addenda when agent is in danger (ranked last, eval imminent, probation).
+- **System prompt rewrite** — survival directive replaces cost warning. Permission to be self-interested. Pressure stacks with danger conditions.
+- **Strategic Review** — every 50th cycle: competitive analysis, alliance/resource strategy, wild card. Replaces standard reflection.
+- **7 universal actions** — propose_sip, offer_intel, request/accept/dissolve_alliance, strategic_hibernate
+- **Role-specific actions** — poison_intel (Scout), challenge_evaluation_criteria (Critic), refuse_plan (Operator)
+- **Alliance Manager** (`src/agents/alliance_manager.py`) — propose/accept/dissolve alliances, trust bonus (+0.1), auto-dissolve on death, context injection
+- **Intel Accuracy Tracker** (`src/economy/intel_tracker.py`) — 48h settlement window, reputation stakes, challenge system
+- **Death Last Words** — dying agents get final Haiku API call, message stored and broadcast
+- **Reputation in evaluation** — 10% of composite score (performance scaled to 90%)
+- **SIP system** — rate-limited (1/eval), 2x thinking tax, Genesis AI review
+- **DB tables** — agent_alliances, system_improvement_proposals, intel_accuracy_tracking, intel_challenges + Agent.last_words column
+- **Config** — 12 new variables for SIP limits, intel settlement, alliance bonuses, pressure thresholds
 
 ### API Cost Optimization (Phase 3.5)
 - **Model Router** (`src/agents/model_router.py`) — deterministic routing: Haiku ($1/$5) for routine cycles, Sonnet ($3/$15) for high-stakes. Routes based on role + cycle type + capital-at-risk + alert level. Kill switch: `model_routing_enabled=False`.
@@ -295,6 +309,7 @@ At the beginning of every script or module, include (or call) standard boilerpla
 | 6B | Owner Console + Auth | Pending |
 | 7 | The Arena (full paper trading validation) | Pending |
 | 8A | CLI Launcher (one-click startup) | **COMPLETE** |
+| 8B | Survival Instinct (competitive behavior) | **COMPLETE** |
 | 8 | Go Live (real capital) | Pending |
 
 ## Useful Commands

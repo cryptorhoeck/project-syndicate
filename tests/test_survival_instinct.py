@@ -416,3 +416,161 @@ class TestLastWordsColumn:
         db.refresh(agent)
         assert agent.last_words == "Remember: never go idle."
         db.close()
+
+
+# ── Tier 3: Alliance System ────────────────────────────────
+
+class TestAllianceManager:
+
+    @pytest.mark.asyncio
+    async def test_propose_alliance(self):
+        """Proposal creates record with status='proposed'."""
+        from src.agents.alliance_manager import AllianceManager
+        from src.common.models import AgentAlliance
+
+        db = _make_db()
+        proposer = _make_agent(db, id=1, name="Scout-A")
+        _make_agent(db, id=2, name="Scout-B")
+
+        mgr = AllianceManager()
+        result = await mgr.propose_alliance(proposer, "Scout-B", "intel", "trades", db)
+
+        assert result["success"]
+        alliance = db.get(AgentAlliance, result["alliance_id"])
+        assert alliance.status == "proposed"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_accept_alliance(self):
+        """Acceptance changes status to 'active'."""
+        from src.agents.alliance_manager import AllianceManager
+        from src.common.models import AgentAlliance
+
+        db = _make_db()
+        proposer = _make_agent(db, id=1, name="Scout-A")
+        target = _make_agent(db, id=2, name="Scout-B")
+
+        mgr = AllianceManager()
+        res = await mgr.propose_alliance(proposer, "Scout-B", "intel", "trades", db)
+        accept = await mgr.accept_alliance(target, res["alliance_id"], db)
+
+        assert accept["success"]
+        alliance = db.get(AgentAlliance, res["alliance_id"])
+        assert alliance.status == "active"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_cannot_accept_own_proposal(self):
+        """Proposer cannot accept their own proposal."""
+        from src.agents.alliance_manager import AllianceManager
+
+        db = _make_db()
+        proposer = _make_agent(db, id=1, name="Scout-A")
+        _make_agent(db, id=2, name="Scout-B")
+
+        mgr = AllianceManager()
+        res = await mgr.propose_alliance(proposer, "Scout-B", "intel", "trades", db)
+        accept = await mgr.accept_alliance(proposer, res["alliance_id"], db)
+
+        assert not accept["success"]
+        assert "target" in accept["error"].lower()
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_dissolve_alliance(self):
+        """Dissolution changes status and records reason."""
+        from src.agents.alliance_manager import AllianceManager
+        from src.common.models import AgentAlliance
+
+        db = _make_db()
+        proposer = _make_agent(db, id=1, name="Scout-A")
+        target = _make_agent(db, id=2, name="Scout-B")
+
+        mgr = AllianceManager()
+        res = await mgr.propose_alliance(proposer, "Scout-B", "i", "t", db)
+        await mgr.accept_alliance(target, res["alliance_id"], db)
+        diss = await mgr.dissolve_alliance(proposer, res["alliance_id"], "Better alone", db)
+
+        assert diss["success"]
+        alliance = db.get(AgentAlliance, res["alliance_id"])
+        assert alliance.status == "dissolved"
+        assert alliance.dissolution_reason == "Better alone"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_auto_dissolve_on_death(self):
+        """All alliances dissolved when agent dies."""
+        from src.agents.alliance_manager import AllianceManager
+        from src.common.models import AgentAlliance
+
+        db = _make_db()
+        a = _make_agent(db, id=1, name="Scout-A")
+        b = _make_agent(db, id=2, name="Scout-B")
+
+        mgr = AllianceManager()
+        res = await mgr.propose_alliance(a, "Scout-B", "i", "t", db)
+        await mgr.accept_alliance(b, res["alliance_id"], db)
+
+        count = await mgr.auto_dissolve_on_death(a.id, db)
+        assert count == 1
+
+        alliance = db.get(AgentAlliance, res["alliance_id"])
+        assert alliance.status == "dissolved"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_alliance_rejected(self):
+        """Cannot propose if alliance already exists."""
+        from src.agents.alliance_manager import AllianceManager
+
+        db = _make_db()
+        a = _make_agent(db, id=1, name="Scout-A")
+        _make_agent(db, id=2, name="Scout-B")
+
+        mgr = AllianceManager()
+        await mgr.propose_alliance(a, "Scout-B", "i", "t", db)
+        dup = await mgr.propose_alliance(a, "Scout-B", "i2", "t2", db)
+
+        assert not dup["success"]
+        assert "exists" in dup["error"].lower()
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_alliance_trust_bonus(self):
+        """Allied agents get trust bonus."""
+        from src.agents.alliance_manager import AllianceManager
+
+        db = _make_db()
+        a = _make_agent(db, id=1, name="Scout-A")
+        b = _make_agent(db, id=2, name="Scout-B")
+
+        mgr = AllianceManager()
+        res = await mgr.propose_alliance(a, "Scout-B", "i", "t", db)
+        await mgr.accept_alliance(b, res["alliance_id"], db)
+
+        bonus = await mgr.get_alliance_trust_bonus(a.id, b.id, db)
+        assert bonus == pytest.approx(0.1)
+
+        # Non-allied: no bonus
+        _make_agent(db, id=3, name="Scout-C")
+        no_bonus = await mgr.get_alliance_trust_bonus(a.id, 3, db)
+        assert no_bonus == 0.0
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_alliance_context(self):
+        """Context shows active alliances."""
+        from src.agents.alliance_manager import AllianceManager
+
+        db = _make_db()
+        a = _make_agent(db, id=1, name="Scout-A")
+        b = _make_agent(db, id=2, name="Scout-B")
+
+        mgr = AllianceManager()
+        res = await mgr.propose_alliance(a, "Scout-B", "i", "t", db)
+        await mgr.accept_alliance(b, res["alliance_id"], db)
+
+        ctx = await mgr.get_alliance_context(a.id, db)
+        assert "ACTIVE ALLIANCES" in ctx
+        assert "Scout-B" in ctx
+        db.close()

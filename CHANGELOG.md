@@ -2,6 +2,33 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [2.2.0] - 2026-03-22
+
+### Added — Phase 8B: Survival Instinct
+
+#### Tier 1 — Context Enrichment + System Prompt Rewrite
+- **Survival Context Assembler** (`src/agents/survival_context.py`) — injects competitive landscape into every cycle: rank, competition, death feed, ecosystem pulse, evaluation countdown
+- **System prompt rewrite** — survival directive replaces cost warning: permission to be self-interested, pressure addenda when in danger
+- **Strategic review** every 50th cycle — competitive analysis, alliance/resource strategy, wild card
+
+#### Tier 2 — New Actions + Intel Tracking + Death Last Words
+- **7 universal actions** — propose_sip, offer_intel, request/accept/dissolve_alliance, strategic_hibernate
+- **3 role-specific actions** — poison_intel (Scout), challenge_evaluation_criteria (Critic), refuse_plan (Operator)
+- **Intel accuracy tracking** with 48h settlement window and reputation stakes
+- **Intel challenge system** — challenge bad intel for reputation gains/losses
+- **Death last words** — Agent.last_words column for dying agents' final messages
+- **Reputation in evaluation** — 10% of composite score (performance weights scaled to 90%)
+
+#### Tier 3 — Alliance System + SIP Processing
+- **Alliance Manager** (`src/agents/alliance_manager.py`) — full lifecycle: propose, accept, dissolve, auto-dissolve on death, context injection, trust bonus (+0.1)
+- **SIP tables** — system_improvement_proposals with Genesis verdict tracking, owner decision pipeline
+- **DB schema** — 4 new tables (agent_alliances, system_improvement_proposals, intel_accuracy_tracking, intel_challenges), 1 new Agent column (last_words)
+- **Config** — 12 new variables for SIP limits, intel settlement, alliance bonuses, pressure thresholds
+
+#### Tests
+- 35 new tests across all 3 tiers
+- Total: 741 tests passing
+
 ## [2.1.0] - 2026-03-21
 
 ### Added — Phase 8A: The Syndicate CLI Launcher
