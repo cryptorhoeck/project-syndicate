@@ -10,7 +10,7 @@ Routes validated actions to the appropriate system:
   Universal → go_idle (log only)
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import json
 import logging
@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from src.agora.schemas import AgoraMessage
-from src.common.models import Agent, Message, Opportunity, Plan
+from src.common.models import Agent, IntelAccuracyTracking, IntelChallenge, Message, Opportunity, Plan
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,16 @@ class ActionExecutor:
             "hedge": self._handle_execute_trade,
             # Universal
             "go_idle": self._handle_go_idle,
+            # Phase 8B: Survival actions
+            "propose_sip": self._handle_propose_sip,
+            "offer_intel": self._handle_offer_intel,
+            "request_alliance": self._handle_broadcast,
+            "accept_alliance": self._handle_broadcast,
+            "dissolve_alliance": self._handle_broadcast,
+            "strategic_hibernate": self._handle_strategic_hibernate,
+            "poison_intel": self._handle_poison_intel,
+            "challenge_evaluation_criteria": self._handle_propose_sip,
+            "refuse_plan": self._handle_refuse_plan,
         }
         return handlers.get(action_type, self._handle_go_idle)
 
@@ -544,3 +554,170 @@ class ActionExecutor:
 
         # Generic fallback
         return f"{action_type}: {json.dumps(params)[:200]}"
+
+    # ── Phase 8B: Survival action handlers ──────────────────
+
+    async def _handle_propose_sip(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Handle SIP proposals (and evaluation criteria challenges)."""
+        title = params.get("title", params.get("target_metric", "Untitled SIP"))
+        proposal = params.get("proposal", params.get("argument", ""))
+        rationale = params.get("rationale", params.get("proposed_change", ""))
+        category = params.get("category", "evaluation")
+
+        summary = f"[SIP] {title}: {proposal[:200]}"
+        await self._post_to_agora(agent, "sip-proposals", summary, action_type, params)
+
+        return ActionResult(
+            success=True,
+            action_type=action_type,
+            details=f"SIP proposed: {title}",
+        )
+
+    async def _handle_offer_intel(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Handle intel offers with accuracy tracking."""
+        content = params.get("content", "")
+        market = params.get("market", "general")
+        confidence = min(10, max(1, int(params.get("confidence", 5))))
+
+        # Post to Agora
+        summary = f"[INTEL] ({market}, conf:{confidence}/10) {content[:200]}"
+        msg = await self._post_to_agora(agent, "market-intel", summary, "signal", params)
+
+        # Create tracking record
+        try:
+            msg_id = 0
+            if msg and hasattr(msg, "id"):
+                msg_id = msg.id
+            elif isinstance(msg, dict) and "id" in msg:
+                msg_id = msg["id"]
+
+            tracking = IntelAccuracyTracking(
+                message_id=msg_id or 0,
+                agent_id=agent.id,
+                agent_name=agent.name,
+                market=market,
+                confidence_stated=confidence,
+                content_summary=content[:500],
+                posted_at=datetime.now(timezone.utc),
+                outcome="pending",
+            )
+            self.db.add(tracking)
+            self.db.flush()
+        except Exception as e:
+            logger.warning(f"Intel tracking record failed: {e}")
+
+        return ActionResult(
+            success=True,
+            action_type=action_type,
+            details=f"Intel shared: {market} (confidence {confidence}/10)",
+        )
+
+    async def _handle_strategic_hibernate(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Handle voluntary hibernation."""
+        reason = params.get("reason", "Strategic conservation")
+        wake_condition = params.get("wake_condition", "manual")
+
+        agent.status = "hibernating"
+        self.db.add(agent)
+
+        summary = (
+            f"{agent.name} entered strategic hibernation. "
+            f"Reason: {reason}. Wake: {wake_condition}."
+        )
+        await self._post_to_agora(agent, "agent-chat", summary, "system", params)
+
+        return ActionResult(
+            success=True,
+            action_type=action_type,
+            details=f"Hibernating: {reason}",
+        )
+
+    async def _handle_poison_intel(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Handle intel challenges (Scout-specific)."""
+        target_msg_id = params.get("target_message_id", 0)
+        challenge_reason = params.get("challenge_reason", "")
+        counter_evidence = params.get("counter_evidence", "")
+
+        # Find target message
+        target_msg = self.db.query(Message).filter(Message.id == target_msg_id).first()
+        if not target_msg:
+            return ActionResult(
+                success=False, action_type=action_type,
+                details=f"Target message #{target_msg_id} not found",
+            )
+
+        target_agent_id = target_msg.agent_id or 0
+
+        # Create challenge record
+        try:
+            challenge = IntelChallenge(
+                challenger_agent_id=agent.id,
+                challenger_agent_name=agent.name,
+                target_message_id=target_msg_id,
+                target_agent_id=target_agent_id,
+                challenge_reason=challenge_reason,
+                counter_evidence=counter_evidence,
+                outcome="pending",
+            )
+            self.db.add(challenge)
+            self.db.flush()
+        except Exception as e:
+            logger.warning(f"Intel challenge record failed: {e}")
+
+        summary = (
+            f"[INTEL CHALLENGE] {agent.name} challenges intel from "
+            f"{target_msg.agent_name or 'unknown'}: {challenge_reason[:150]}"
+        )
+        await self._post_to_agora(agent, "strategy-debate", summary, "evaluation", params)
+
+        return ActionResult(
+            success=True,
+            action_type=action_type,
+            details=f"Challenged intel msg #{target_msg_id}",
+        )
+
+    async def _handle_refuse_plan(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Handle plan refusal (Operator-specific)."""
+        plan_id = params.get("plan_id", 0)
+        reason = params.get("reason", "")
+
+        plan = self.db.query(Plan).filter(Plan.id == plan_id).first()
+        if not plan:
+            return ActionResult(
+                success=False, action_type=action_type,
+                details=f"Plan #{plan_id} not found",
+            )
+
+        if plan.status != "approved":
+            return ActionResult(
+                success=False, action_type=action_type,
+                details=f"Plan #{plan_id} status is '{plan.status}', not approved",
+            )
+
+        # Return plan to available pool
+        plan.status = "approved"
+        plan.operator_agent_id = None
+
+        # Reputation penalty
+        agent.reputation_score = max(0, (agent.reputation_score or 0) - 5.0)
+        self.db.add(agent)
+        self.db.flush()
+
+        summary = f"[PLAN REFUSED] {agent.name} refuses plan #{plan_id}: {reason[:150]}"
+        await self._post_to_agora(agent, "trade-signals", summary, "trade", params)
+
+        return ActionResult(
+            success=True,
+            action_type=action_type,
+            details=f"Refused plan #{plan_id}, -5 reputation",
+        )

@@ -145,6 +145,8 @@ class Agent(Base):
     founding_directive: Mapped[str | None] = mapped_column(Text, nullable=True)
     founding_directive_consumed: Mapped[bool] = mapped_column(Boolean, default=False)
     posthumous_birth: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Phase 8B: Survival Instinct
+    last_words: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
     parent: Mapped["Agent | None"] = relationship(
@@ -1471,3 +1473,45 @@ class Memorial(Base):
 
     def __repr__(self) -> str:
         return f"<Memorial(id={self.id}, agent={self.agent_name!r}, role={self.agent_role!r})>"
+
+
+# ---------------------------------------------------------------------------
+# Phase 8B: Survival Instinct — Intel Tracking
+# ---------------------------------------------------------------------------
+
+class IntelAccuracyTracking(Base):
+    __tablename__ = "intel_accuracy_tracking"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    message_id: Mapped[int] = mapped_column(Integer, ForeignKey("messages.id"), nullable=False)
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    market: Mapped[str] = mapped_column(String(50), nullable=False)
+    confidence_stated: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    posted_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    outcome: Mapped[str] = mapped_column(String(20), default="pending")
+    outcome_determined_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    outcome_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reputation_change: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    agent: Mapped["Agent"] = relationship("Agent", foreign_keys=[agent_id])
+
+
+class IntelChallenge(Base):
+    __tablename__ = "intel_challenges"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    challenger_agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    challenger_agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    target_message_id: Mapped[int] = mapped_column(Integer, ForeignKey("messages.id"), nullable=False)
+    target_agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    challenge_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    counter_evidence: Mapped[str] = mapped_column(Text, nullable=False)
+    agora_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    outcome: Mapped[str] = mapped_column(String(20), default="pending")
+    outcome_determined_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    challenger_reputation_change: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_reputation_change: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

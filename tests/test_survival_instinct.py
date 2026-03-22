@@ -311,3 +311,108 @@ class TestStrategicReview:
         reflection_interval = 10
         is_strategic = (cycle > 0 and cycle % review_interval == 0)
         assert is_strategic
+
+
+# ── Tier 2: New Actions + Intel + Death ─────────────────────
+
+class TestNewActions:
+
+    def test_survival_actions_in_scout(self):
+        """Scout role has survival actions."""
+        from src.agents.roles import get_role
+        role = get_role("scout")
+        assert "propose_sip" in role.available_actions
+        assert "offer_intel" in role.available_actions
+        assert "strategic_hibernate" in role.available_actions
+        assert "poison_intel" in role.available_actions
+
+    def test_survival_actions_in_operator(self):
+        """Operator role has survival + refuse_plan actions."""
+        from src.agents.roles import get_role
+        role = get_role("operator")
+        assert "propose_sip" in role.available_actions
+        assert "refuse_plan" in role.available_actions
+        assert "strategic_hibernate" in role.available_actions
+
+    def test_survival_actions_in_critic(self):
+        """Critic role has challenge_evaluation_criteria."""
+        from src.agents.roles import get_role
+        role = get_role("critic")
+        assert "challenge_evaluation_criteria" in role.available_actions
+
+    def test_all_roles_have_alliance_actions(self):
+        """All roles have request/accept/dissolve alliance."""
+        from src.agents.roles import get_role
+        for role_name in ["scout", "strategist", "critic", "operator"]:
+            role = get_role(role_name)
+            assert "request_alliance" in role.available_actions
+            assert "accept_alliance" in role.available_actions
+            assert "dissolve_alliance" in role.available_actions
+
+
+class TestReputationInEvaluation:
+
+    def test_reputation_weight_configured(self):
+        """Reputation weight is configured at 10%."""
+        from src.common.config import config
+        assert config.reputation_evaluation_weight == 0.10
+
+    def test_performance_weights_still_sum_correctly(self):
+        """Performance weights * (1-rep_weight) + rep_weight == 1.0."""
+        from src.common.config import config
+        rep = config.reputation_evaluation_weight
+        perf = 1.0 - rep
+        total = (
+            config.eval_weight_sharpe * perf
+            + config.eval_weight_true_pnl * perf
+            + config.eval_weight_thinking_efficiency * perf
+            + config.eval_weight_consistency * perf
+            + rep
+        )
+        assert abs(total - 1.0) < 0.01
+
+
+class TestIntelAccuracy:
+
+    @pytest.mark.asyncio
+    async def test_settle_empty_returns_zero(self):
+        """Settling with no pending records returns 0."""
+        from src.economy.intel_tracker import IntelAccuracyTracker
+
+        db = _make_db()
+        tracker = IntelAccuracyTracker()
+        count = await tracker.settle_pending_intel(db)
+        assert count == 0
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_settle_challenges_empty(self):
+        """Settling challenges with none pending returns 0."""
+        from src.economy.intel_tracker import IntelAccuracyTracker
+
+        db = _make_db()
+        tracker = IntelAccuracyTracker()
+        count = await tracker.settle_challenges(db)
+        assert count == 0
+        db.close()
+
+
+class TestLastWordsColumn:
+
+    def test_agent_has_last_words_column(self):
+        """Agent model has last_words column."""
+        db = _make_db()
+        agent = _make_agent(db, id=1, name="Test")
+        assert hasattr(agent, "last_words")
+        assert agent.last_words is None
+        db.close()
+
+    def test_last_words_can_be_set(self):
+        """last_words can be written and read."""
+        db = _make_db()
+        agent = _make_agent(db, id=1, name="Test")
+        agent.last_words = "Remember: never go idle."
+        db.commit()
+        db.refresh(agent)
+        assert agent.last_words == "Remember: never go idle."
+        db.close()

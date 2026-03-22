@@ -195,11 +195,23 @@ class Accountant:
         # Consistency: already 0-1
         norm_consistency = consistency
 
+        # Phase 8B: Reputation component (10% of composite)
+        rep_weight = config.reputation_evaluation_weight
+        perf_scale = 1.0 - rep_weight  # Scale down performance weights to make room
+
+        # Get reputation for normalization
+        with self.db_session_factory() as session:
+            agent_for_rep = session.get(Agent, agent_id)
+            rep_score = agent_for_rep.reputation_score if agent_for_rep else 0.0
+            # Normalize reputation: 0-200 range → 0-1
+            norm_reputation = max(0.0, min(1.0, rep_score / 200.0))
+
         composite = (
-            config.eval_weight_sharpe * norm_sharpe
-            + config.eval_weight_true_pnl * norm_pnl
-            + config.eval_weight_thinking_efficiency * norm_efficiency
-            + config.eval_weight_consistency * norm_consistency
+            config.eval_weight_sharpe * perf_scale * norm_sharpe
+            + config.eval_weight_true_pnl * perf_scale * norm_pnl
+            + config.eval_weight_thinking_efficiency * perf_scale * norm_efficiency
+            + config.eval_weight_consistency * perf_scale * norm_consistency
+            + rep_weight * norm_reputation
         )
         composite = round(composite, 4)
 

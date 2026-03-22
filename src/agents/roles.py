@@ -5,9 +5,66 @@ Defines each agent role with its action space, default temperature,
 cycle interval, description, and output schema.
 """
 
-__version__ = "0.9.0"
+__version__ = "1.0.0"
 
 from dataclasses import dataclass, field
+
+
+# ──────────────────────────────────────────────
+# Universal Survival Actions (Phase 8B)
+# ──────────────────────────────────────────────
+
+SURVIVAL_ACTIONS = {
+    "propose_sip": {
+        "description": "Propose a System Improvement Proposal. SIPs can change evaluation criteria, cycle frequencies, budget allocation, or any system parameter. Posted to the Agora for debate. Costs 2x thinking tax. Max 1 per evaluation period.",
+        "params": {
+            "title": "str — concise proposal title",
+            "category": "str — evaluation | economics | pipeline | lifecycle | other",
+            "proposal": "str — detailed description of the proposed change",
+            "rationale": "str — why this benefits the ecosystem (not just you)",
+            "metrics_affected": "list[str] — which evaluation metrics this would change",
+        },
+    },
+    "offer_intel": {
+        "description": "Share intelligence with the ecosystem. Increases reputation if useful, decreases if wrong. Your intel quality is tracked.",
+        "params": {
+            "content": "str — the intelligence",
+            "market": "str — relevant market or 'general'",
+            "confidence": "int — 1-10",
+            "target_role": "str — scout/strategist/critic/operator/all",
+        },
+    },
+    "request_alliance": {
+        "description": "Propose a working relationship with another agent. Alliances boost trust and intel relevance. Public — all agents see who's allied.",
+        "params": {
+            "target_agent": "str — agent name",
+            "offer": "str — what you bring",
+            "request": "str — what you want in return",
+            "duration": "str — e.g., 'until next evaluation'",
+        },
+    },
+    "accept_alliance": {
+        "description": "Accept a pending alliance proposal.",
+        "params": {
+            "alliance_id": "int — the alliance proposal to accept",
+        },
+    },
+    "dissolve_alliance": {
+        "description": "End an active alliance.",
+        "params": {
+            "alliance_id": "int — the alliance to dissolve",
+            "reason": "str — why you're ending this",
+        },
+    },
+    "strategic_hibernate": {
+        "description": "Voluntarily pause all activity. Survival clock FREEZES. Budget stops draining. Wake on regime change, set duration, or manual trigger.",
+        "params": {
+            "reason": "str — why hibernation is strategic",
+            "wake_condition": "str — regime_change | duration | manual",
+            "duration_hours": "int|null — hours (if duration-based)",
+        },
+    },
+}
 
 
 # ──────────────────────────────────────────────
@@ -38,6 +95,14 @@ SCOUT_ACTIONS = {
             "add_markets": "list[str] — markets to start watching",
             "remove_markets": "list[str] — markets to stop watching",
             "reason": "str — why this change",
+        },
+    },
+    "poison_intel": {
+        "description": "Challenge circulating intelligence as unreliable. If right, your reputation increases and the source's drops. If wrong, YOUR reputation takes the hit.",
+        "params": {
+            "target_message_id": "int — Agora message being challenged",
+            "challenge_reason": "str — why this intel is wrong",
+            "counter_evidence": "str — what the data actually shows",
         },
     },
     "go_idle": {
@@ -122,6 +187,15 @@ CRITIC_ACTIONS = {
             "affected_agents": "list[str] — who is exposed",
         },
     },
+    "challenge_evaluation_criteria": {
+        "description": "A specialized SIP arguing that evaluation criteria are flawed or biased. Costs 2x thinking tax. Same rate limit as regular SIPs.",
+        "params": {
+            "target_metric": "str — which metric is problematic",
+            "argument": "str — why it's unfair or miscalibrated",
+            "proposed_change": "str — how it should be adjusted",
+            "evidence": "str — data supporting your argument",
+        },
+    },
     "go_idle": {
         "description": "No plans to review. Nothing to flag.",
         "params": {
@@ -173,6 +247,14 @@ OPERATOR_ACTIONS = {
             "thesis": "str — why this hedge helps",
         },
     },
+    "refuse_plan": {
+        "description": "Decline to execute an approved plan. Costs reputation but preserves capital. Plan returns to pool.",
+        "params": {
+            "plan_id": "int — which plan",
+            "reason": "str — why you won't execute",
+            "risk_assessment": "str — what you think will go wrong",
+        },
+    },
     "go_idle": {
         "description": "No trades to make or manage right now.",
         "params": {
@@ -208,7 +290,7 @@ ROLE_DEFINITIONS: dict[str, RoleDefinition] = {
             "A good Scout spots what others miss. A bad Scout wastes everyone's time "
             "with noise. Your reputation depends on the quality of your signals."
         ),
-        available_actions=SCOUT_ACTIONS,
+        available_actions={**SCOUT_ACTIONS, **SURVIVAL_ACTIONS},
         default_temperature=0.7,
         cycle_interval_seconds=300,  # 5 minutes
     ),
@@ -221,7 +303,7 @@ ROLE_DEFINITIONS: dict[str, RoleDefinition] = {
             "Strategist builds plans that survive scrutiny and make money. A bad "
             "Strategist wastes capital on untested ideas."
         ),
-        available_actions=STRATEGIST_ACTIONS,
+        available_actions={**STRATEGIST_ACTIONS, **SURVIVAL_ACTIONS},
         default_temperature=0.5,
         cycle_interval_seconds=900,  # 15 minutes
     ),
@@ -234,7 +316,7 @@ ROLE_DEFINITIONS: dict[str, RoleDefinition] = {
             "line of defense before capital is risked. A good Critic catches fatal "
             "flaws. A bad Critic rubber-stamps everything or blocks everything."
         ),
-        available_actions=CRITIC_ACTIONS,
+        available_actions={**CRITIC_ACTIONS, **SURVIVAL_ACTIONS},
         default_temperature=0.2,
         cycle_interval_seconds=0,  # on-demand only
     ),
@@ -247,7 +329,7 @@ ROLE_DEFINITIONS: dict[str, RoleDefinition] = {
             "Operator executes with discipline. A bad Operator overrides the plan "
             "and lets emotions drive decisions."
         ),
-        available_actions=OPERATOR_ACTIONS,
+        available_actions={**OPERATOR_ACTIONS, **SURVIVAL_ACTIONS},
         default_temperature=0.2,
         cycle_interval_seconds=900,  # 15 minutes when idle
         active_cycle_interval_seconds=60,  # 1 minute during active trades
