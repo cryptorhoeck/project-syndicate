@@ -1523,6 +1523,71 @@ class SystemImprovementProposal(Base):
 
 
 # ---------------------------------------------------------------------------
+# Phase 8C: Code Sandbox & Strategy Genome
+# ---------------------------------------------------------------------------
+
+class AgentTool(Base):
+    __tablename__ = "agent_tools"
+    __table_args__ = (UniqueConstraint("agent_id", "tool_name", name="uq_agent_tool_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    script: Mapped[str] = mapped_column(Text, nullable=False)
+    script_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    times_executed: Mapped[int] = mapped_column(Integer, default=0)
+    times_succeeded: Mapped[int] = mapped_column(Integer, default=0)
+    times_failed: Mapped[int] = mapped_column(Integer, default=0)
+    avg_execution_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    times_before_profitable: Mapped[int] = mapped_column(Integer, default=0)
+    times_before_unprofitable: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_win_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    inherited_from_agent_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    original_author_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    generation_created: Mapped[int] = mapped_column(Integer, default=1)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    deactivated_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class SandboxExecution(Base):
+    __tablename__ = "sandbox_executions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    cycle_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    tool_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    script_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    script_length: Mapped[int] = mapped_column(Integer, nullable=False)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    execution_time_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    execution_cost_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    purpose: Mapped[str | None] = mapped_column(Text, nullable=True)
+    was_pre_compute: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AgentGenome(Base):
+    __tablename__ = "agent_genomes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
+    genome_version: Mapped[int] = mapped_column(Integer, default=1)
+    genome_data: Mapped[dict] = mapped_column(JSON, nullable=False)
+    parent_genome_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mutations_applied: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    fitness_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evaluations_with_genome: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+# ---------------------------------------------------------------------------
 # Phase 8B: Survival Instinct — Intel Tracking
 # ---------------------------------------------------------------------------
 

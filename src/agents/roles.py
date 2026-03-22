@@ -56,6 +56,30 @@ SURVIVAL_ACTIONS = {
             "reason": "str — why you're ending this",
         },
     },
+    "execute_analysis": {
+        "description": "Write and execute a Python script to analyze data. Available: get_price_history(symbol,timeframe,limit), get_current_price(symbol), get_my_trades(limit), get_my_positions(), get_agora_messages(channel,limit), get_market_regime(). Call output(data) to return results. Max 5000 chars.",
+        "params": {
+            "script": "str — Python code",
+            "purpose": "str — what you're analyzing",
+            "save_as_tool": "bool — save as reusable named tool",
+            "tool_name": "str|null — name (required if save_as_tool=true)",
+        },
+    },
+    "run_tool": {
+        "description": "Execute a previously saved analysis tool. Max 3 per cycle.",
+        "params": {
+            "tool_name": "str — name of saved tool",
+        },
+    },
+    "modify_genome": {
+        "description": "Update a parameter in your strategy genome. Max 2 per evaluation period. Only modify with concrete evidence.",
+        "params": {
+            "parameter_path": "str — dot notation, e.g. 'risk_management.stop_loss_pct'",
+            "new_value": "any — the new value",
+            "evidence": "str — what experience justifies this change",
+            "confidence": "int — 1-10",
+        },
+    },
     "strategic_hibernate": {
         "description": "Voluntarily pause all activity. Survival clock FREEZES. Budget stops draining. Wake on regime change, set duration, or manual trigger.",
         "params": {

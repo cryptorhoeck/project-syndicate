@@ -100,6 +100,10 @@ class ActionExecutor:
             "hedge": self._handle_execute_trade,
             # Universal
             "go_idle": self._handle_go_idle,
+            # Phase 8C: Sandbox actions
+            "execute_analysis": self._handle_execute_analysis,
+            "run_tool": self._handle_run_tool,
+            "modify_genome": self._handle_broadcast,
             # Phase 8B: Survival actions
             "propose_sip": self._handle_propose_sip,
             "offer_intel": self._handle_offer_intel,
@@ -721,3 +725,136 @@ class ActionExecutor:
             action_type=action_type,
             details=f"Refused plan #{plan_id}, -5 reputation",
         )
+
+    # ── Phase 8C: Sandbox action handlers ───────────────────
+
+    async def _handle_execute_analysis(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Execute agent-written analysis script in sandbox."""
+        from src.sandbox.runner import execute_script
+        from src.sandbox.data_api import SandboxDataAPI
+        from src.sandbox.cost import record_sandbox_execution
+        from src.sandbox.security import hash_script
+
+        script = params.get("script", "")
+        purpose = params.get("purpose", "")
+        save_as_tool = params.get("save_as_tool", False)
+        tool_name = params.get("tool_name")
+
+        if not script:
+            return ActionResult(success=False, action_type=action_type, details="No script provided")
+
+        # Build data API and prefetch
+        watchlist = agent.watched_markets if hasattr(agent, "watched_markets") and agent.watched_markets else []
+        data_api = SandboxDataAPI(agent.id, watchlist)
+        await data_api.prefetch_all(self.db)
+
+        # Execute
+        result = await execute_script(script, data_api, agent.id, purpose)
+
+        # Record
+        await record_sandbox_execution(
+            agent.id, agent.cycle_count, tool_name,
+            result.script_hash, len(script),
+            result.success, str(result.output) if result.output else None,
+            result.error, result.execution_time_ms, result.cost_usd,
+            purpose, False, self.db,
+        )
+
+        # Save as tool if requested
+        if save_as_tool and result.success and tool_name:
+            from src.common.models import AgentTool
+            try:
+                tool = AgentTool(
+                    agent_id=agent.id,
+                    tool_name=tool_name,
+                    description=purpose[:500],
+                    script=script,
+                    script_hash=hash_script(script),
+                    original_author_id=agent.id,
+                    generation_created=agent.generation,
+                )
+                self.db.add(tool)
+                self.db.flush()
+            except Exception as e:
+                logger.warning(f"Failed to save tool: {e}")
+
+        if result.success:
+            return ActionResult(
+                success=True, action_type=action_type,
+                details=f"Analysis complete: {str(result.output)[:200]}",
+                cost=result.cost_usd,
+            )
+        else:
+            return ActionResult(
+                success=False, action_type=action_type,
+                details=f"Analysis failed: {result.error}",
+                cost=result.cost_usd,
+            )
+
+    async def _handle_run_tool(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Execute a previously saved analysis tool."""
+        from src.sandbox.runner import execute_script
+        from src.sandbox.data_api import SandboxDataAPI
+        from src.sandbox.cost import record_sandbox_execution
+        from src.common.models import AgentTool
+
+        tool_name = params.get("tool_name", "")
+        if not tool_name:
+            return ActionResult(success=False, action_type=action_type, details="No tool name")
+
+        tool = self.db.execute(
+            __import__("sqlalchemy", fromlist=["select"]).select(AgentTool).where(
+                AgentTool.agent_id == agent.id,
+                AgentTool.tool_name == tool_name,
+                AgentTool.is_active == True,
+            )
+        ).scalar_one_or_none()
+
+        if not tool:
+            return ActionResult(success=False, action_type=action_type, details=f"Tool '{tool_name}' not found")
+
+        watchlist = agent.watched_markets if hasattr(agent, "watched_markets") and agent.watched_markets else []
+        data_api = SandboxDataAPI(agent.id, watchlist)
+        await data_api.prefetch_all(self.db)
+
+        result = await execute_script(tool.script, data_api, agent.id, f"run_tool:{tool_name}")
+
+        # Update stats
+        tool.times_executed = (tool.times_executed or 0) + 1
+        if result.success:
+            tool.times_succeeded = (tool.times_succeeded or 0) + 1
+        else:
+            tool.times_failed = (tool.times_failed or 0) + 1
+
+        # Rolling avg execution time
+        if tool.avg_execution_ms:
+            tool.avg_execution_ms = (tool.avg_execution_ms * 0.9) + (result.execution_time_ms * 0.1)
+        else:
+            tool.avg_execution_ms = float(result.execution_time_ms)
+
+        self.db.flush()
+
+        await record_sandbox_execution(
+            agent.id, agent.cycle_count, tool_name,
+            result.script_hash, len(tool.script),
+            result.success, str(result.output) if result.output else None,
+            result.error, result.execution_time_ms, result.cost_usd,
+            f"run_tool:{tool_name}", False, self.db,
+        )
+
+        if result.success:
+            return ActionResult(
+                success=True, action_type=action_type,
+                details=f"Tool '{tool_name}': {str(result.output)[:200]}",
+                cost=result.cost_usd,
+            )
+        else:
+            return ActionResult(
+                success=False, action_type=action_type,
+                details=f"Tool '{tool_name}' failed: {result.error}",
+                cost=result.cost_usd,
+            )

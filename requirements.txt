@@ -28,3 +28,5 @@ markdown
 tiktoken
 jsonschema
 rich>=13.0.0
+RestrictedPython>=7.0
+psutil

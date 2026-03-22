@@ -240,6 +240,28 @@ class SyndicateConfig(BaseSettings):
     death_last_words_enabled: bool = True
     death_last_words_model: str = "claude-haiku-4-5-20251001"
 
+    # Phase 8C: Code Sandbox
+    sandbox_timeout_seconds: int = 5
+    sandbox_memory_limit_mb: int = 50
+    sandbox_output_limit_bytes: int = 10240
+    sandbox_max_script_length: int = 5000
+    sandbox_base_cost_usd: float = 0.001
+    sandbox_time_rate_usd_per_ms: float = 0.0001
+    sandbox_max_tools_per_cycle: int = 3
+    sandbox_max_pre_compute_tools: int = 3
+
+    # Phase 8C: Strategy Genome
+    genome_mutation_rate: float = 0.15
+    genome_mutation_strength: float = 0.10
+    genome_structural_mutation_rate: float = 0.05
+    genome_warmstart_mutation_rate: float = 0.40
+    genome_warmstart_mutation_strength: float = 0.20
+    genome_max_modifications_per_eval: int = 2
+    genome_fitness_age_bonus: float = 0.1
+    genome_diversity_low_threshold: float = 0.3
+    tool_inheritance_stat_discount: float = 0.50
+    tool_outcome_correlation_lookback_cycles: int = 3
+
     # Logging
     log_level: str = "INFO"
 
