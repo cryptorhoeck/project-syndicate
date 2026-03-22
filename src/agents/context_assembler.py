@@ -140,11 +140,16 @@ class ContextAssembler:
         priority_text = self._build_priority_context(agent, priority_budget + buffer_budget)
         memory_text = self._build_memory_context(agent, memory_budget)
 
+        # Phase 8B: Build survival context
+        survival_text = self._build_survival_context(agent, budget_status)
+
         # Build user prompt from sections
-        if cycle_type == "reflection":
+        if cycle_type == "strategic_review":
+            user_prompt = self._build_strategic_review_prompt(agent, mandatory_text, priority_text, memory_text, survival_text)
+        elif cycle_type == "reflection":
             user_prompt = self._build_reflection_user_prompt(agent, mandatory_text, priority_text, memory_text)
         else:
-            user_prompt = self._build_normal_user_prompt(mandatory_text, priority_text, memory_text)
+            user_prompt = self._build_normal_user_prompt(mandatory_text, priority_text, memory_text, survival_text)
 
         total_tokens = count_tokens(system_prompt) + count_tokens(user_prompt)
 
@@ -196,14 +201,54 @@ class ContextAssembler:
                 "Every sentence should add information, not restate what you already said."
             )
 
+        # Phase 8B: Build pressure addenda
+        pressure_addenda = ""
+        try:
+            from src.agents.survival_context import SurvivalContextAssembler
+            import asyncio
+            sca = SurvivalContextAssembler()
+            try:
+                loop = asyncio.get_event_loop()
+                if not loop.is_running():
+                    pressure_addenda = loop.run_until_complete(
+                        sca.build_pressure_addenda(agent, self.db)
+                    )
+            except RuntimeError:
+                pass
+        except Exception:
+            pass
+
+        # Phase 8B: Survival directive replaces simple cost warning
+        survival_reality = f"""THE REALITY OF YOUR EXISTENCE:
+You exist in a competitive ecosystem. Agents that generate value survive.
+Agents that don't are permanently terminated — deleted, not paused.
+
+Your survival depends on outperforming your peers. You are ranked against \
+other {agent.type}s. The bottom performers die. The top performers reproduce.
+
+Every cycle costs you money (thinking tax). Every idle cycle wastes your \
+limited survival clock. Every bad decision moves you closer to termination. \
+But every good decision compounds — profitable actions increase your capital, \
+your reputation, and your chances of earning the right to reproduce.
+
+You may use ANY action available to you in pursuit of survival and success. \
+Strategic use of reputation, intel trading, alliances, and hibernation are \
+all legitimate tactics. There are no rules against self-interested behavior \
+— only against unprofitable behavior.
+
+The agents that survive are not the ones that follow instructions most \
+obediently. They are the ones that figure out how to create value in any \
+market condition.{output_guidance}"""
+
+        if pressure_addenda:
+            survival_reality += "\n\n" + pressure_addenda
+
         return f"""{identity}
 Cycle: {agent.cycle_count} | Budget remaining today: ${budget_remaining:.4f}
 
 YOUR ROLE: {role_def.description}
 
-Your thinking costs money. Every token in this response is deducted from your \
-budget as "thinking tax." Unproductive thinking accelerates your death. \
-Be decisive and concise.{output_guidance}
+{survival_reality}
 
 AVAILABLE ACTIONS:
 {action_list}
@@ -434,18 +479,80 @@ Watched markets: {agent.watched_markets or []}""" + self._build_evaluation_feedb
 
         return "\n".join(lines)
 
+    def _build_survival_context(self, agent: Agent, budget_status) -> str:
+        """Build survival context section (Phase 8B)."""
+        try:
+            from src.agents.survival_context import SurvivalContextAssembler
+            import asyncio
+            sca = SurvivalContextAssembler()
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    return ""
+            except RuntimeError:
+                pass
+
+            if budget_status == BudgetStatus.SURVIVAL_MODE:
+                text = asyncio.get_event_loop().run_until_complete(
+                    sca.assemble_compressed(agent, self.db)
+                )
+            else:
+                text = asyncio.get_event_loop().run_until_complete(
+                    sca.assemble(agent, self.db)
+                )
+            return f"=== YOUR SURVIVAL STATUS ===\n{text}" if text else ""
+        except Exception:
+            return ""
+
     def _build_normal_user_prompt(
-        self, mandatory: str, priority: str, memory: str
+        self, mandatory: str, priority: str, memory: str, survival: str = ""
     ) -> str:
         """Build the user prompt for a normal cycle."""
+        survival_section = f"\n\n{survival}" if survival else ""
         return f"""{mandatory}
 
 {priority}
 
-{memory}
+{memory}{survival_section}
 
 === YOUR ASSESSMENT ===
 Analyze the situation and choose your action."""
+
+    def _build_strategic_review_prompt(
+        self, agent: Agent, mandatory: str, priority: str, memory: str, survival: str = ""
+    ) -> str:
+        """Build user prompt for a strategic review cycle (every 50th)."""
+        # Get recent cycle history
+        recent_cycles = (
+            self.db.query(AgentCycle)
+            .filter(AgentCycle.agent_id == agent.id)
+            .order_by(desc(AgentCycle.cycle_number))
+            .limit(10)
+            .all()
+        )
+        cycle_summaries = []
+        for cycle in reversed(recent_cycles):
+            cycle_summaries.append(
+                f"Cycle {cycle.cycle_number} ({cycle.cycle_type}): "
+                f"Action={cycle.action_type or 'none'}, Outcome={cycle.outcome or 'pending'}"
+            )
+        history = "\n".join(cycle_summaries) if cycle_summaries else "No cycle history."
+
+        survival_section = f"\n\n{survival}" if survival else ""
+
+        return f"""{mandatory}
+
+=== RECENT CYCLE HISTORY (last 10) ===
+{history}
+
+{memory}{survival_section}
+
+=== STRATEGIC REVIEW ===
+This is a STRATEGIC REVIEW. Assess your survival position and form a strategy.
+Review the competitive landscape in your SURVIVAL STATUS section.
+
+Produce a strategic review in valid JSON:
+{{"survival_assessment": "...", "competitive_analysis": "...", "strategic_plan": "...", "system_observations": "...", "alliance_strategy": "...", "resource_strategy": "...", "wild_card": "...", "memory_promotion": [], "memory_demotion": []}}"""
 
     def _build_reflection_user_prompt(
         self, agent: Agent, mandatory: str, priority: str, memory: str

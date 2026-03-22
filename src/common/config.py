@@ -226,6 +226,20 @@ class SyndicateConfig(BaseSettings):
     batch_poll_interval_seconds: int = 30
     batch_timeout_seconds: int = 3600
 
+    # Phase 8B: Survival Instinct
+    strategic_review_cycle_interval: int = 50
+    pressure_eval_imminent_days: int = 5
+    pressure_eval_critical_days: int = 3
+    death_feed_lookback_days: int = 7
+    sip_max_per_evaluation_period: int = 1
+    sip_thinking_tax_multiplier: float = 2.0
+    intel_settlement_window_hours: int = 48
+    intel_price_change_threshold_pct: float = 0.5
+    alliance_trust_bonus: float = 0.1
+    reputation_evaluation_weight: float = 0.10
+    death_last_words_enabled: bool = True
+    death_last_words_model: str = "claude-haiku-4-5-20251001"
+
     # Logging
     log_level: str = "INFO"
 

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from src.common.config import config
 from src.common.models import Agent, SystemState
 from src.agents.budget_gate import BudgetGate, BudgetStatus
 from src.agents.claude_client import ClaudeClient, APIResponse
@@ -145,11 +146,21 @@ class ThinkingCycle:
             )
 
         # Determine cycle type
+        strategic_review_interval = getattr(
+            self, "strategic_review_interval",
+            getattr(config, "strategic_review_cycle_interval", 50) if config else 50,
+        )
+        is_strategic_review = (
+            cycle_number > 0
+            and strategic_review_interval > 0
+            and cycle_number % strategic_review_interval == 0
+        )
         is_reflection = (
             cycle_number > 0
             and cycle_number % self.reflection_interval == 0
+            and not is_strategic_review
         )
-        cycle_type = "reflection" if is_reflection else "normal"
+        cycle_type = "strategic_review" if is_strategic_review else ("reflection" if is_reflection else "normal")
         if budget_result.status == BudgetStatus.SURVIVAL_MODE:
             cycle_type = "survival" if not is_reflection else "reflection"
 
@@ -293,7 +304,7 @@ class ThinkingCycle:
         parsed = validation.parsed
 
         # ── Phase 4: Act ──
-        if is_reflection:
+        if is_reflection or is_strategic_review:
             # Process reflection — update long-term memory
             self.memory_manager.process_reflection(
                 agent_id=agent.id,
