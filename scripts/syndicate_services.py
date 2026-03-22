@@ -336,6 +336,187 @@ def stop_arena(config: dict, console: Console) -> bool:
     return True
 
 
+# ── Schema Migration ────────────────────────────────────────
+
+def apply_schema_updates(config: dict, console: Console) -> bool:
+    """Apply any missing database schema changes.
+
+    Runs after PostgreSQL is confirmed healthy but before the Arena starts.
+    Idempotent — safe to run every launch.
+    """
+    console.print("  Applying schema updates...", end="")
+
+    pg = config.get("postgresql", {})
+    db_url = (
+        f"postgresql://{pg.get('user', 'postgres')}"
+        f"@localhost:{pg.get('port', 5432)}"
+        f"/{pg.get('database', 'syndicate')}"
+    )
+
+    try:
+        from sqlalchemy import create_engine, text
+        engine = create_engine(db_url)
+
+        # Columns to add (idempotent — skips if exists)
+        add_columns = [
+            ("agents", "last_words", "TEXT"),
+            ("agent_cycles", "model_used", "VARCHAR(60)"),
+            ("agent_cycles", "model_reason", "VARCHAR(30)"),
+        ]
+
+        # Tables to create (IF NOT EXISTS — idempotent)
+        create_tables = [
+            """CREATE TABLE IF NOT EXISTS intel_accuracy_tracking (
+                id SERIAL PRIMARY KEY,
+                message_id INT NOT NULL,
+                agent_id INT NOT NULL,
+                agent_name VARCHAR(100) NOT NULL,
+                market VARCHAR(50) NOT NULL,
+                confidence_stated INT NOT NULL,
+                content_summary TEXT NOT NULL,
+                posted_at TIMESTAMP NOT NULL,
+                outcome VARCHAR(20) DEFAULT 'pending',
+                outcome_determined_at TIMESTAMP,
+                outcome_evidence TEXT,
+                reputation_change FLOAT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )""",
+            """CREATE TABLE IF NOT EXISTS intel_challenges (
+                id SERIAL PRIMARY KEY,
+                challenger_agent_id INT NOT NULL,
+                challenger_agent_name VARCHAR(100) NOT NULL,
+                target_message_id INT NOT NULL,
+                target_agent_id INT NOT NULL,
+                challenge_reason TEXT NOT NULL,
+                counter_evidence TEXT NOT NULL,
+                agora_message_id INT,
+                outcome VARCHAR(20) DEFAULT 'pending',
+                outcome_determined_at TIMESTAMP,
+                challenger_reputation_change FLOAT,
+                target_reputation_change FLOAT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )""",
+            """CREATE TABLE IF NOT EXISTS agent_alliances (
+                id SERIAL PRIMARY KEY,
+                proposer_agent_id INT NOT NULL,
+                proposer_agent_name VARCHAR(100) NOT NULL,
+                target_agent_id INT NOT NULL,
+                target_agent_name VARCHAR(100) NOT NULL,
+                proposer_offer TEXT NOT NULL,
+                proposer_request TEXT NOT NULL,
+                status VARCHAR(20) DEFAULT 'proposed',
+                proposed_at TIMESTAMP DEFAULT NOW(),
+                accepted_at TIMESTAMP,
+                dissolved_at TIMESTAMP,
+                dissolved_by INT,
+                dissolution_reason TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS system_improvement_proposals (
+                id SERIAL PRIMARY KEY,
+                proposer_agent_id INT NOT NULL,
+                proposer_agent_name VARCHAR(100) NOT NULL,
+                title VARCHAR(200) NOT NULL,
+                category VARCHAR(50) NOT NULL,
+                proposal TEXT NOT NULL,
+                rationale TEXT NOT NULL,
+                metrics_affected TEXT,
+                agora_message_id INT,
+                support_count INT DEFAULT 0,
+                oppose_count INT DEFAULT 0,
+                genesis_verdict VARCHAR(20),
+                genesis_reasoning TEXT,
+                owner_decision VARCHAR(20),
+                owner_notes TEXT,
+                status VARCHAR(20) DEFAULT 'proposed',
+                proposed_at TIMESTAMP DEFAULT NOW(),
+                resolved_at TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS agent_tools (
+                id SERIAL PRIMARY KEY,
+                agent_id INT NOT NULL,
+                tool_name VARCHAR(100) NOT NULL,
+                description TEXT NOT NULL,
+                script TEXT NOT NULL,
+                script_hash VARCHAR(64) NOT NULL,
+                version INT DEFAULT 1,
+                times_executed INT DEFAULT 0,
+                times_succeeded INT DEFAULT 0,
+                times_failed INT DEFAULT 0,
+                avg_execution_ms FLOAT,
+                times_before_profitable INT DEFAULT 0,
+                times_before_unprofitable INT DEFAULT 0,
+                estimated_win_rate FLOAT,
+                inherited_from_agent_id INT,
+                original_author_id INT,
+                generation_created INT DEFAULT 1,
+                is_active BOOLEAN DEFAULT TRUE,
+                deactivated_reason TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(agent_id, tool_name)
+            )""",
+            """CREATE TABLE IF NOT EXISTS sandbox_executions (
+                id SERIAL PRIMARY KEY,
+                agent_id INT NOT NULL,
+                cycle_number INT NOT NULL,
+                tool_name VARCHAR(100),
+                script_hash VARCHAR(64) NOT NULL,
+                script_length INT NOT NULL,
+                success BOOLEAN NOT NULL,
+                output TEXT,
+                error TEXT,
+                execution_time_ms INT NOT NULL,
+                execution_cost_usd FLOAT NOT NULL,
+                purpose TEXT,
+                was_pre_compute BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT NOW()
+            )""",
+            """CREATE TABLE IF NOT EXISTS agent_genomes (
+                id SERIAL PRIMARY KEY,
+                agent_id INT NOT NULL UNIQUE,
+                genome_version INT DEFAULT 1,
+                genome_data JSONB NOT NULL,
+                parent_genome_id INT,
+                mutations_applied JSONB,
+                fitness_score FLOAT,
+                evaluations_with_genome INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )""",
+        ]
+
+        with engine.connect() as conn:
+            applied = 0
+
+            # Add columns (skip if already exists)
+            for table, col, col_type in add_columns:
+                try:
+                    conn.execute(text(
+                        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}"
+                    ))
+                    applied += 1
+                except Exception:
+                    pass
+
+            # Create tables
+            for sql in create_tables:
+                try:
+                    conn.execute(text(sql))
+                    applied += 1
+                except Exception:
+                    pass
+
+            conn.commit()
+
+        engine.dispose()
+        console.print(f" [green]OK[/green] ({applied} checks)")
+        return True
+
+    except Exception as e:
+        console.print(f" [yellow]skipped[/yellow] ({e})")
+        return True  # Non-fatal — don't block launch
+
+
 # ── Composite Operations ────────────────────────────────────
 
 def launch_all(config: dict, console: Console) -> bool:
@@ -353,6 +534,10 @@ def launch_all(config: dict, console: Console) -> bool:
         ans = input("  PostgreSQL failed. Continue anyway? [y/N]: ").strip().lower()
         if ans != "y":
             return False
+
+    # 1.5. Schema updates (idempotent — runs every launch)
+    if pg_ok:
+        apply_schema_updates(config, console)
 
     # 2. Memurai
     mem_ok = start_memurai(config, console)
