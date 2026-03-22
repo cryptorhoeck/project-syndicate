@@ -2,6 +2,31 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [2.3.0] - 2026-03-22
+
+### Added — Phase 8C: Code Sandbox & Strategy Genome
+
+#### Tier 1 — Code Sandbox
+- **Sandbox Security** — static analysis blocklist (20+ blocked patterns) + RestrictedPython compilation. Allowed: math, numpy, pandas, statistics, collections, datetime, json, re
+- **Sandbox Runner** — in-process execution with restricted globals, threading timeout (5s), safe builtins only
+- **Data API** — pre-fetched read-only data injected as functions: get_price_history, get_current_price, get_my_trades, get_my_positions, get_agora_messages, get_market_regime, output()
+- **Cost accounting** — $0.001 base + $0.0001/ms added to agent thinking tax
+- **Tool-outcome correlation** — Redis-backed lookback tracking for tool win rates
+- **3 new actions** (all roles) — execute_analysis, run_tool, modify_genome
+- **DB tables** — agent_tools (with dedup, versioning, inheritance tracking), sandbox_executions
+
+#### Tier 2 — Strategy Genome
+- **Genome Schema** — ~30 numerical parameters across 5 sections (market_selection, signal_generation, plan_construction, risk_management, behavioral). Role-specific section filtering
+- **Mutation Engine** — reproduction (15% rate), warm-start from best genome (40% rate), diversity pressure (30% rate). All mutations clamped to bounds
+- **Genome Manager** — CRUD, agent-directed modifications (max 2/eval, validated against bounds), fitness tracking with age bonus
+- **Diversity Monitor** — cosine distance across population, convergence alert below 0.3 diversity index
+- **DB table** — agent_genomes (genome_data JSONB, fitness_score, parent linkage, mutation history)
+- **Config** — 20 new variables
+
+#### Tests
+- 41 new tests across Tier 1 (21) and Tier 2 (20)
+- Total: 782 tests passing
+
 ## [2.2.0] - 2026-03-22
 
 ### Added — Phase 8B: Survival Instinct

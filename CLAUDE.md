@@ -10,8 +10,8 @@ Project Syndicate is an autonomous, self-evolving multi-agent AI financial ecosy
 
 ## Current Status
 
-**Phase:** 8B — COMPLETE (Survival Instinct)
-**Focus:** Competitive context injection, survival actions, alliances, intel tracking, SIP system
+**Phase:** 8C — COMPLETE (Code Sandbox & Strategy Genome)
+**Focus:** Secure sandbox execution, agent tool library, heritable strategy genomes, mutation engine
 **Last Updated:** 2026-03-12
 
 See `CURRENT_STATUS.md` for detailed session-by-session progress.
@@ -138,6 +138,20 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **Integration points:** Context Assembler (dynamic identity + trust relationships + library injection), Evaluation Engine (profile computation + drift detection + temperature evolution + divergence), Action Executor (relationship tracking on position close), Memory Manager (relationship extraction from reflections)
 - **Models updated:** 4 new tables (BehavioralProfile, AgentRelationship, DivergenceScore, StudyHistory), 4 new Agent columns (last_temperature_signal, temperature_history, identity_tier, behavioral_profile_id)
 - **Config:** 22 new variables for thresholds, bounds, and minimums
+
+### Code Sandbox & Strategy Genome (Phase 8C)
+- **Sandbox Security** (`src/sandbox/security.py`) — static analysis blocklist + RestrictedPython compilation. Blocks os/subprocess/socket/eval/open/dunder access.
+- **Sandbox Runner** (`src/sandbox/runner.py`) — in-process execution with restricted globals, threading timeout (5s), safe builtins only.
+- **Sandbox Data API** (`src/sandbox/data_api.py`) — pre-fetched read-only data: price history, tickers, trades, positions, Agora messages, market regime. Injected as functions into sandbox namespace.
+- **Sandbox Cost** (`src/sandbox/cost.py`) — execution cost accounting added to agent thinking tax ($0.001 base + $0.0001/ms).
+- **Tool Tracker** (`src/sandbox/tool_tracker.py`) — tool-outcome correlation via Redis lookback. Tools used before profitable trades get higher win rates.
+- **Genome Schema** (`src/genome/genome_schema.py`) — ~30 numerical parameters across role-specific sections (market_selection, signal_generation, plan_construction, risk_management, behavioral). Bounds, validation, randomization.
+- **Mutation Engine** (`src/genome/mutation.py`) — reproduction (15% rate, 10% strength), warm-start (40% rate, 20% strength), diversity pressure (30% rate).
+- **Genome Manager** (`src/genome/genome_manager.py`) — CRUD, agent-directed modifications (max 2/eval), fitness tracking linked to evaluation composite.
+- **Diversity Monitor** (`src/genome/diversity.py`) — cosine distance between genome vectors, convergence alert at <0.3 diversity index.
+- **New actions** — execute_analysis, run_tool, modify_genome (all roles).
+- **DB tables** — agent_tools, sandbox_executions, agent_genomes.
+- **Config** — 20 new variables for sandbox limits, genome mutation rates, diversity thresholds.
 
 ### Survival Instinct (Phase 8B)
 - **Survival Context** (`src/agents/survival_context.py`) — injects rank, competition, death feed, pipeline status, evaluation countdown into every cycle. Pressure addenda when agent is in danger (ranked last, eval imminent, probation).
@@ -310,6 +324,7 @@ At the beginning of every script or module, include (or call) standard boilerpla
 | 7 | The Arena (full paper trading validation) | Pending |
 | 8A | CLI Launcher (one-click startup) | **COMPLETE** |
 | 8B | Survival Instinct (competitive behavior) | **COMPLETE** |
+| 8C | Code Sandbox & Strategy Genome | **COMPLETE** |
 | 8 | Go Live (real capital) | Pending |
 
 ## Useful Commands
