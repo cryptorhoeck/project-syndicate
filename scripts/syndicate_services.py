@@ -471,6 +471,15 @@ def apply_schema_updates(config: dict, console: Console) -> bool:
                 was_pre_compute BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT NOW()
             )""",
+            """CREATE TABLE IF NOT EXISTS boot_sequence_log (
+                id SERIAL PRIMARY KEY,
+                wave_number INT NOT NULL,
+                event_type VARCHAR(50) NOT NULL,
+                agent_id INT,
+                agent_name VARCHAR(100),
+                details TEXT,
+                timestamp TIMESTAMP DEFAULT NOW()
+            )""",
             """CREATE TABLE IF NOT EXISTS agent_genomes (
                 id SERIAL PRIMARY KEY,
                 agent_id INT NOT NULL UNIQUE,
@@ -644,7 +653,7 @@ def clean_slate(config: dict, console: Console) -> bool:
             # Phase 3A
             "agent_cycles", "agent_long_term_memory", "agent_reflections",
             # Phase 3B
-            "opportunities", "plans",
+            "boot_sequence_log", "opportunities", "plans",
             # Phase 2C
             "intel_signals", "intel_endorsements",
             "review_requests", "reputation_transactions",
