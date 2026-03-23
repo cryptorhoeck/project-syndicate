@@ -672,6 +672,24 @@ def clean_slate(config: dict, console: Console) -> bool:
 
         console.print(f"  Truncated {truncated} tables ({skipped} skipped)")
 
+        # Step 1b: Force-clear messages and read receipts (may have been skipped above)
+        for tbl in ["agora_read_receipts", "messages"]:
+            try:
+                with engine.connect() as conn:
+                    conn.execute(text(f"DELETE FROM {tbl}"))
+                    conn.commit()
+            except Exception:
+                pass
+
+        # Step 1c: Reset Agora channel message counts
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("UPDATE agora_channels SET message_count = 0"))
+                conn.commit()
+                console.print("  Agora channels reset")
+        except Exception:
+            pass
+
         # Step 2: Delete agents (keep Genesis id=0)
         try:
             with engine.connect() as conn:
