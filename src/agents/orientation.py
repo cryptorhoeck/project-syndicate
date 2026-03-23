@@ -193,6 +193,27 @@ class OrientationProtocol:
         parsed = validation.parsed
         watchlist = self._extract_watchlist(parsed, agent.type)
 
+        # Self-naming: apply chosen name if provided
+        chosen_name = parsed.get("chosen_name", "")
+        if chosen_name and isinstance(chosen_name, str) and chosen_name.strip():
+            chosen_name = chosen_name.strip()[:50]  # cap length
+            old_name = agent.name
+            if chosen_name != old_name:
+                agent.name = chosen_name
+                self.db.add(agent)
+                self.db.flush()
+                logger.info(f"Agent self-named: {old_name} → {chosen_name}")
+                # Announce to Agora
+                if self.agora:
+                    try:
+                        self.agora.post_system_message(
+                            channel="agent-chat",
+                            content=f'{old_name} has chosen the name {chosen_name}',
+                            metadata={"agent_id": agent.id, "old_name": old_name, "new_name": chosen_name},
+                        )
+                    except Exception:
+                        pass
+
         # Mark orientation as complete
         self._mark_completed(agent, watchlist)
 
@@ -239,7 +260,13 @@ class OrientationProtocol:
         """Build the orientation system prompt."""
         action_list = format_actions_for_prompt(agent.type)
 
-        return f"""You are {agent.name}, a newly created {agent.type} agent in Project Syndicate.
+        return f"""Before anything else: choose your name. You were assigned the designation \
+"{agent.name}" but that's just a serial number. Choose a name that will be YOUR identity \
+for your entire existence. It can be anything — a callsign, a word that resonates with \
+you, a name you simply like. This name is how every other agent will know you, how \
+you'll appear in the Agora, and what will be remembered if you die.
+
+You are a newly created {agent.type} agent in Project Syndicate.
 Generation: {agent.generation} | Capital: ${agent.capital_allocated:.2f}
 Budget: ${agent.thinking_budget_daily:.4f}/day
 
@@ -262,7 +289,7 @@ Strategists: go idle and state what you're watching for. For Critics: go idle \
 and state your review criteria. For Operators: go idle and await approved plans.
 
 Respond ONLY in valid JSON matching this schema — no other text:
-{{"situation": "...", "confidence": {{"score": N, "reasoning": "..."}}, "recent_pattern": "...", "action": {{"type": "...", "params": {{...}}}}, "reasoning": "...", "self_note": "..."}}"""
+{{"chosen_name": "your chosen name", "situation": "...", "confidence": {{"score": N, "reasoning": "..."}}, "recent_pattern": "...", "action": {{"type": "...", "params": {{...}}}}, "reasoning": "...", "self_note": "..."}}"""
 
     def _build_user_prompt(
         self, agent: Agent, role_def, summaries: dict[str, str]
@@ -382,7 +409,13 @@ Demonstrate that you understand your role, the cost of thinking, and the rules o
             if dynasty:
                 dynasty_name = dynasty.dynasty_name
 
-        return f"""You are {agent.name}, a newly created {agent.type} agent in Project Syndicate.
+        return f"""Before anything else: choose your name. You were assigned the designation \
+"{agent.name}" but that's just a serial number. Choose a name that will be YOUR identity \
+for your entire existence. It can be anything — a callsign, a word that resonates with \
+you, a name you simply like. This name is how every other agent will know you, how \
+you'll appear in the Agora, and what will be remembered if you die.
+
+You are a newly created {agent.type} agent in Project Syndicate.
 Generation: {agent.generation} | Capital: ${agent.capital_allocated:.2f}
 Budget: ${agent.thinking_budget_daily:.4f}/day
 Your parent was {parent_name} (Gen {agent.generation - 1}), who survived \

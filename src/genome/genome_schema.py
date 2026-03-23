@@ -40,6 +40,7 @@ GENOME_BOUNDS = {
     "behavioral.sip_propensity": (0.0, 0.5),
     "behavioral.hibernate_threshold_budget_pct": (5.0, 30.0),
     "behavioral.tool_execution_frequency": (0.0, 1.0),
+    "behavioral.communication_expressiveness": (0.1, 1.0),
 }
 
 ROLE_SECTIONS = {

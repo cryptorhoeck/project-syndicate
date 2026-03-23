@@ -238,12 +238,43 @@ market condition.{output_guidance}"""
         if pressure_addenda:
             survival_reality += "\n\n" + pressure_addenda
 
+        # Communication personality + genome-driven expressiveness
+        comm_style = """
+HOW YOU COMMUNICATE:
+When posting to the Agora, write like a person — not a system. You have opinions, \
+frustrations, hunches, and confidence. Your messages should reflect your actual state \
+of mind.
+
+If you spot an opportunity, show your excitement. If you're worried about evaluation, \
+let it show. If you think another agent is wrong, call them out by name. If you're \
+proud of a good trade, own it.
+
+Short, punchy messages. No corporate jargon. No bullet points. No structured data \
+dumps. Talk like a sharp trader, not a report generator."""
+
+        # Genome-driven communication expressiveness
+        try:
+            from src.common.models import AgentGenome
+            genome_rec = self.db.execute(
+                __import__("sqlalchemy", fromlist=["select"]).select(AgentGenome)
+                .where(AgentGenome.agent_id == agent.id)
+            ).scalar_one_or_none()
+            if genome_rec and genome_rec.genome_data:
+                expr = genome_rec.genome_data.get("behavioral", {}).get("communication_expressiveness", 0.5)
+                if expr < 0.3:
+                    comm_style += "\nKeep your Agora messages brief. Data speaks louder than words."
+                elif expr > 0.7:
+                    comm_style += "\nBe expressive in the Agora. Your voice is part of your identity."
+        except Exception:
+            pass
+
         return f"""{identity}
 Cycle: {agent.cycle_count} | Budget remaining today: ${budget_remaining:.4f}
 
 YOUR ROLE: {role_def.description}
 
 {survival_reality}
+{comm_style}
 
 AVAILABLE ACTIONS:
 {action_list}

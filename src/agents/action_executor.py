@@ -143,9 +143,9 @@ class ActionExecutor:
         self.db.add(opp)
         self.db.flush()
 
-        # Also broadcast to Agora
-        summary = self._summarize_action(action_type, params)
-        await self._post_to_agora(agent, "market-intel", summary, action_type, params)
+        # Broadcast to Agora — use agent's natural language, not structured template
+        content = details if details else f"{market} — {signal}"
+        await self._post_to_agora(agent, "market-intel", content, action_type, params)
 
         return ActionResult(
             success=True,
@@ -189,9 +189,9 @@ class ActionExecutor:
                 self.db.add(opp)
                 self.db.flush()
 
-        # Broadcast to Agora
-        summary = self._summarize_action(action_type, params)
-        await self._post_to_agora(agent, "strategy-proposals", summary, action_type, params)
+        # Broadcast to Agora — thesis is the agent's voice, structured data in metadata
+        content = params.get("thesis") or f"{plan.plan_name} — {plan.direction} {plan.market}"
+        await self._post_to_agora(agent, "strategy-proposals", content, action_type, params)
 
         return ActionResult(
             success=True,
@@ -232,9 +232,15 @@ class ActionExecutor:
         self.db.add(plan)
         self.db.flush()
 
-        # Broadcast to Agora
-        summary = self._summarize_action(action_type, params)
-        await self._post_to_agora(agent, "strategy-proposals", summary, action_type, params)
+        # Broadcast to Agora — critic's own reasoning, not a template
+        content = (
+            params.get("assessment")
+            or params.get("reasons")
+            or params.get("issues")
+            or params.get("suggestions")
+            or f"Plan #{plan_id}: {verdict}"
+        )
+        await self._post_to_agora(agent, "strategy-proposals", content, action_type, params)
 
         return ActionResult(
             success=True,
@@ -253,14 +259,21 @@ class ActionExecutor:
         }
         channel = channel_map.get(action_type, "agent-chat")
 
-        # Build message content
-        summary = self._summarize_action(action_type, params)
-        await self._post_to_agora(agent, channel, summary, action_type, params)
+        # Use agent's natural language — pull from context/reason/topic fields
+        content = (
+            params.get("context")
+            or params.get("reason")
+            or params.get("topic")
+            or params.get("question")
+            or params.get("revisions")
+            or self._summarize_action(action_type, params)
+        )
+        await self._post_to_agora(agent, channel, content, action_type, params)
 
         return ActionResult(
             success=True,
             action_type=action_type,
-            details=f"Broadcast to {channel}: {summary[:100]}",
+            details=f"Broadcast to {channel}: {content[:100]}",
         )
 
     async def _handle_update_watchlist(
@@ -570,8 +583,9 @@ class ActionExecutor:
         rationale = params.get("rationale", params.get("proposed_change", ""))
         category = params.get("category", "evaluation")
 
-        summary = f"[SIP] {title}: {proposal[:200]}"
-        await self._post_to_agora(agent, "sip-proposals", summary, action_type, params)
+        # Agent's rationale IS the message; title + category go in metadata
+        content = f"{title} — {rationale}" if rationale else f"{title} — {proposal[:200]}"
+        await self._post_to_agora(agent, "sip-proposals", content, action_type, params)
 
         return ActionResult(
             success=True,
@@ -587,9 +601,8 @@ class ActionExecutor:
         market = params.get("market", "general")
         confidence = min(10, max(1, int(params.get("confidence", 5))))
 
-        # Post to Agora
-        summary = f"[INTEL] ({market}, conf:{confidence}/10) {content[:200]}"
-        msg = await self._post_to_agora(agent, "market-intel", summary, "signal", params)
+        # Post to Agora — agent's own words are the message; market/confidence in metadata
+        msg = await self._post_to_agora(agent, "market-intel", content, "signal", params)
 
         # Create tracking record
         try:
