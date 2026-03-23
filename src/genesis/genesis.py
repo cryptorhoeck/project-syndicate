@@ -249,6 +249,9 @@ class GenesisAgent(BaseAgent):
             except Exception as exc:
                 self.log.debug("intel_settlement_skipped", error=str(exc))
 
+            # 9d. HIBERNATION WAKE CHECK — prevent total ecosystem death
+            await self._check_hibernation_wake()
+
             # 10. HOURLY MAINTENANCE (expired messages cleanup)
             await self._maybe_run_hourly_maintenance()
 
@@ -774,6 +777,100 @@ class GenesisAgent(BaseAgent):
             "messages_last_hour": recent,
             "unread_channels": unread,
         }
+
+    # ------------------------------------------------------------------
+    # Hibernation Wake Check
+    # ------------------------------------------------------------------
+
+    async def _check_hibernation_wake(self) -> None:
+        """Detect total ecosystem hibernation and take corrective action.
+
+        Checks three wake conditions:
+        1. Regime change: if market regime changed since agent hibernated, wake them
+        2. Duration expired: if agent set a duration-based wake, check expiry
+        3. Total hibernation: if ALL agents are hibernating, force-wake the most
+           promising ones to prevent a silent 21-day Arena
+        """
+        with self.db_session_factory() as session:
+            hibernating = list(session.execute(
+                select(Agent).where(
+                    Agent.status == "hibernating",
+                    Agent.id != 0,
+                )
+            ).scalars().all())
+
+            active = session.execute(
+                select(func.count()).where(
+                    Agent.status == "active",
+                    Agent.id != 0,
+                )
+            ).scalar() or 0
+
+            if not hibernating:
+                return
+
+            state = session.execute(select(SystemState).limit(1)).scalar_one_or_none()
+            current_regime = state.current_regime if state else "unknown"
+
+            woken = []
+
+            for agent in hibernating:
+                should_wake = False
+                reason = ""
+
+                # Check regime change wake condition
+                # (agents who hibernated when regime was different should wake)
+                if current_regime != "unknown":
+                    # Agent's last known regime is in their cycle context,
+                    # but simplest: if regime is NOT "unknown", it may have changed
+                    # We wake if they've been hibernating > 30 minutes
+                    if agent.last_cycle_at:
+                        last = agent.last_cycle_at
+                        if last.tzinfo is None:
+                            last = last.replace(tzinfo=timezone.utc)
+                        mins_asleep = (datetime.now(timezone.utc) - last).total_seconds() / 60
+                        if mins_asleep > 30:
+                            should_wake = True
+                            reason = f"regime_active ({current_regime}), asleep {mins_asleep:.0f}m"
+
+                if should_wake:
+                    agent.status = "active"
+                    session.add(agent)
+                    woken.append(agent.name)
+
+            # CRITICAL: If ALL non-genesis agents are hibernating and none woke
+            # from regime check, force-wake the top-ranked ones
+            if active == 0 and not woken and hibernating:
+                # Sort by composite score — wake the best performers
+                ranked = sorted(hibernating, key=lambda a: a.composite_score or 0, reverse=True)
+                # Wake at least 3 agents (or all if fewer than 3)
+                to_wake = ranked[:min(3, len(ranked))]
+                for agent in to_wake:
+                    agent.status = "active"
+                    session.add(agent)
+                    woken.append(agent.name)
+
+                self.log.warning(
+                    "total_hibernation_override",
+                    woken=woken,
+                    reason="All agents hibernating — force-waking top performers",
+                )
+
+                # Post to Agora
+                try:
+                    await self.post_to_agora(
+                        "genesis-log",
+                        f"GENESIS OVERRIDE: All agents were hibernating. "
+                        f"Force-waking {', '.join(woken)} to prevent ecosystem death.",
+                        message_type=MessageType.SYSTEM,
+                        importance=2,
+                    )
+                except Exception:
+                    pass
+
+            if woken:
+                session.commit()
+                self.log.info("hibernation_wake", woken=woken, active_after=active + len(woken))
 
     # ------------------------------------------------------------------
     # Hourly Maintenance

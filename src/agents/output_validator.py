@@ -170,6 +170,15 @@ class OutputValidator:
                     f"${agent_capital:.2f}"
                 )
 
+        # Check plan position size bounds (Warden limit: max 25%)
+        if action_type == "propose_plan":
+            size_pct = params.get("position_size_pct", 0)
+            if isinstance(size_pct, (int, float)):
+                if size_pct > 25.0:
+                    return f"Position size {size_pct}% exceeds Warden limit of 25%. Reduce and resubmit."
+                if size_pct <= 0:
+                    return "Position size must be greater than 0%"
+
         # Check confidence score range (already validated by schema, but extra safety)
         conf = parsed.get("confidence", {}).get("score")
         if conf is not None and not (1 <= conf <= 10):

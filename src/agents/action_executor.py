@@ -165,7 +165,7 @@ class ActionExecutor:
             direction=params.get("direction", "long"),
             entry_conditions=params.get("entry_conditions", ""),
             exit_conditions=params.get("exit_conditions", ""),
-            position_size_pct=float(params.get("position_size_pct", 0.1)),
+            position_size_pct=min(25.0, max(0.01, float(params.get("position_size_pct", 0.1)))),
             timeframe=params.get("timeframe"),
             thesis=params.get("thesis", ""),
             status="submitted",
