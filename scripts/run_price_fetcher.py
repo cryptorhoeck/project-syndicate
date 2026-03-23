@@ -116,7 +116,10 @@ async def update_regime_in_db() -> None:
 async def main():
     log.info("price_fetcher_starting", symbols=SYMBOLS, ticker_interval=TICKER_INTERVAL)
 
-    r = redis.Redis.from_url(config.redis_url)
+    r = redis.Redis.from_url(
+        config.redis_url,
+        socket_timeout=10, socket_connect_timeout=5, retry_on_timeout=True,
+    )
     try:
         r.ping()
     except Exception as e:

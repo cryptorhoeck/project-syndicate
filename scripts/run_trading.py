@@ -65,7 +65,10 @@ async def main() -> None:
     # Setup shared resources
     engine = create_engine(config.database_url)
     db_factory = sessionmaker(bind=engine)
-    redis_client = redis.Redis.from_url(config.redis_url, decode_responses=True)
+    redis_client = redis.Redis.from_url(
+        config.redis_url, decode_responses=True,
+        socket_timeout=10, socket_connect_timeout=5, retry_on_timeout=True,
+    )
 
     price_cache = PriceCache(redis_client=redis_client)
     slippage_model = SlippageModel()

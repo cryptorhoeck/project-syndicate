@@ -1,1 +1,0 @@
-"""Project Syndicate - council package."""

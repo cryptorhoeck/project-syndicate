@@ -292,7 +292,22 @@ class CycleScheduler:
                 continue
 
             # Check if enough time has passed since last cycle
-            if agent.last_cycle_at:
+            # Prefer Redis timestamp (immediately visible) over DB (may be stale)
+            redis_ts = None
+            if self.redis:
+                try:
+                    raw = self.redis.get(f"agent:{agent.id}:last_cycle_at")
+                    if raw:
+                        redis_ts = float(raw)
+                except Exception:
+                    pass
+
+            if redis_ts:
+                import time as _time
+                elapsed = _time.time() - redis_ts
+                if elapsed < interval:
+                    continue
+            elif agent.last_cycle_at:
                 last_ts = agent.last_cycle_at.replace(tzinfo=timezone.utc)
                 elapsed = (now - last_ts).total_seconds()
                 if elapsed < interval:

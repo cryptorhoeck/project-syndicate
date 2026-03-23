@@ -806,6 +806,23 @@ class ActionExecutor:
         if not script:
             return ActionResult(success=False, action_type=action_type, details="No script provided")
 
+        # Check daily sandbox cost cap
+        try:
+            from sqlalchemy import text as sa_text
+            from src.common.config import config as cfg
+            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            daily_cost = self.db.execute(sa_text(
+                "SELECT COALESCE(SUM(execution_cost_usd), 0) FROM sandbox_executions "
+                "WHERE agent_id = :aid AND created_at >= :today"
+            ), {"aid": agent.id, "today": today_start}).scalar() or 0.0
+            if daily_cost >= cfg.daily_sandbox_cap_usd:
+                return ActionResult(
+                    success=False, action_type=action_type,
+                    details=f"Daily sandbox budget exhausted (${daily_cost:.3f} / ${cfg.daily_sandbox_cap_usd})",
+                )
+        except Exception:
+            pass  # If check fails, allow execution (fail open for liveness)
+
         # Build data API and prefetch
         watchlist = agent.watched_markets if hasattr(agent, "watched_markets") and agent.watched_markets else []
         data_api = SandboxDataAPI(agent.id, watchlist)

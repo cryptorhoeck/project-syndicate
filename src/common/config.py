@@ -265,11 +265,27 @@ class SyndicateConfig(BaseSettings):
     # Logging
     log_level: str = "INFO"
 
+    # Sandbox cost cap
+    daily_sandbox_cap_usd: float = 0.50
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
+
+    def validate_critical(self) -> list[str]:
+        """Check critical fields. Returns list of errors (empty = OK)."""
+        errors = []
+        if not self.anthropic_api_key or len(self.anthropic_api_key) < 20:
+            errors.append("ANTHROPIC_API_KEY is missing or too short")
+        if not self.database_url:
+            errors.append("DATABASE_URL is missing")
+        if self.trading_mode not in ("paper", "live"):
+            errors.append(f"TRADING_MODE must be 'paper' or 'live', got '{self.trading_mode}'")
+        if self.trading_mode == "live" and not self.exchange_api_key:
+            errors.append("EXCHANGE_API_KEY required for live trading")
+        return errors
 
 
 # Singleton instance — import this everywhere

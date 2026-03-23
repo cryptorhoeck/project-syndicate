@@ -8,7 +8,10 @@ __version__ = "0.1.0"
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
@@ -101,51 +104,66 @@ def _format_event(msg) -> dict:
     }
 
 
+_active_sse = 0
+MAX_SSE_CONNECTIONS = 50
+
+
 @router.get("/stream")
 async def event_stream(request: Request):
     """SSE endpoint for the live activity feed."""
+    global _active_sse
+
+    if _active_sse >= MAX_SSE_CONNECTIONS:
+        from fastapi.responses import Response
+        return Response(status_code=503, content="Too many SSE connections")
+
     factory = request.app.state.db_session_factory
 
     async def generate():
-        last_id = 0
-
-        # Seed with recent messages
+        global _active_sse
+        _active_sse += 1
         try:
-            with factory() as session:
-                recent = list(
-                    session.execute(
-                        select(Message)
-                        .order_by(Message.id.desc())
-                        .limit(20)
-                    ).scalars().all()
-                )
-                if recent:
-                    last_id = recent[0].id
-                    for msg in reversed(recent):
-                        event = _format_event(msg)
-                        yield f"data: {json.dumps(event)}\n\n"
-        except Exception:
-            pass
+            last_id = 0
 
-        # Poll for new messages
-        while True:
-            await asyncio.sleep(2)
+            # Seed with recent messages
             try:
                 with factory() as session:
-                    new_msgs = list(
+                    recent = list(
                         session.execute(
                             select(Message)
-                            .where(Message.id > last_id)
-                            .order_by(Message.id.asc())
-                            .limit(10)
+                            .order_by(Message.id.desc())
+                            .limit(20)
                         ).scalars().all()
                     )
-                    for msg in new_msgs:
-                        last_id = msg.id
-                        event = _format_event(msg)
-                        yield f"data: {json.dumps(event)}\n\n"
+                    if recent:
+                        last_id = recent[0].id
+                        for msg in reversed(recent):
+                            event = _format_event(msg)
+                            yield f"data: {json.dumps(event)}\n\n"
             except Exception:
                 pass
+
+            # Poll for new messages
+            while True:
+                await asyncio.sleep(2)
+                try:
+                    with factory() as session:
+                        new_msgs = list(
+                            session.execute(
+                                select(Message)
+                                .where(Message.id > last_id)
+                                .order_by(Message.id.asc())
+                                .limit(10)
+                            ).scalars().all()
+                        )
+                        for msg in new_msgs:
+                            last_id = msg.id
+                            event = _format_event(msg)
+                            yield f"data: {json.dumps(event)}\n\n"
+                except Exception as e:
+                    logger.debug(f"SSE poll error: {e}")
+        finally:
+            _active_sse -= 1
 
     return StreamingResponse(
         generate(),

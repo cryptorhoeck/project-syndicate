@@ -13,6 +13,7 @@ __version__ = "1.0.0"
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -229,6 +230,13 @@ class CycleRecorder:
             "aid": data.agent_id,
         })
         self.db.flush()
+
+        # Write cycle timestamp to Redis for scheduler (avoids DB commit timing race)
+        if self.redis:
+            try:
+                self.redis.set(f"agent:{data.agent_id}:last_cycle_at", str(time.time()), ex=3600)
+            except Exception:
+                pass
 
         # Refresh agent for rolling average calculations
         self.db.refresh(agent)
