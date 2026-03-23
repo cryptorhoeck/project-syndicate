@@ -275,6 +275,7 @@ class BootSequenceOrchestrator:
             generation=1,
             capital_allocated=per_agent,
             capital_current=per_agent,
+            cash_balance=per_agent,  # Available trading capital
             thinking_budget_daily=config.new_agent_daily_thinking_budget,
             strategy_summary=spec["mandate"],
             survival_clock_start=now,
