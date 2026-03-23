@@ -112,6 +112,37 @@ class SandboxDataAPI:
         except Exception:
             self._regime_cache = {"regime": "unknown"}
 
+        # Price data from Redis (populated by run_price_fetcher.py)
+        try:
+            import redis as _redis
+            r = _redis.Redis.from_url("redis://localhost:6379")
+
+            # Tickers
+            all_symbols = list(set(self.watchlist + ["BTC/USDT", "ETH/USDT"]))
+            for symbol in all_symbols:
+                raw = r.get(f"price:{symbol}")
+                if raw:
+                    ticker = json.loads(raw)
+                    ticker.pop("_cached_at", None)
+                    self._ticker_cache[symbol] = ticker
+
+            # OHLCV
+            for symbol in all_symbols:
+                for tf in ["1h", "4h", "1d"]:
+                    raw = r.get(f"ohlcv:{symbol}:{tf}")
+                    if raw:
+                        data = json.loads(raw)
+                        candles = data.get("candles", [])
+                        self._price_cache[f"{symbol}:{tf}"] = [
+                            {
+                                "timestamp": c[0], "open": c[1], "high": c[2],
+                                "low": c[3], "close": c[4], "volume": c[5],
+                            }
+                            for c in candles
+                        ]
+        except Exception as e:
+            logger.debug(f"Price data prefetch from Redis failed: {e}")
+
     def get_injected_functions(self) -> dict:
         """Return dict of functions to inject into sandbox globals."""
         return {

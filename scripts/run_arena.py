@@ -63,6 +63,11 @@ PROCESSES = {
         "restart_delay": 10,  # Wait before restarting — let agents recover
         "critical": True,
     },
+    "price_fetcher": {
+        "cmd": [PYTHON, os.path.join(PROJECT_ROOT, "scripts", "run_price_fetcher.py")],
+        "restart_delay": 5,
+        "critical": False,
+    },
     "trading": {
         "cmd": [PYTHON, os.path.join(PROJECT_ROOT, "scripts", "run_trading.py")],
         "restart_delay": 5,
