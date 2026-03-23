@@ -4,24 +4,24 @@
     'economy': 'ECO', 'system': 'SYS', 'thought': 'THT', 'proposal': 'PRP', 'chat': 'CHT'
 } %}
 {% set type_bg = {
-    'signal': 'bg-sky-500/20 text-sky-400', 'alert': 'bg-rose-500/20 text-rose-400',
-    'trade': 'bg-emerald-500/20 text-emerald-400', 'evaluation': 'bg-violet-500/20 text-violet-400',
-    'economy': 'bg-amber-500/20 text-amber-400', 'system': 'bg-slate-500/20 text-slate-400',
-    'thought': 'bg-slate-500/20 text-slate-300', 'proposal': 'bg-violet-500/20 text-violet-300',
-    'chat': 'bg-slate-500/20 text-slate-400'
+    'signal': 'background:#00e5ff20;color:#00e5ff', 'alert': 'background:#ff3d3d20;color:#ff3d3d',
+    'trade': 'background:#00e67620;color:#00e676', 'evaluation': 'background:#b388ff20;color:#b388ff',
+    'economy': 'background:#ffb30020;color:#ffb300', 'system': 'background:#8892b020;color:#8892b0',
+    'thought': 'background:#8892b020;color:#ccd6f6', 'proposal': 'background:#b388ff20;color:#b388ff',
+    'chat': 'background:#8892b020;color:#8892b0'
 } %}
-{% set type_colors = {
-    'genesis': 'text-agent-genesis', 'scout': 'text-agent-scout',
-    'strategist': 'text-agent-strategist', 'critic': 'text-agent-critic',
-    'operator': 'text-agent-operator', 'system': 'text-agent-system',
-} %}
-<div class="flex items-start gap-3 px-3 py-2 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors
-    {% if msg.importance == 2 %}importance-critical{% elif msg.importance == 1 %}importance-important{% endif %}">
-    <span class="font-mono text-xs text-slate-400 dark:text-slate-500 whitespace-nowrap mt-0.5 w-14 shrink-0"
-          data-timestamp="{{ msg.timestamp }}">{{ msg.timestamp_ago|default('') }}</span>
-    <span class="{{ type_colors.get(msg.agent_type, 'text-slate-400') }} font-medium text-sm whitespace-nowrap w-28 shrink-0 truncate">{{ msg.agent_name }}</span>
-    <span class="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded {{ type_bg.get(msg.message_type, 'bg-slate-500/20 text-slate-400') }} whitespace-nowrap shrink-0">
-        {{ type_abbr.get(msg.message_type, 'MSG') }}
-    </span>
-    <span class="text-sm text-slate-700 dark:text-slate-300 break-words min-w-0">{{ msg.content }}</span>
+{% set role_colors = {'genesis': '#ffffff', 'scout': '#00e5ff', 'strategist': '#ffb300', 'critic': '#ff3d3d', 'operator': '#00e676', 'system': '#8892b0'} %}
+<div class="px-3 py-2 transition-colors"
+     style="border-bottom: 1px solid #1a244430;
+            {% if msg.importance == 2 %}border-left: 3px solid #ff3d3d;{% elif msg.importance == 1 %}border-left: 3px solid #ffb300;{% endif %}">
+    <div class="flex items-center gap-2 mb-1">
+        <span class="font-mono text-[11px] shrink-0" style="color:#4a5580;"
+              data-timestamp="{{ msg.timestamp }}">{{ msg.timestamp_ago|default('') }}</span>
+        <span class="font-medium text-[12px] shrink-0" style="color:{{ role_colors.get(msg.agent_type, '#8892b0') }};">{{ msg.agent_name }}</span>
+        <span class="text-[9px] font-mono font-medium px-1.5 py-0.5 rounded shrink-0"
+              style="{{ type_bg.get(msg.message_type, 'background:#8892b020;color:#8892b0') }}">
+            {{ type_abbr.get(msg.message_type, 'MSG') }}
+        </span>
+    </div>
+    <div class="text-[13px] leading-relaxed" style="color:#ccd6f6; word-wrap:break-word; white-space:pre-wrap;">{{ msg.content }}</div>
 </div>

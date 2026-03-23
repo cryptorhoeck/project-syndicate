@@ -94,7 +94,7 @@ def _format_event(msg) -> dict:
         "type": msg_type,
         "icon": icon,
         "color": color,
-        "text": f"{msg.agent_name or 'System'}: {content[:200]}",
+        "text": f"{msg.agent_name or 'System'}: {content[:500]}",
         "time": time_str,
         "timestamp": str(ts) if ts else "",
         "is_major": is_major,
