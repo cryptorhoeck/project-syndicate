@@ -76,10 +76,12 @@ class OrientationProtocol:
         db_session: Session,
         claude_client=None,
         config=None,
+        agora_service=None,
     ):
         self.db = db_session
         self.claude = claude_client
         self._config = config
+        self.agora = agora_service
         self.validator = OutputValidator()
 
     def _session_for(self, agent: Agent) -> Session:

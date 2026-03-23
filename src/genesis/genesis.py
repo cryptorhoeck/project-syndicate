@@ -1102,6 +1102,7 @@ class GenesisAgent(BaseAgent):
                 db_session=session,
                 claude_client=claude_client,
                 config=config,
+                agora_service=self.agora,
             )
 
             orchestrator = BootSequenceOrchestrator(

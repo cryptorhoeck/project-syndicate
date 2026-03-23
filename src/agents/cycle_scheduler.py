@@ -275,7 +275,7 @@ class CycleScheduler:
         """
         agents = (
             self.db.query(Agent)
-            .filter(Agent.status == "active")
+            .filter(Agent.status == "active", Agent.id != 0)
             .all()
         )
 
@@ -284,7 +284,7 @@ class CycleScheduler:
 
         for agent in agents:
             # Phase 3B: skip agents not yet oriented
-            if not agent.orientation_completed and agent.generation > 0:
+            if not agent.orientation_completed:
                 continue
 
             interval = self.get_cycle_interval(agent)
