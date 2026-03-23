@@ -681,14 +681,29 @@ def clean_slate(config: dict, console: Console) -> bool:
 
         console.print(f"  Truncated {truncated} tables ({skipped} skipped)")
 
-        # Step 1b: Force-clear messages and read receipts (may have been skipped above)
-        for tbl in ["agora_read_receipts", "messages"]:
-            try:
-                with engine.connect() as conn:
-                    conn.execute(text(f"DELETE FROM {tbl}"))
-                    conn.commit()
-            except Exception:
-                pass
+        # Step 1b: Nuclear option for messages — single statement that
+        # cascades through ALL FK references in one transaction
+        try:
+            with engine.connect() as conn:
+                # Truncate messages + everything that references it in one shot
+                conn.execute(text(
+                    "TRUNCATE TABLE messages, agora_read_receipts, "
+                    "intel_accuracy_tracking, intel_challenges, "
+                    "system_improvement_proposals CASCADE"
+                ))
+                conn.commit()
+                console.print("  Messages + dependents truncated")
+        except Exception as e:
+            # If multi-table truncate fails (missing tables), try one by one with DELETE
+            console.print(f"  [dim]Multi-truncate failed ({e}), falling back to DELETE[/dim]")
+            for tbl in ["intel_accuracy_tracking", "intel_challenges",
+                        "system_improvement_proposals", "agora_read_receipts", "messages"]:
+                try:
+                    with engine.connect() as conn:
+                        conn.execute(text(f"DELETE FROM {tbl}"))
+                        conn.commit()
+                except Exception:
+                    pass
 
         # Step 1c: Reset Agora channel message counts
         try:
@@ -730,6 +745,19 @@ def clean_slate(config: dict, console: Console) -> bool:
             with engine.connect() as conn:
                 conn.execute(text("SELECT setval('agents_id_seq', 1, false)"))
                 conn.commit()
+        except Exception:
+            pass
+
+        # Step 4b: Verify messages are actually gone
+        try:
+            with engine.connect() as conn:
+                msg_count = conn.execute(text("SELECT COUNT(*) FROM messages")).scalar()
+                agent_count = conn.execute(text("SELECT COUNT(*) FROM agents WHERE id != 0")).scalar()
+                cycle_count = conn.execute(text("SELECT COUNT(*) FROM agent_cycles")).scalar()
+            if msg_count > 0:
+                console.print(f"  [red bold]WARNING: {msg_count} messages survived clean slate![/red bold]")
+            else:
+                console.print(f"  Verified: 0 messages, {agent_count} non-genesis agents, {cycle_count} cycles")
         except Exception:
             pass
 
