@@ -651,9 +651,9 @@ def clean_slate(config: dict, console: Console) -> bool:
             # Phase 3D
             "rejection_tracking", "post_mortems",
             # Phase 3F
-            "memorials", "lineages", "dynasties",
+            "memorials", "lineage", "dynasties",
             # Phase 3C
-            "positions", "orders", "limit_orders", "equity_snapshots",
+            "positions", "orders", "agent_equity_snapshots",
             # Phase 3A
             "agent_cycles", "agent_long_term_memory", "agent_reflections",
             # Phase 3B

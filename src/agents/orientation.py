@@ -202,8 +202,10 @@ class OrientationProtocol:
             old_name = agent.name
             if chosen_name != old_name:
                 agent.name = chosen_name
-                self.db.add(agent)
-                self.db.flush()
+                # Use agent's bound session (may differ from self.db)
+                session = self._session_for(agent)
+                session.add(agent)
+                session.flush()
                 logger.info(f"Agent self-named: {old_name} → {chosen_name}")
                 # Announce to Agora
                 if self.agora:
