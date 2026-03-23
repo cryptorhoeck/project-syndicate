@@ -175,12 +175,21 @@ class ThinkingCycle:
         )
 
         # ── Phase 1: Observe (Context Assembly) ──
-        context = self.context_assembler.assemble(
-            agent,
-            budget_status=budget_result.status,
-            cycle_type=cycle_type,
-            model_selection=model_selection,
-        )
+        try:
+            context = self.context_assembler.assemble(
+                agent,
+                budget_status=budget_result.status,
+                cycle_type=cycle_type,
+                model_selection=model_selection,
+            )
+        except Exception as e:
+            logger.error(f"Context assembly failed for {agent.name}: {e}")
+            context = AssembledContext(
+                system_prompt=f"You are {agent.name}, a {agent.type} agent. Context assembly failed. Choose go_idle.",
+                user_prompt="Context assembly error this cycle. Go idle and note it.",
+                mode=ContextMode.SURVIVAL if hasattr(ContextMode, 'SURVIVAL') else None,
+                total_tokens=100, mandatory_tokens=50, priority_tokens=0, memory_tokens=0,
+            )
 
         # ── Phase 1.5: Pre-Compute (run scheduled tools) ──
         try:

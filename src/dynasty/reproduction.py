@@ -283,7 +283,7 @@ Respond in JSON:
         try:
             client = anthropic.Anthropic(api_key=config.anthropic_api_key)
             response = client.messages.create(
-                model=config.model_sonnet,
+                model=config.model_default,  # Haiku for cost efficiency
                 max_tokens=800,
                 system="You are Genesis, the immortal overseer of an AI trading ecosystem. Decide whether reproduction benefits the ecosystem and suggest mutations.",
                 messages=[{"role": "user", "content": prompt}],

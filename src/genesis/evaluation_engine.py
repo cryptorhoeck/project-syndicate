@@ -345,7 +345,7 @@ The warning will be shown to the agent if they survive."""
         try:
             client = anthropic.Anthropic(api_key=config.anthropic_api_key)
             response = client.messages.create(
-                model=config.model_sonnet,
+                model=config.model_sonnet,  # Sonnet for high-stakes life/death judgment
                 max_tokens=500,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -458,7 +458,26 @@ The warning will be shown to the agent if they survive."""
         self, session: Session, agent: Agent,
         result: EvaluationResult, evaluation: Evaluation,
     ):
-        """Terminate an agent: cancel orders, close positions, reclaim capital."""
+        """Terminate an agent: cancel orders, close positions, reclaim capital.
+
+        Uses a savepoint for transaction safety — if the death protocol
+        crashes partway through, the savepoint rolls back and the agent
+        survives this evaluation rather than being left half-dead.
+        """
+        savepoint = session.begin_nested()
+        try:
+            await self._execute_death_protocol(session, agent, result, evaluation)
+            savepoint.commit()
+        except Exception as e:
+            savepoint.rollback()
+            logger.error(f"Death protocol failed for {agent.name}, agent survives: {e}")
+            raise
+
+    async def _execute_death_protocol(
+        self, session: Session, agent: Agent,
+        result: EvaluationResult, evaluation: Evaluation,
+    ):
+        """Inner death protocol — all steps inside a savepoint."""
         now = datetime.now(timezone.utc)
 
         # Cancel all pending orders
@@ -687,7 +706,7 @@ Respond with JSON:
 }}"""
 
             response = client.messages.create(
-                model=config.model_sonnet,
+                model=config.model_default,  # Haiku for cost efficiency
                 max_tokens=1000,
                 messages=[{"role": "user", "content": prompt}],
             )

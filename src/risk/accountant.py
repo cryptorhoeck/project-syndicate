@@ -327,12 +327,15 @@ class Accountant:
             )
             session.add(tx)
 
-            # Update agent counters
-            agent = session.get(Agent, agent_id)
-            if agent:
-                agent.thinking_budget_used_today = (agent.thinking_budget_used_today or 0.0) + cost
-                agent.total_api_cost = (agent.total_api_cost or 0.0) + cost
-                agent.api_cost_total = (agent.api_cost_total or 0.0) + cost
+            # Atomic increment — safe under concurrent access
+            from sqlalchemy import text as sa_text
+            session.execute(sa_text(
+                "UPDATE agents SET "
+                "thinking_budget_used_today = COALESCE(thinking_budget_used_today, 0) + :cost, "
+                "total_api_cost = COALESCE(total_api_cost, 0) + :cost, "
+                "api_cost_total = COALESCE(api_cost_total, 0) + :cost "
+                "WHERE id = :aid"
+            ), {"cost": cost, "aid": agent_id})
 
             session.commit()
 

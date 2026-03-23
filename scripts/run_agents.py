@@ -78,6 +78,7 @@ async def main() -> None:
 
     # Optional: Agora service for action execution
     agora = None
+    async_redis = None  # Initialize before try to avoid NameError on cleanup
     try:
         import redis.asyncio as aioredis
         from src.agora import create_agora_service
@@ -146,10 +147,15 @@ async def main() -> None:
     if agora:
         try:
             await agora.pubsub.shutdown()
+        except Exception:
+            pass
+    if async_redis:
+        try:
             await async_redis.close()
         except Exception:
             pass
 
+    engine.dispose()
     log.info("agent_runner_stopped")
 
 

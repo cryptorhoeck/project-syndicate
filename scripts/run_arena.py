@@ -20,6 +20,7 @@ import signal
 import subprocess
 import sys
 import time
+from logging.handlers import RotatingFileHandler
 
 import structlog
 from dotenv import load_dotenv
@@ -178,22 +179,46 @@ def _print_banner() -> None:
     print()
 
 
+_log_handles: dict[str, any] = {}
+
+
 def start_process(name: str) -> subprocess.Popen:
     """Start a subprocess and return the Popen object."""
     proc_def = PROCESSES[name]
     cmd = proc_def["cmd"]
     log.info("starting_process", name=name)
-    # Build a clean environment for subprocesses:
-    # - Force UTF-8 encoding (prevents UnicodeEncodeError on piped Unicode output)
-    # - Remove stale API keys from OS env so pydantic-settings reads .env file
+
+    # Close previous log handle for this process if it exists
+    old_handle = _log_handles.pop(name, None)
+    if old_handle:
+        try:
+            old_handle.close()
+        except Exception:
+            pass
+
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     for key in ["ANTHROPIC_API_KEY", "EXCHANGE_API_KEY", "EXCHANGE_API_SECRET"]:
         env.pop(key, None)
-    # Write subprocess output to log files to avoid pipe buffer deadlock
+
     log_dir = os.path.join(PROJECT_ROOT, "logs")
     os.makedirs(log_dir, exist_ok=True)
-    log_file = open(os.path.join(log_dir, f"{name}.log"), "a", encoding="utf-8")
+    log_path = os.path.join(log_dir, f"{name}.log")
+
+    # Truncate if over 50MB to prevent unbounded growth
+    try:
+        if os.path.exists(log_path) and os.path.getsize(log_path) > 50 * 1024 * 1024:
+            # Rename old log, start fresh
+            backup = log_path + ".prev"
+            if os.path.exists(backup):
+                os.remove(backup)
+            os.rename(log_path, backup)
+    except Exception:
+        pass
+
+    log_file = open(log_path, "a", encoding="utf-8")
+    _log_handles[name] = log_file
+
     proc = subprocess.Popen(
         cmd,
         cwd=PROJECT_ROOT,
@@ -266,6 +291,13 @@ def main() -> None:
             except subprocess.TimeoutExpired:
                 log.warning("force_killing", name=name)
                 proc.kill()
+
+    # Close all log file handles
+    for name, handle in _log_handles.items():
+        try:
+            handle.close()
+        except Exception:
+            pass
 
     log.info("arena_stopped")
 

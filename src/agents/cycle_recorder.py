@@ -206,15 +206,32 @@ class CycleRecorder:
 
     def _update_agent_stats(self, data: CycleData) -> None:
         """Update the agent's running statistics."""
+        from sqlalchemy import text
+
         agent = self.db.query(Agent).filter(Agent.id == data.agent_id).first()
         if not agent:
             return
 
-        agent.cycle_count = data.cycle_number + 1
-        agent.last_cycle_at = datetime.now(timezone.utc)
-        agent.total_api_cost += data.api_cost_usd
-        agent.thinking_budget_used_today += data.api_cost_usd
-        agent.current_context_mode = data.context_mode
+        # Atomic increments for fields modified by multiple processes
+        self.db.execute(text(
+            "UPDATE agents SET "
+            "cycle_count = :cycle, "
+            "last_cycle_at = :now, "
+            "total_api_cost = total_api_cost + :cost, "
+            "thinking_budget_used_today = thinking_budget_used_today + :cost, "
+            "current_context_mode = :mode "
+            "WHERE id = :aid"
+        ), {
+            "cycle": data.cycle_number + 1,
+            "now": datetime.now(timezone.utc),
+            "cost": data.api_cost_usd,
+            "mode": data.context_mode,
+            "aid": data.agent_id,
+        })
+        self.db.flush()
+
+        # Refresh agent for rolling average calculations
+        self.db.refresh(agent)
 
         # Update rolling averages
         n = agent.cycle_count

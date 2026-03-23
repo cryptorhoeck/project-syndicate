@@ -56,11 +56,14 @@ async def record_sandbox_execution(
         )
         db_session.add(record)
 
-        # Charge agent
-        agent = db_session.get(Agent, agent_id)
-        if agent:
-            agent.thinking_budget_used_today = (agent.thinking_budget_used_today or 0.0) + cost_usd
-            agent.total_api_cost = (agent.total_api_cost or 0.0) + cost_usd
+        # Atomic increment — safe under concurrent access
+        from sqlalchemy import text as sa_text
+        db_session.execute(sa_text(
+            "UPDATE agents SET "
+            "thinking_budget_used_today = COALESCE(thinking_budget_used_today, 0) + :cost, "
+            "total_api_cost = COALESCE(total_api_cost, 0) + :cost "
+            "WHERE id = :aid"
+        ), {"cost": cost_usd, "aid": agent_id})
 
         db_session.flush()
     except Exception as e:

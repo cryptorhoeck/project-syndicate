@@ -365,7 +365,7 @@ class LibraryService:
                     f"Last messages: {[m.content[:100] for m in last_messages[:5]]}"
                 )
                 response = self.anthropic.messages.create(
-                    model=config.model_sonnet,
+                    model=config.model_default,  # Haiku for cost efficiency
                     max_tokens=600,
                     system=(
                         "You are the archivist of Project Syndicate. Write a concise "
@@ -482,7 +482,7 @@ class LibraryService:
         if self.anthropic is not None:
             try:
                 response = self.anthropic.messages.create(
-                    model=config.model_sonnet,
+                    model=config.model_default,  # Haiku for cost efficiency
                     max_tokens=500,
                     system=(
                         "You are the archivist of Project Syndicate. Write a concise "
@@ -832,7 +832,7 @@ class LibraryService:
                             f"As Genesis, cast the tiebreaking vote. Answer APPROVE or REJECT, then explain."
                         )
                         response = self.anthropic.messages.create(
-                            model=config.model_sonnet,
+                            model=config.model_default,  # Haiku for cost efficiency
                             max_tokens=200,
                             messages=[{"role": "user", "content": prompt}],
                         )
@@ -1109,7 +1109,7 @@ class LibraryService:
                         "grandparent_package": grandparent_package,
                     }, default=str)
                     response = self.anthropic.messages.create(
-                        model=config.model_sonnet,
+                        model=config.model_default,  # Haiku for cost efficiency
                         max_tokens=1000,
                         system=(
                             "Condense this multi-generational heritage into a single "

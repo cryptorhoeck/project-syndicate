@@ -8,6 +8,7 @@ Supports prompt caching and multi-model routing (Phase 3.5).
 
 __version__ = "1.0.0"
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -204,14 +205,14 @@ class ClaudeClient:
                 last_error = e
                 wait = min(2 ** attempt * 5, 30)  # 5, 10, 20, max 30s
                 logger.warning(f"Rate limited, waiting {wait}s (attempt {attempt + 1})")
-                time.sleep(wait)
+                await asyncio.sleep(wait)
 
             except anthropic.APIStatusError as e:
                 last_error = e
                 if e.status_code >= 500:
                     wait = min(2 ** attempt * 2, 10)
                     logger.warning(f"Server error {e.status_code}, retrying in {wait}s")
-                    time.sleep(wait)
+                    await asyncio.sleep(wait)
                 else:
                     raise
 
@@ -219,7 +220,7 @@ class ClaudeClient:
                 last_error = e
                 wait = min(2 ** attempt * 2, 10)
                 logger.warning(f"Connection error, retrying in {wait}s")
-                time.sleep(wait)
+                await asyncio.sleep(wait)
 
         # All retries exhausted
         raise RuntimeError(
