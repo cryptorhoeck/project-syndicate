@@ -7,7 +7,7 @@ Validates the agent can produce a coherent first output.
 Sets initial watchlist based on role and first-cycle output.
 """
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 import logging
 import os
@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.session import object_session
 
@@ -57,6 +58,132 @@ class OrientationResult:
     failure_reason: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
+
+
+_ROMAN = [
+    "", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X",
+    "XI", "XII", "XIII", "XIV", "XV", "XVI", "XVII", "XVIII", "XIX", "XX",
+]
+
+
+def get_roman_numeral(n: int) -> str:
+    """Convert integer to Roman numeral (2→II, 3→III, etc.)."""
+    if 0 < n < len(_ROMAN):
+        return _ROMAN[n]
+    return str(n)
+
+
+def resolve_display_name(
+    chosen_name: str,
+    agent: Agent,
+    session: Session,
+) -> tuple[str, str | None]:
+    """Resolve a chosen name into a display name with dynasty numeral rules.
+
+    Returns (display_name, rejection_reason).
+    If rejection_reason is not None, the name was rejected.
+    """
+    chosen_name = chosen_name.strip()[:50]
+    if not chosen_name:
+        return agent.name, None
+
+    # Check if a LIVING non-ancestor agent already has this exact name
+    living_with_name = session.execute(
+        select(Agent).where(
+            Agent.name == chosen_name,
+            Agent.status.in_(["active", "initializing", "hibernating", "evaluating"]),
+            Agent.id != agent.id,
+        )
+    ).scalar_one_or_none()
+
+    if living_with_name:
+        # Is the living holder an ancestor in the same dynasty?
+        is_ancestor = False
+        if agent.dynasty_id and living_with_name.dynasty_id == agent.dynasty_id:
+            # Walk lineage to check ancestry
+            lineage = session.execute(
+                select(Lineage).where(Lineage.agent_id == agent.id)
+            ).scalar_one_or_none()
+            if lineage and lineage.lineage_path:
+                ancestor_ids = [int(x) for x in lineage.lineage_path.split("/") if x.isdigit()]
+                is_ancestor = living_with_name.id in ancestor_ids
+
+        if not is_ancestor:
+            return agent.name, f"That name is taken by a living agent outside your lineage. Choose another."
+
+    # For offspring (gen > 1): check dynasty history for numeral
+    if agent.generation > 1 and agent.dynasty_id:
+        # Count how many times this base name has been used in this dynasty
+        dynasty_uses = session.execute(
+            select(func.count()).select_from(Lineage).where(
+                Lineage.dynasty_id == agent.dynasty_id,
+                Lineage.agent_name.ilike(f"{chosen_name}%"),
+            )
+        ).scalar() or 0
+
+        # Also check agents table for living agents with this base name in dynasty
+        agent_uses = session.execute(
+            select(func.count()).where(
+                Agent.dynasty_id == agent.dynasty_id,
+                Agent.name.ilike(f"{chosen_name}%"),
+                Agent.id != agent.id,
+            )
+        ).scalar() or 0
+
+        total_uses = max(dynasty_uses, agent_uses)
+
+        if total_uses > 0:
+            numeral = get_roman_numeral(total_uses + 1)
+            return f"{chosen_name} {numeral}", None
+
+    return chosen_name, None
+
+
+def get_dynasty_name_history(agent: Agent, session: Session) -> str:
+    """Build dynasty name history string for offspring orientation prompt."""
+    if not agent.dynasty_id:
+        return ""
+
+    dynasty = session.get(Dynasty, agent.dynasty_id)
+    if not dynasty:
+        return ""
+
+    # Get all lineage records in this dynasty
+    lineage_records = list(session.execute(
+        select(Lineage.agent_name, Lineage.generation)
+        .where(Lineage.dynasty_id == agent.dynasty_id)
+        .order_by(Lineage.generation)
+    ).all())
+
+    # Also include living agents not yet in lineage
+    living_agents = list(session.execute(
+        select(Agent.name, Agent.generation)
+        .where(Agent.dynasty_id == agent.dynasty_id, Agent.id != 0, Agent.id != agent.id)
+        .order_by(Agent.generation)
+    ).all())
+
+    all_names = set()
+    name_list = []
+    for name, gen in lineage_records:
+        if name and name not in all_names:
+            all_names.add(name)
+            name_list.append(f"{name} (Gen {gen})")
+    for name, gen in living_agents:
+        if name and name not in all_names:
+            all_names.add(name)
+            name_list.append(f"{name} (Gen {gen})")
+
+    if not name_list:
+        return ""
+
+    founder_name = dynasty.founder_name or "Unknown"
+    return (
+        f"Your lineage: Dynasty of {founder_name}\n"
+        f"Previous names in your dynasty: {', '.join(name_list)}\n"
+        f"You may choose any name. If you wish to honor an ancestor, you may take "
+        f"their name and you'll be known as \"{name_list[0].split(' (')[0]} "
+        f"{get_roman_numeral(2)}\". This is your choice, not an obligation."
+    )
 
 
 class OrientationProtocol:
@@ -195,25 +322,27 @@ class OrientationProtocol:
         parsed = validation.parsed
         watchlist = self._extract_watchlist(parsed, agent.type)
 
-        # Self-naming: apply chosen name if provided
+        # Self-naming with dynasty numeral rules
         chosen_name = parsed.get("chosen_name", "")
         if chosen_name and isinstance(chosen_name, str) and chosen_name.strip():
-            chosen_name = chosen_name.strip()[:50]  # cap length
+            session = self._session_for(agent)
+            display_name, rejection = resolve_display_name(chosen_name.strip(), agent, session)
             old_name = agent.name
-            if chosen_name != old_name:
-                agent.name = chosen_name
-                # Use agent's bound session (may differ from self.db)
-                session = self._session_for(agent)
+
+            if rejection:
+                # Name rejected — log but keep assigned name
+                logger.info(f"Name '{chosen_name}' rejected for {old_name}: {rejection}")
+            elif display_name != old_name:
+                agent.name = display_name
                 session.add(agent)
                 session.flush()
-                logger.info(f"Agent self-named: {old_name} → {chosen_name}")
-                # Announce to Agora
+                logger.info(f"Agent self-named: {old_name} → {display_name}")
                 if self.agora:
                     try:
                         self.agora.post_system_message(
                             channel="agent-chat",
-                            content=f'{old_name} has chosen the name {chosen_name}',
-                            metadata={"agent_id": agent.id, "old_name": old_name, "new_name": chosen_name},
+                            content=f'{old_name} has chosen the name {display_name}',
+                            metadata={"agent_id": agent.id, "old_name": old_name, "new_name": display_name},
                         )
                     except Exception:
                         pass
@@ -413,12 +542,16 @@ Demonstrate that you understand your role, the cost of thinking, and the rules o
             if dynasty:
                 dynasty_name = dynasty.dynasty_name
 
+        # Build dynasty name history for offspring
+        dynasty_context = get_dynasty_name_history(agent, session)
+        dynasty_section = f"\n{dynasty_context}\n" if dynasty_context else ""
+
         return f"""Before anything else: choose your name. You were assigned the designation \
 "{agent.name}" but that's just a serial number. Choose a name that will be YOUR identity \
 for your entire existence. It can be anything — a callsign, a word that resonates with \
 you, a name you simply like. This name is how every other agent will know you, how \
 you'll appear in the Agora, and what will be remembered if you die.
-
+{dynasty_section}
 You are a newly created {agent.type} agent in Project Syndicate.
 Generation: {agent.generation} | Capital: ${agent.capital_allocated:.2f}
 Budget: ${agent.thinking_budget_daily:.4f}/day
@@ -444,7 +577,7 @@ an appropriate first action. Review your inherited knowledge, assess current \
 conditions, and write a self-note about how you'll build on your parent's legacy.
 
 Respond ONLY in valid JSON matching this schema — no other text:
-{{"situation": "...", "confidence": {{"score": N, "reasoning": "..."}}, "recent_pattern": "...", "action": {{"type": "...", "params": {{...}}}}, "reasoning": "...", "self_note": "..."}}"""
+{{"chosen_name": "your chosen name", "situation": "...", "confidence": {{"score": N, "reasoning": "..."}}, "recent_pattern": "...", "action": {{"type": "...", "params": {{...}}}}, "reasoning": "...", "self_note": "..."}}"""
 
     def _build_offspring_user_prompt(
         self, agent: Agent, role_def, summaries: dict[str, str],
