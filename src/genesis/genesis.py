@@ -1058,15 +1058,33 @@ class GenesisAgent(BaseAgent):
         with self.db_session_factory() as session:
             active_count = session.execute(
                 select(func.count()).where(
-                    Agent.status.in_(["active", "initializing"]),
-                    Agent.id != 0,  # Exclude Genesis itself
+                    Agent.status == "active",
+                    Agent.id != 0,
+                )
+            ).scalar() or 0
+
+            # Check for stuck initializing agents — orientation never completed
+            stuck_count = session.execute(
+                select(func.count()).where(
+                    Agent.status == "initializing",
+                    Agent.orientation_completed == False,
+                    Agent.id != 0,
                 )
             ).scalar() or 0
 
         if active_count > 0:
             return None
 
-        self.log.info("boot_sequence_triggered", reason="zero_active_agents")
+        # If agents are stuck initializing, re-run boot sequence
+        # (it will skip spawning and go straight to orientation)
+        if stuck_count > 0:
+            self.log.info("boot_sequence_retry", reason=f"{stuck_count} agents stuck in initializing")
+
+        if active_count == 0 and stuck_count == 0:
+            # No agents at all — fresh boot
+            pass
+
+        self.log.info("boot_sequence_triggered", reason="zero_active_agents" if stuck_count == 0 else f"retry_orientation_for_{stuck_count}_agents")
 
         from src.agents.claude_client import ClaudeClient
         from src.agents.orientation import OrientationProtocol
