@@ -620,6 +620,10 @@ def clean_slate(config: dict, console: Console) -> bool:
         console.print("  [red]Arena is still running. Stop it first.[/red]")
         return False
 
+    if not check_postgresql(config):
+        console.print("  [red]PostgreSQL is not running. Start it first (Launch All or start manually).[/red]")
+        return False
+
     try:
         from sqlalchemy import create_engine, text
         from dotenv import load_dotenv
