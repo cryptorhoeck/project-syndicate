@@ -3,8 +3,8 @@
     ('Market Regime', (current_regime|default('unknown'))|upper, '#00e5ff' if 'bull' in (current_regime|default('unknown'))|lower else '#ff3d3d' if 'bear' in (current_regime|default('unknown'))|lower else '#ffb300' if 'volatile' in (current_regime|default('unknown'))|lower else '#8892b0'),
     ('Alert Level', (alert_status|default('green'))|upper, '#00e676' if alert_status|default('green') == 'green' else '#ffb300' if alert_status|default('green') == 'yellow' else '#ff3d3d'),
     ('Haiku Routing', (haiku_ratio|default(0)|string) ~ '%', '#00e676'),
-    ('Saved Today', '$' ~ "%.2f"|format(savings_today|default(0)), '#00e676'),
-    ('Avg Cost/Cycle', '$' ~ "%.4f"|format(avg_cost_cycle|default(0)), '#8892b0'),
+    ('Saved Today', 'C$' ~ "%.2f"|format(savings_today|default(0)), '#00e676'),
+    ('Avg Cost/Cycle', 'C$' ~ "%.4f"|format(avg_cost_cycle|default(0)), '#8892b0'),
 ] %}
 <div class="text-[11px] text-syn-text-dim tracking-[2px] mb-2.5">SYSTEM</div>
 {% for label, value, color in stats %}

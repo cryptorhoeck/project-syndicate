@@ -10,9 +10,9 @@ from src.genesis.treasury import TreasuryManager
 
 
 @pytest.fixture
-def treasury(seeded_db):
-    """Create a TreasuryManager with test database."""
-    return TreasuryManager(db_session_factory=seeded_db)
+def treasury(seeded_db, mock_currency):
+    """Create a TreasuryManager with test database and 1:1 currency mock."""
+    return TreasuryManager(db_session_factory=seeded_db, currency_service=mock_currency)
 
 
 @pytest.mark.asyncio

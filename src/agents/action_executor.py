@@ -820,8 +820,8 @@ class ActionExecutor:
                     success=False, action_type=action_type,
                     details=f"Daily sandbox budget exhausted (${daily_cost:.3f} / ${cfg.daily_sandbox_cap_usd})",
                 )
-        except Exception:
-            pass  # If check fails, allow execution (fail open for liveness)
+        except Exception as exc:
+            logger.warning(f"Sandbox cost cap check failed (allowing execution): {exc}")
 
         # Build data API and prefetch
         watchlist = agent.watched_markets if hasattr(agent, "watched_markets") and agent.watched_markets else []
@@ -839,6 +839,18 @@ class ActionExecutor:
             result.error, result.execution_time_ms, result.cost_usd,
             purpose, False, self.db,
         )
+
+        # Tool-outcome correlation tracking
+        if result.success and tool_name:
+            try:
+                from src.sandbox.tool_tracker import ToolOutcomeTracker
+                tracker = ToolOutcomeTracker()
+                await tracker.record_tool_usage(
+                    agent.id, tool_name, agent.cycle_count,
+                    redis_client=getattr(self, '_redis', None),
+                )
+            except Exception:
+                pass
 
         # Save as tool if requested
         if save_as_tool and result.success and tool_name:
@@ -923,6 +935,18 @@ class ActionExecutor:
             result.error, result.execution_time_ms, result.cost_usd,
             f"run_tool:{tool_name}", False, self.db,
         )
+
+        # Tool-outcome correlation tracking
+        if result.success and tool_name:
+            try:
+                from src.sandbox.tool_tracker import ToolOutcomeTracker
+                tracker = ToolOutcomeTracker()
+                await tracker.record_tool_usage(
+                    agent.id, tool_name, agent.cycle_count,
+                    redis_client=getattr(self, '_redis', None),
+                )
+            except Exception:
+                pass
 
         if result.success:
             return ActionResult(

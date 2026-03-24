@@ -136,7 +136,7 @@
             </div>
         </div>
         <span class="text-[9px] text-syn-text-dim font-mono">
-            {{ agent.model_used|default('—') }} · ${{ "%.4f"|format(agent.last_cycle_cost|default(0)) }}
+            {{ agent.model_used|default('—') }} · C${{ "%.4f"|format(agent.last_cycle_cost|default(0)) }}
         </span>
     </div>
 </div>

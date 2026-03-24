@@ -727,20 +727,23 @@ def clean_slate(config: dict, console: Console) -> bool:
         except Exception as e:
             console.print(f"  [yellow]Agent cleanup: {e}[/yellow]")
 
-        # Step 3: Reset system state
+        # Step 3: Reset system state (treasury in CAD)
         try:
+            from src.common.config import config as syndicate_config
+            starting = syndicate_config.starting_treasury
             with engine.connect() as conn:
-                conn.execute(text("""
+                conn.execute(text(f"""
                     UPDATE system_state SET
-                        total_treasury = 500.0,
-                        peak_treasury = 500.0,
+                        total_treasury = {starting},
+                        peak_treasury = {starting},
+                        treasury_currency = 'CAD',
                         alert_status = 'green',
                         active_agent_count = 0,
                         current_regime = 'unknown'
                     WHERE id = 1
                 """))
                 conn.commit()
-                console.print("  System state reset to $500 / GREEN")
+                console.print(f"  System state reset to C${starting:.0f} / GREEN")
         except Exception as e:
             console.print(f"  [yellow]System state reset: {e}[/yellow]")
 

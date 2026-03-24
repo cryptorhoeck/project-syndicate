@@ -3,9 +3,13 @@ Project Syndicate — Treasury Manager
 
 Manages capital allocation, reclamation, position inheritance,
 and the anti-monopoly random allocation mechanism.
+
+Treasury is denominated in CAD (owner's home currency).
+Agent capital is denominated in USDT (trading currency).
+Conversion happens at the treasury↔agent boundary.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 import random
 from datetime import datetime, timedelta, timezone
@@ -21,7 +25,11 @@ logger = structlog.get_logger()
 
 
 class TreasuryManager:
-    """Manages the Syndicate's treasury and capital allocation."""
+    """Manages the Syndicate's treasury and capital allocation.
+
+    Treasury values are in CAD.  Agent capital values are in USDT.
+    The CurrencyService converts at the boundary.
+    """
 
     RESERVE_RATIO = config.treasury_reserve_ratio  # 20%
     RANDOM_ALLOCATION_PCT = config.random_allocation_pct  # 10%
@@ -30,9 +38,11 @@ class TreasuryManager:
         self,
         exchange_service=None,
         db_session_factory: sessionmaker | None = None,
+        currency_service=None,
     ) -> None:
         self.log = logger.bind(component="treasury")
         self.exchange = exchange_service
+        self._currency = currency_service
 
         if db_session_factory:
             self.db_session_factory = db_session_factory
@@ -40,19 +50,32 @@ class TreasuryManager:
             engine = create_engine(config.database_url)
             self.db_session_factory = sessionmaker(bind=engine)
 
+    @property
+    def currency(self):
+        """Lazy-init CurrencyService if not injected."""
+        if self._currency is None:
+            from src.common.currency_service import CurrencyService
+            self._currency = CurrencyService()
+        return self._currency
+
     # ------------------------------------------------------------------
     # Balance
     # ------------------------------------------------------------------
 
     async def get_treasury_balance(self) -> dict:
-        """Get full treasury breakdown."""
+        """Get full treasury breakdown.
+
+        All returned values are in CAD.  Agent capital (stored in USDT)
+        is converted to CAD at the current rate for the available-balance
+        calculation.
+        """
         with self.db_session_factory() as session:
             state = session.execute(select(SystemState).limit(1)).scalar_one_or_none()
-            total = state.total_treasury if state else 0.0
-            peak = state.peak_treasury if state else 0.0
+            total = state.total_treasury if state else 0.0  # CAD
+            peak = state.peak_treasury if state else 0.0  # CAD
 
-            # Sum capital allocated to agents
-            allocated = session.execute(
+            # Sum capital allocated to agents (USDT)
+            allocated_usdt = session.execute(
                 select(
                     __import__("sqlalchemy").func.coalesce(
                         __import__("sqlalchemy").func.sum(Agent.capital_allocated), 0.0
@@ -60,66 +83,95 @@ class TreasuryManager:
                 ).where(Agent.status.in_(["active", "evaluating", "hibernating"]))
             ).scalar() or 0.0
 
+        # Convert agent USDT allocations to CAD for the balance calc
+        allocated_cad = self.currency.usdt_to_cad(float(allocated_usdt))
         reserved = total * self.RESERVE_RATIO
-        available = max(0.0, total - reserved - float(allocated))
+        available = max(0.0, total - reserved - allocated_cad)
         drawdown_pct = round((1.0 - total / peak) * 100, 2) if peak > 0 else 0.0
 
         return {
-            "total": round(total, 2),
-            "available_for_allocation": round(available, 2),
-            "reserved": round(reserved, 2),
-            "allocated_to_agents": round(float(allocated), 2),
-            "peak": round(peak, 2),
+            "total": round(total, 2),  # CAD
+            "available_for_allocation": round(available, 2),  # CAD
+            "reserved": round(reserved, 2),  # CAD
+            "allocated_to_agents": round(allocated_cad, 2),  # CAD equivalent
+            "allocated_to_agents_usdt": round(float(allocated_usdt), 2),
+            "peak": round(peak, 2),  # CAD
             "drawdown_pct": drawdown_pct,
+            "currency": config.home_currency,
+            "usdt_cad_rate": self.currency.get_usdt_cad_rate(),
         }
 
     # ------------------------------------------------------------------
     # Capital Allocation
     # ------------------------------------------------------------------
 
-    async def allocate_capital(self, agent_id: int, amount: float) -> bool:
-        """Allocate capital to an agent, respecting reserve."""
+    async def allocate_capital(self, agent_id: int, amount_cad: float) -> bool:
+        """Allocate capital to an agent, respecting reserve.
+
+        Args:
+            agent_id: The agent to receive capital.
+            amount_cad: Amount in CAD to allocate from treasury.
+                        Converted to USDT for the agent's capital fields.
+        """
         balance = await self.get_treasury_balance()
-        if amount > balance["available_for_allocation"]:
+        if amount_cad > balance["available_for_allocation"]:
             self.log.warning(
                 "allocation_rejected_insufficient",
                 agent_id=agent_id,
-                requested=amount,
-                available=balance["available_for_allocation"],
+                requested_cad=amount_cad,
+                available_cad=balance["available_for_allocation"],
             )
             return False
+
+        # Convert CAD → USDT for the agent
+        amount_usdt = self.currency.cad_to_usdt(amount_cad)
 
         with self.db_session_factory() as session:
             agent = session.get(Agent, agent_id)
             if agent is None:
                 return False
 
-            agent.capital_allocated = (agent.capital_allocated or 0.0) + amount
-            agent.capital_current = (agent.capital_current or 0.0) + amount
+            agent.capital_allocated = (agent.capital_allocated or 0.0) + amount_usdt
+            agent.capital_current = (agent.capital_current or 0.0) + amount_usdt
             session.commit()
 
-        self.log.info("capital_allocated", agent_id=agent_id, amount=amount)
+        self.log.info(
+            "capital_allocated",
+            agent_id=agent_id,
+            amount_cad=round(amount_cad, 2),
+            amount_usdt=round(amount_usdt, 2),
+        )
         return True
 
     async def reclaim_capital(self, agent_id: int) -> float:
-        """Reclaim all capital from an agent back to treasury."""
+        """Reclaim all capital from an agent back to treasury.
+
+        Agent's USDT capital is converted to CAD before adding to
+        the treasury.  Returns the reclaimed amount in USDT.
+        """
         with self.db_session_factory() as session:
             agent = session.get(Agent, agent_id)
             if agent is None:
                 return 0.0
 
-            reclaimed = agent.capital_current or 0.0
+            reclaimed_usdt = agent.capital_current or 0.0
             agent.capital_allocated = 0.0
             agent.capital_current = 0.0
 
-            # Add back to treasury
+            # Convert USDT → CAD before adding to treasury
+            reclaimed_cad = self.currency.usdt_to_cad(reclaimed_usdt)
             state = session.execute(select(SystemState).limit(1)).scalar_one_or_none()
             if state:
-                state.total_treasury = (state.total_treasury or 0.0) + reclaimed
+                state.total_treasury = (state.total_treasury or 0.0) + reclaimed_cad
             session.commit()
 
-        self.log.info("capital_reclaimed", agent_id=agent_id, amount=reclaimed)
-        return reclaimed
+        self.log.info(
+            "capital_reclaimed",
+            agent_id=agent_id,
+            amount_usdt=round(reclaimed_usdt, 2),
+            amount_cad=round(reclaimed_cad, 2),
+        )
+        return reclaimed_usdt
 
     # ------------------------------------------------------------------
     # Capital Allocation Round

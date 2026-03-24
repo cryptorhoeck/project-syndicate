@@ -113,6 +113,9 @@ async def main() -> None:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
+        # Clean up DB engine
+        engine.dispose()
+
     log.info("trading_monitors_stopped")
 
 

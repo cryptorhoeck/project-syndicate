@@ -54,6 +54,7 @@ class GenesisAgent(BaseAgent):
         agora_service: Optional["AgoraService"] = None,
         library_service: Optional["LibraryService"] = None,
         economy_service: Optional["EconomyService"] = None,
+        email_service=None,
     ) -> None:
         super().__init__(
             agent_id=0,
@@ -66,6 +67,7 @@ class GenesisAgent(BaseAgent):
 
         self.exchange = exchange_service
         self.economy: Optional["EconomyService"] = economy_service
+        self.email_service = email_service
         self.accountant = Accountant(db_session_factory=db_session_factory)
         self.treasury = TreasuryManager(
             exchange_service=exchange_service,
@@ -75,7 +77,10 @@ class GenesisAgent(BaseAgent):
             exchange_service=exchange_service,
             db_session_factory=db_session_factory,
         )
-        self.redis_client = redis.Redis.from_url(config.redis_url, decode_responses=True)
+        self.redis_client = redis.Redis.from_url(
+            config.redis_url, decode_responses=True,
+            socket_timeout=10, socket_connect_timeout=5, retry_on_timeout=True,
+        )
 
         # Anthropic client for Claude API calls
         self.claude: anthropic.Anthropic | None = None
@@ -255,10 +260,34 @@ class GenesisAgent(BaseAgent):
             # 10. HOURLY MAINTENANCE (expired messages cleanup)
             await self._maybe_run_hourly_maintenance()
 
+            # 10b. EQUITY SNAPSHOTS + SANITY CHECKS (periodic)
+            try:
+                from src.trading.equity_snapshots import EquitySnapshotService
+                snap_svc = EquitySnapshotService(db_session_factory=self.db_session_factory)
+                snap_count = await snap_svc.take_snapshots()
+                if snap_count:
+                    cycle_report["equity_snapshots"] = snap_count
+            except Exception as exc:
+                self.log.debug("equity_snapshot_skipped", error=str(exc))
+
+            try:
+                from src.trading.sanity_checker import PaperTradingSanityChecker
+                checker = PaperTradingSanityChecker(
+                    db_session_factory=self.db_session_factory,
+                    agora_service=self.agora,
+                )
+                sanity = await checker.run_all()
+                issues = {k: v for k, v in sanity.items() if v}
+                if issues:
+                    self.log.warning("sanity_check_issues", issues=issues)
+                    cycle_report["sanity_issues"] = issues
+            except Exception as exc:
+                self.log.debug("sanity_check_skipped", error=str(exc))
+
             # 11. LOG CYCLE
             await self.post_to_agora(
                 "genesis-log",
-                f"Cycle complete. Treasury: ${treasury['total']:.2f}, "
+                f"Cycle complete. Treasury: C${treasury['total']:.2f}, "
                 f"Agents: {agent_health.get('active', 0)} active",
                 message_type=MessageType.SYSTEM,
                 metadata={"cycle_report_keys": list(cycle_report.keys())},
@@ -407,6 +436,26 @@ class GenesisAgent(BaseAgent):
             except Exception as exc:
                 self.log.error("evaluation_batch_error", error=str(exc))
                 return results
+
+            # Genome diversity check (post-evaluation)
+            try:
+                from src.genome.diversity import calculate_diversity_index, should_apply_diversity_pressure
+                diversity_idx = await calculate_diversity_index(None, session)
+                if should_apply_diversity_pressure(diversity_idx):
+                    self.log.warning(
+                        "genome_convergence_alert",
+                        diversity_index=round(diversity_idx, 3),
+                        threshold=config.genome_diversity_low_threshold,
+                    )
+                    await self.post_to_agora(
+                        "system-alerts",
+                        f"Genome convergence alert: diversity index {diversity_idx:.3f} "
+                        f"below threshold {config.genome_diversity_low_threshold}. "
+                        f"Diversity pressure mutations will be applied at next reproduction.",
+                        message_type=MessageType.ALERT,
+                    )
+            except Exception as exc:
+                self.log.debug("diversity_check_skipped", error=str(exc))
 
             # Decrement probation grace cycles for all active probation agents
             probation_agents = session.execute(
@@ -759,6 +808,12 @@ class GenesisAgent(BaseAgent):
                                 sip.genesis_verdict = "defer"
                                 sip.genesis_reasoning = response.content[0].text[:500]
                             sip.status = "reviewed"
+                            # Track cost
+                            await self.accountant.track_api_call(
+                                agent_id=0, model=config.death_last_words_model,
+                                input_tokens=response.usage.input_tokens,
+                                output_tokens=response.usage.output_tokens,
+                            )
                         except Exception as e:
                             self.log.debug(f"SIP review failed: {e}")
                     sip_session.commit()
@@ -1005,7 +1060,8 @@ class GenesisAgent(BaseAgent):
         if self.claude is None:
             report_content = (
                 f"Daily Report — {report_data['date']}\n"
-                f"Treasury: ${summary['total_treasury']:.2f}\n"
+                f"Treasury: C${summary['total_treasury']:.2f}\n"
+                f"USDT/CAD Rate: {summary.get('usdt_cad_rate', 'N/A')}\n"
                 f"Active Agents: {summary['active_agents']}\n"
                 f"Regime: {summary['current_regime']}\n"
                 f"Alert: {summary['alert_status']}\n"
@@ -1046,6 +1102,7 @@ class GenesisAgent(BaseAgent):
                 market_regime=summary["current_regime"],
                 alert_status=summary["alert_status"],
                 total_api_cost_24h=summary["total_api_spend"],
+                usdt_cad_rate=summary.get("usdt_cad_rate"),
                 report_content=report_content,
             )
             session.add(report)
@@ -1057,6 +1114,16 @@ class GenesisAgent(BaseAgent):
             message_type=MessageType.SYSTEM,
             importance=1,
         )
+
+        # Send daily report via email (no-op if SMTP not configured)
+        if self.email_service is not None:
+            try:
+                await self.email_service.send_daily_report(
+                    report_content, date.today().isoformat()
+                )
+            except Exception as exc:
+                self.log.warning("daily_report_email_failed", error=str(exc))
+
         self.log.info("daily_report_generated", date=date.today().isoformat())
         return report_content
 
@@ -1077,7 +1144,7 @@ class GenesisAgent(BaseAgent):
         balance = await self.treasury.get_treasury_balance()
         total = balance["total"]
         if total < config.min_spawn_capital:
-            return [{"status": "skip", "reason": f"Insufficient capital: ${total}"}]
+            return [{"status": "skip", "reason": f"Insufficient capital: C${total:.2f}"}]
 
         gen1_agents = [
             {"name": "Scout-Alpha", "type": "scout", "mandate": "Crypto market scanner"},
@@ -1138,7 +1205,7 @@ class GenesisAgent(BaseAgent):
         await self.post_to_agora(
             "genesis-log",
             f"GENESIS RECORD ZERO: {len(spawned)} Gen 1 agents spawned. "
-            f"Total capital deployed: ${available:.2f}",
+            f"Total capital deployed: C${available:.2f}",
             message_type=MessageType.SYSTEM,
             metadata={"gen1_agents": spawned},
             importance=1,

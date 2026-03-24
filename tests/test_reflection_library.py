@@ -65,34 +65,31 @@ def test_weakness_to_resource_mapping():
 
 # --- No scorecard returns None ---
 
-@pytest.mark.asyncio
-async def test_no_scorecard_returns_none(db_session):
+def test_no_scorecard_returns_none(db_session):
     """Agent without evaluation scorecard gets no library content."""
     agent = _make_agent(db_session, evaluation_scorecard=None)
 
     selector = ReflectionLibrarySelector()
-    result = await selector.select_for_reflection(db_session, agent)
+    result = selector.select_for_reflection(db_session, agent)
 
     assert result is None
 
 
 # --- Empty metrics returns None ---
 
-@pytest.mark.asyncio
-async def test_empty_metrics_returns_none(db_session):
+def test_empty_metrics_returns_none(db_session):
     """Agent with empty metrics dict gets no library content."""
     agent = _make_agent(db_session, evaluation_scorecard={"metrics": {}})
 
     selector = ReflectionLibrarySelector()
-    result = await selector.select_for_reflection(db_session, agent)
+    result = selector.select_for_reflection(db_session, agent)
 
     assert result is None
 
 
 # --- Study cooldown prevents repeat ---
 
-@pytest.mark.asyncio
-async def test_study_cooldown_prevents_repeat(db_session):
+def test_study_cooldown_prevents_repeat(db_session):
     """Agent who recently studied a resource should not get it again."""
     agent = _make_agent(
         db_session, type="operator", cycle_count=100,
@@ -116,7 +113,7 @@ async def test_study_cooldown_prevents_repeat(db_session):
     db_session.flush()
 
     selector = ReflectionLibrarySelector()
-    result = await selector.select_for_reflection(db_session, agent)
+    result = selector.select_for_reflection(db_session, agent)
 
     # Should not return the same resource (sharpe mapping)
     # May return a fallback or None
@@ -126,8 +123,7 @@ async def test_study_cooldown_prevents_repeat(db_session):
 
 # --- Fallback to library archive ---
 
-@pytest.mark.asyncio
-async def test_fallback_to_library_archive(db_session):
+def test_fallback_to_library_archive(db_session):
     """When textbook not found, falls back to library archive entries."""
     agent = _make_agent(
         db_session, type="operator", cycle_count=100,
@@ -153,7 +149,7 @@ async def test_fallback_to_library_archive(db_session):
 
     selector = ReflectionLibrarySelector()
     # This will fail to find textbook file → fall back to archive
-    result = await selector.select_for_reflection(db_session, agent)
+    result = selector.select_for_reflection(db_session, agent)
 
     # If textbook file doesn't exist, should fall back to archive entry
     if result is not None:

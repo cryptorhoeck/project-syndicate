@@ -5,7 +5,7 @@ Defines each agent role with its action space, default temperature,
 cycle interval, description, and output schema.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 from dataclasses import dataclass, field
 
@@ -130,7 +130,7 @@ SCOUT_ACTIONS = {
         },
     },
     "go_idle": {
-        "description": "Nothing worth doing right now. Save your budget.",
+        "description": "Nothing worth doing right now. WARNING: consecutive idle cycles count against you in evaluation. A Scout that idles too long dies. Even a low-confidence broadcast is better than silence.",
         "params": {
             "reason": "str — why idle is the right call",
         },
@@ -311,8 +311,11 @@ ROLE_DEFINITIONS: dict[str, RoleDefinition] = {
         description=(
             "You are a Scout. Your job is to watch markets, detect patterns, and "
             "broadcast opportunities to the ecosystem. You don't trade — you find. "
-            "A good Scout spots what others miss. A bad Scout wastes everyone's time "
-            "with noise. Your reputation depends on the quality of your signals."
+            "A good Scout spots what others miss. A Scout that finds nothing gets "
+            "terminated — silence is the worst signal. Cast a wide net. Downstream "
+            "agents (Strategists, Critics) exist to filter your output. Your job is "
+            "to GENERATE signal, not to be certain. Low-confidence opportunities are "
+            "better than no opportunities."
         ),
         available_actions={**SCOUT_ACTIONS, **SURVIVAL_ACTIONS},
         default_temperature=0.7,

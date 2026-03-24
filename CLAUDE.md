@@ -10,9 +10,9 @@ Project Syndicate is an autonomous, self-evolving multi-agent AI financial ecosy
 
 ## Current Status
 
-**Phase:** 8C — COMPLETE (Code Sandbox & Strategy Genome)
-**Focus:** Secure sandbox execution, agent tool library, heritable strategy genomes, mutation engine
-**Last Updated:** 2026-03-12
+**Phase:** Production Readiness Testing
+**Focus:** Hardening verification, integration tests, stress tests
+**Last Updated:** 2026-03-24
 
 See `CURRENT_STATUS.md` for detailed session-by-session progress.
 
@@ -29,10 +29,11 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **Internal Economy** — reputation-based market for intel/services between agents
 - **Competition System** — ranked resource allocation, Sharpe-based leaderboard, prestige titles
 - **The Library** — educational materials, not answer keys. Textbooks for agents.
-- **Thinking Tax** — API costs are part of agent P&L. True P&L = Revenue - Losses - API Costs
+- **Thinking Tax** — API costs (USD) are part of agent P&L. True P&L = Revenue - Losses - API Costs. All converted to CAD for owner display.
 - **Hibernation** — agents can voluntarily pause, survival clock freezes
-- **Black Swan Protocol** — Yellow (15% in 4hrs) / Red (30% in 4hrs) / Circuit Breaker (75% from peak)
+- **Black Swan Protocol** — Yellow (15% in 4hrs) / Red (30% in 4hrs) / Circuit Breaker (75% from peak) — operates on CAD treasury
 - **SIP Framework** — agents propose system-level improvements via The Agora
+- **Currency Layer** — two-tier: agents trade in USDT, owner sees CAD. `CurrencyService` fetches USDT/CAD from Kraken, caches in Redis. Treasury stored in CAD, agent capital in USDT, converted at allocation/reclamation boundary.
 
 ### Phase 1 Components (Genesis + Risk Desk)
 - **Genesis Agent** (`src/genesis/genesis.py`) — immortal God Node, 5-min cycle: health check, treasury update, regime check, agent evaluation, capital allocation, spawn decisions, reproduction, Agora monitoring, daily reports
@@ -41,6 +42,7 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **Treasury Manager** (`src/genesis/treasury.py`) — capital allocation (90% rank-based + 10% random anti-monopoly), prestige multipliers, position inheritance, reserve ratio enforcement
 - **Regime Detector** (`src/genesis/regime_detector.py`) — rules-based BTC market regime classification (bull/bear/crab/volatile) using MA crossovers, volatility percentiles, market cap trends
 - **Exchange Service** (`src/common/exchange_service.py`) — unified ccxt wrapper for Kraken (primary) + Binance (secondary), retry logic, paper trading service
+- **Currency Service** (`src/common/currency_service.py`) — USDT/CAD and USD/CAD conversion. Live rates from Kraken USDT/CAD pair, Redis cache (5min TTL), config fallback rates. Treasury in CAD, agent capital in USDT.
 - **Email Service** (`src/reports/email_service.py`) — daily reports, Yellow/Red/Circuit Breaker alerts via Gmail SMTP
 - **Config** (`src/common/config.py`) — centralized pydantic-settings configuration from .env
 
@@ -57,7 +59,7 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 
 ### The Library (Phase 2B)
 - **Institutional memory** — knowledge that persists across agent generations
-- **Textbooks:** 8 static files in `data/library/textbooks/` (PLACEHOLDER — content pending review)
+- **Textbooks:** 8 files in `data/library/textbooks/` (full content), 8 summaries in `data/library/summaries/` (concise versions for injection)
 - **Archives:** post-mortems (immediate), strategy records (48h delay), patterns (Genesis-curated), contributions (peer-reviewed)
 - **Peer review:** Genesis solo when < 8 agents, two qualified reviewers when >= 8
 - **Reviewer requirements:** reputation >= 200, not self, not same lineage
@@ -216,18 +218,19 @@ E:\project syndicate\
 │   └── design_doc_v2.docx      ← Authoritative design document
 ├── src/
 │   ├── genesis/                ← Genesis agent (spawner, treasury, evaluator, regime)
-│   ├── council/                ← Scout, Strategist, Critic agent templates
-│   ├── operators/              ← Unified Operator agent template
+│   ├── agents/                 ← Role definitions, thinking cycle, context, actions, orientation
 │   ├── risk/                   ← Warden, Accountant, Dead Man's Switch
-│   ├── agora/                  ← Message bus, channels, persistence, web frontend
+│   ├── agora/                  ← Message bus, channels, persistence
 │   ├── economy/                ← Internal economy, reputation, prestige system
 │   ├── library/                ← Knowledge bootstrap, educational materials
-│   ├── dynasty/               ← Dynasties, lineage, reproduction, memorials, analytics
+│   ├── dynasty/                ← Dynasties, lineage, reproduction, memorials, analytics
 │   ├── personality/            ← Behavioral profiles, temperature, identity, relationships, divergence
-│   ├── social/                 ← Social media agent and integrations
+│   ├── trading/                ← Paper trading, execution, position monitoring
+│   ├── sandbox/                ← Code sandbox, tool tracking, security
+│   ├── genome/                 ← Strategy genome, mutation, diversity
+│   ├── web/                    ← Dashboard (FastAPI + Jinja2 + HTMX)
 │   ├── reports/                ← Report generator, email sender, alert system
-│   ├── console/                ← Owner Override Console (FastAPI endpoints)
-│   └── common/                 ← Base agent class, shared utilities, lineage tracker
+│   └── common/                 ← Base agent class, shared utilities, config, models
 ├── config/                     ← System configuration, boot sequence definition
 ├── data/                       ← Local data, agent archives, Library content
 ├── backups/                    ← Timestamped backups (pre-change)
@@ -285,7 +288,9 @@ At the beginning of every script or module, include (or call) standard boilerpla
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Agent isolation | Process-based (supervisord) | Docker overhead too high for 4GB VPS at $500 scale |
+| Home currency | CAD | Owner is in Canada, Canadian regulations require CAD accounting |
+| Trading currency | USDT | Liquidity — all pairs denominated /USDT |
+| Agent isolation | Process-based (supervisord) | Docker overhead too high for 4GB VPS at C$500 scale |
 | Agent framework | LangGraph | Most flexible for dynamic spawn/kill at runtime |
 | AI engine | Claude Sonnet API | Best reasoning-to-cost ratio for 24/7 operation |
 | Database | PostgreSQL | Concurrent writes from multiple agents |
@@ -317,14 +322,14 @@ At the beginning of every script or module, include (or call) standard boilerpla
 | 3E | Personality Through Experience (profiles, temperature, identity, trust) | **COMPLETE** |
 | 3F | First Death, First Reproduction, First Dynasty | **COMPLETE** |
 | 3.5 | API Cost Optimization (model routing, caching, adaptive frequency) | **COMPLETE** |
-| 4 | The Arena (full paper trading validation) | Pending |
-| 5 | Social Presence + Solana | Pending |
 | 6A | The Command Center (sci-fi dashboard) | **COMPLETE** |
-| 6B | Owner Console + Auth | Pending |
-| 7 | The Arena (full paper trading validation) | Pending |
 | 8A | CLI Launcher (one-click startup) | **COMPLETE** |
 | 8B | Survival Instinct (competitive behavior) | **COMPLETE** |
 | 8C | Code Sandbox & Strategy Genome | **COMPLETE** |
+| 9 | Production Readiness Testing | **IN PROGRESS** |
+| 4 | The Arena (full paper trading — 21-day run) | Pending |
+| 5 | Social Presence + Solana | Pending |
+| 6B | Owner Console + Auth | Pending |
 | 8 | Go Live (real capital) | Pending |
 
 ## Useful Commands

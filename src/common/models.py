@@ -89,7 +89,8 @@ class Agent(Base):
     hibernation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     total_api_cost: Mapped[float] = mapped_column(Float, default=0.0)
     total_gross_pnl: Mapped[float] = mapped_column(Float, default=0.0)
-    total_true_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    total_true_pnl: Mapped[float] = mapped_column(Float, default=0.0)  # in USDT
+    total_true_pnl_cad: Mapped[float] = mapped_column(Float, default=0.0)  # in CAD
     evaluation_count: Mapped[int] = mapped_column(Integer, default=0)
     profitable_evaluations: Mapped[int] = mapped_column(Integer, default=0)
 
@@ -244,9 +245,12 @@ class Evaluation(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
     evaluation_type: Mapped[str] = mapped_column(String(30), nullable=False)  # survival_check, weekly_review, tournament
-    pnl_gross: Mapped[float] = mapped_column(Float, default=0.0)
-    pnl_net: Mapped[float] = mapped_column(Float, default=0.0)
-    api_cost: Mapped[float] = mapped_column(Float, default=0.0)
+    pnl_gross: Mapped[float] = mapped_column(Float, default=0.0)  # in USDT
+    pnl_net: Mapped[float] = mapped_column(Float, default=0.0)  # in USDT
+    pnl_gross_cad: Mapped[float] = mapped_column(Float, default=0.0)  # in CAD
+    pnl_net_cad: Mapped[float] = mapped_column(Float, default=0.0)  # in CAD
+    api_cost: Mapped[float] = mapped_column(Float, default=0.0)  # in USD
+    api_cost_cad: Mapped[float] = mapped_column(Float, default=0.0)  # in CAD
     sharpe_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
     reputation_change: Mapped[float] = mapped_column(Float, default=0.0)
     result: Mapped[str | None] = mapped_column(String(20), nullable=True)  # survived, terminated, promoted, hibernated
@@ -350,8 +354,9 @@ class SystemState(Base):
     __tablename__ = "system_state"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    total_treasury: Mapped[float] = mapped_column(Float, default=0.0)
-    peak_treasury: Mapped[float] = mapped_column(Float, default=0.0)
+    total_treasury: Mapped[float] = mapped_column(Float, default=0.0)  # in CAD
+    peak_treasury: Mapped[float] = mapped_column(Float, default=0.0)  # in CAD
+    treasury_currency: Mapped[str] = mapped_column(String(10), default="CAD")
     current_regime: Mapped[str] = mapped_column(String(20), default="unknown")  # bull, bear, crab, volatile, unknown
     active_agent_count: Mapped[int] = mapped_column(Integer, default=0)
     alert_status: Mapped[str] = mapped_column(String(20), default="green")  # green, yellow, red, circuit_breaker
@@ -480,6 +485,7 @@ class DailyReport(Base):
     market_regime: Mapped[str] = mapped_column(String(20), nullable=False)
     alert_status: Mapped[str] = mapped_column(String(20), nullable=False)  # green, yellow, red, circuit_breaker
     total_api_cost_24h: Mapped[float] = mapped_column(Float, default=0.0)
+    usdt_cad_rate: Mapped[float | None] = mapped_column(Float, nullable=True)  # rate at report time
     report_content: Mapped[str] = mapped_column(Text, nullable=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

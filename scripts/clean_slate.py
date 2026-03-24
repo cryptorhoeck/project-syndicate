@@ -50,11 +50,14 @@ for table in tables:
 cur.execute("DELETE FROM agents WHERE id != 0")
 print(f"  deleted agents: {cur.rowcount}")
 
-# Reset system_state
-cur.execute("""
+# Reset system_state (treasury in CAD)
+from src.common.config import config as syndicate_config
+starting = syndicate_config.starting_treasury
+cur.execute(f"""
     UPDATE system_state SET
-        total_treasury = 500.0,
-        peak_treasury = 500.0,
+        total_treasury = {starting},
+        peak_treasury = {starting},
+        treasury_currency = 'CAD',
         active_agent_count = 0,
         last_heartbeat_at = NULL,
         current_regime = 'unknown'
@@ -62,13 +65,13 @@ cur.execute("""
 print("  system_state reset")
 
 # Reset Genesis treasury
-cur.execute("""
+cur.execute(f"""
     UPDATE agents SET
-        capital_allocated = 500.0,
-        capital_current = 500.0
+        capital_allocated = {starting},
+        capital_current = {starting}
     WHERE id = 0
 """)
-print("  genesis treasury reset to $500")
+print(f"  genesis treasury reset to C${starting:.0f}")
 
 cur.close()
 conn.close()

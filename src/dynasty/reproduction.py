@@ -289,6 +289,20 @@ Respond in JSON:
                 messages=[{"role": "user", "content": prompt}],
             )
 
+            # Track cost via atomic SQL (no Accountant dependency)
+            try:
+                from sqlalchemy import text as sa_text
+                pricing = {"input": 1.0, "output": 5.0}  # Haiku rates
+                cost = (response.usage.input_tokens / 1_000_000) * pricing["input"] + \
+                       (response.usage.output_tokens / 1_000_000) * pricing["output"]
+                session.execute(sa_text(
+                    "UPDATE agents SET "
+                    "total_api_cost = COALESCE(total_api_cost, 0) + :cost "
+                    "WHERE id = 0"
+                ), {"cost": round(cost, 6)})
+            except Exception:
+                pass
+
             text = response.content[0].text
             json_match = re.search(r'\{.*\}', text, re.DOTALL)
             if json_match:

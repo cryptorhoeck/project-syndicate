@@ -6,7 +6,7 @@ Builds the agent's "mind" for each cycle — pure deterministic code, no AI.
 Assembles mandatory, priority, and long-term memory context within a token budget.
 """
 
-__version__ = "1.2.0"
+__version__ = "1.4.0"
 
 import enum
 import logging
@@ -272,6 +272,11 @@ dumps. Talk like a sharp trader, not a report generator."""
         except Exception:
             pass
 
+        # Scout-specific anti-starvation directives
+        scout_directive = ""
+        if agent.type == "scout":
+            scout_directive = self._build_scout_directive(agent)
+
         return f"""{identity}
 Cycle: {agent.cycle_count} | Budget remaining today: ${budget_remaining:.4f}
 
@@ -279,7 +284,7 @@ YOUR ROLE: {role_def.description}
 
 {survival_reality}
 {comm_style}
-
+{scout_directive}
 AVAILABLE ACTIONS:
 {action_list}
 
@@ -290,6 +295,59 @@ WARDEN LIMITS:
 
 Respond ONLY in valid JSON matching this schema — no other text:
 {{"situation": "...", "confidence": {{"score": N, "reasoning": "..."}}, "recent_pattern": "...", "action": {{"type": "...", "params": {{...}}}}, "reasoning": "...", "self_note": "..."}}{survival_directive}"""
+
+    def _build_scout_directive(self, agent: Agent) -> str:
+        """Build Scout-specific anti-starvation directives.
+
+        Two components:
+        1. Discovery phase — for new Scouts (cycle_count < discovery threshold),
+           encourages aggressive opportunity broadcasting over caution.
+        2. Idle streak pressure — if Scout has gone idle N+ cycles in a row,
+           injects escalating warnings.
+        """
+        parts = []
+
+        # Discovery phase for new Scouts
+        if agent.cycle_count < syndicate_config.scout_discovery_phase_cycles:
+            parts.append(
+                "DISCOVERY PHASE: You are a new Scout building your track record. "
+                "Your job right now is to FIND opportunities, not to be right about them. "
+                "Downstream agents (Strategists, Critics) exist to filter your output — "
+                "let them do their jobs. A confidence score of 4 or 5 is enough to broadcast. "
+                "Cast a wide net. Report what you see. \"Sector quiet, volume flat\" is itself "
+                "intelligence worth sharing. A Scout that finds nothing is a Scout that gets "
+                "terminated."
+            )
+
+        # Idle streak detection — count consecutive recent idle cycles
+        try:
+            recent_cycles = (
+                self.db.query(AgentCycle)
+                .filter(AgentCycle.agent_id == agent.id)
+                .order_by(desc(AgentCycle.cycle_number))
+                .limit(syndicate_config.scout_max_consecutive_idle + 1)
+                .all()
+            )
+            idle_streak = 0
+            for cycle in recent_cycles:
+                if cycle.action_type in (None, "go_idle", "wait", "observe"):
+                    idle_streak += 1
+                else:
+                    break
+
+            if idle_streak >= syndicate_config.scout_max_consecutive_idle:
+                parts.append(
+                    f"⚠️ IDLE ALERT: You have been idle for {idle_streak} consecutive "
+                    "cycles. The pipeline is starving because you are not broadcasting. "
+                    "Other agents depend on YOUR output to function. If you cannot find "
+                    "a high-confidence opportunity, broadcast a low-confidence one — even "
+                    "a 3/10 confidence signal keeps the ecosystem alive. Continued idling "
+                    "WILL result in your termination at next evaluation."
+                )
+        except Exception:
+            pass
+
+        return "\n\n".join(parts)
 
     def _build_reflection_system_prompt(
         self, agent: Agent, prestige: str, budget_remaining: float, survival_directive: str
@@ -911,21 +969,9 @@ Review your recent performance and produce a reflection."""
         """Inject Library content during reflection if weakness detected and budget allows."""
         try:
             from src.personality.reflection_library import ReflectionLibrarySelector
-            import asyncio
 
             selector = ReflectionLibrarySelector()
-            # Run async selector synchronously (context assembler is sync)
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # Can't await in running loop; skip
-                    return ""
-            except RuntimeError:
-                pass
-
-            content = asyncio.get_event_loop().run_until_complete(
-                selector.select_for_reflection(self.db, agent)
-            )
+            content = selector.select_for_reflection(self.db, agent)
 
             if content is None:
                 return ""

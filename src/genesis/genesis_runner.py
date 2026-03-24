@@ -52,7 +52,10 @@ async def main() -> None:
     session_factory = sessionmaker(bind=engine)
 
     # Initialize Agora service
-    redis_client = aioredis.from_url(config.redis_url, decode_responses=True)
+    redis_client = aioredis.from_url(
+        config.redis_url, decode_responses=True,
+        socket_timeout=10, socket_connect_timeout=5, retry_on_timeout=True,
+    )
     agora = await create_agora_service(session_factory, redis_client)
 
     # Initialize Library service
@@ -106,6 +109,7 @@ async def main() -> None:
     # Clean shutdown of Agora pub/sub
     await agora.pubsub.shutdown()
     await redis_client.close()
+    engine.dispose()
 
     log.info("genesis_stopped")
 

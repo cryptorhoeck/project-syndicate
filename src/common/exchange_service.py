@@ -223,8 +223,9 @@ class ExchangeService:
         if self.secondary:
             try:
                 btc_ticker = await self.get_ticker("BTC/USDT", exchange="secondary")
-                # Binance doesn't directly provide dominance — we estimate from available data
-                btc_dominance = 50.0  # placeholder, will refine with real API
+                # Binance doesn't directly provide dominance — would need CoinGecko/CMC API
+                # Dominance is informational only (not used in regime classification)
+                btc_dominance = 0.0
                 total_market_cap = 0.0
             except Exception as exc:
                 self.log.warning("secondary_market_data_failed", error=str(exc))

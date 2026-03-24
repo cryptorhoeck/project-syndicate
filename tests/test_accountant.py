@@ -10,9 +10,9 @@ from src.risk.accountant import Accountant
 
 
 @pytest.fixture
-def accountant(seeded_db):
-    """Create an Accountant with test database."""
-    return Accountant(db_session_factory=seeded_db)
+def accountant(seeded_db, mock_currency):
+    """Create an Accountant with test database and 1:1 currency mock."""
+    return Accountant(db_session_factory=seeded_db, currency_service=mock_currency)
 
 
 @pytest.fixture

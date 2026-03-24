@@ -5,7 +5,7 @@ Targeted "study sessions" during reflection cycles.
 System offers relevant material when it detects weakness — agents don't choose.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import logging
 from dataclasses import dataclass
@@ -31,27 +31,27 @@ class ReflectionLibraryContent:
     weakest_metric: str
 
 
-# Mapping: role → {metric → textbook summary filename}
+# Mapping: role → {metric → summary filename in data/library/summaries/}
 WEAKNESS_TO_RESOURCE: dict[str, dict[str, str]] = {
     "scout": {
-        "signal_quality": "05_technical_analysis_summary.md",
-        "intel_conversion": "02_strategy_categories_summary.md",
-        "thinking_efficiency": "08_thinking_efficiently_summary.md",
+        "signal_quality": "technical_analysis.md",
+        "intel_conversion": "strategy_categories.md",
+        "thinking_efficiency": "thinking_efficiently.md",
     },
     "strategist": {
-        "plan_approval_rate": "03_risk_management_summary.md",
-        "revision_rate": "02_strategy_categories_summary.md",
-        "thinking_efficiency": "08_thinking_efficiently_summary.md",
+        "plan_approval_rate": "risk_management.md",
+        "revision_rate": "strategy_categories.md",
+        "thinking_efficiency": "thinking_efficiently.md",
     },
     "critic": {
-        "approval_accuracy": "03_risk_management_summary.md",
-        "rejection_value": "02_strategy_categories_summary.md",
-        "thinking_efficiency": "08_thinking_efficiently_summary.md",
+        "approval_accuracy": "risk_management.md",
+        "rejection_value": "strategy_categories.md",
+        "thinking_efficiency": "thinking_efficiently.md",
     },
     "operator": {
-        "sharpe": "03_risk_management_summary.md",
-        "true_pnl": "01_market_mechanics_summary.md",
-        "thinking_efficiency": "08_thinking_efficiently_summary.md",
+        "sharpe": "risk_management.md",
+        "true_pnl": "market_mechanics.md",
+        "thinking_efficiency": "thinking_efficiently.md",
     },
 }
 
@@ -62,12 +62,15 @@ class ReflectionLibrarySelector:
     def __init__(self) -> None:
         self.log = logger
 
-    async def select_for_reflection(
+    def select_for_reflection(
         self,
         session: Session,
         agent: Agent,
     ) -> ReflectionLibraryContent | None:
-        """Select relevant Library content based on agent weakness."""
+        """Select relevant Library content based on agent weakness.
+
+        Synchronous — does only DB queries and file I/O, no need for async.
+        """
         # 1. Get weakest metric from last evaluation scorecard
         scorecard = agent.evaluation_scorecard
         if not scorecard:
@@ -106,7 +109,7 @@ class ReflectionLibrarySelector:
                     return ReflectionLibraryContent(
                         resource_type="textbook_summary",
                         resource_id=resource_file,
-                        title=resource_file.replace("_summary.md", "").replace("_", " ").title(),
+                        title=resource_file.replace(".md", "").replace("_", " ").title(),
                         content=content,
                         context_prompt=(
                             f"Library reading is available below. It was selected because your "
@@ -146,26 +149,32 @@ class ReflectionLibrarySelector:
         return recent is not None
 
     def _load_textbook_summary(self, filename: str) -> str | None:
-        """Load textbook summary content from disk."""
+        """Load textbook summary from data/library/summaries/.
+
+        Falls back to the full textbook in data/library/textbooks/ (truncated)
+        if no summary exists, matching by keyword in the filename stem.
+        """
         import os
+        from pathlib import Path
+
         summary_path = os.path.join("data", "library", "summaries", filename)
         try:
             with open(summary_path, encoding="utf-8") as f:
                 return f.read()
         except FileNotFoundError:
-            # Try textbook itself (truncated)
-            textbook_name = filename.replace("_summary", "")
-            textbook_path = os.path.join("data", "library", "textbooks", textbook_name)
-            try:
-                with open(textbook_path, encoding="utf-8") as f:
-                    content = f.read()
+            pass
+
+        # Fallback: search textbooks/ for a file whose stem contains the summary keyword
+        keyword = Path(filename).stem.lower()  # e.g. "technical_analysis"
+        textbooks_dir = Path("data", "library", "textbooks")
+        if textbooks_dir.exists():
+            for tb in sorted(textbooks_dir.glob("*.md")):
+                if keyword in tb.stem.lower():
+                    content = tb.read_text(encoding="utf-8")
                     return content[:2000]  # Truncate for token budget
-            except FileNotFoundError:
-                self.log.warning(
-                    "textbook_not_found",
-                    extra={"filename": filename},
-                )
-                return None
+
+        self.log.warning("textbook_not_found", extra={"filename": filename})
+        return None
 
     def _find_archive_fallback(
         self,

@@ -105,7 +105,9 @@ def _format_event(msg) -> dict:
 
 
 _active_sse = 0
+_sse_per_ip: dict[str, int] = {}
 MAX_SSE_CONNECTIONS = 50
+MAX_SSE_PER_IP = 5
 
 
 @router.get("/stream")
@@ -117,11 +119,17 @@ async def event_stream(request: Request):
         from fastapi.responses import Response
         return Response(status_code=503, content="Too many SSE connections")
 
+    client_ip = request.client.host if request.client else "unknown"
+    if _sse_per_ip.get(client_ip, 0) >= MAX_SSE_PER_IP:
+        from fastapi.responses import Response
+        return Response(status_code=429, content="Too many SSE connections from this IP")
+
     factory = request.app.state.db_session_factory
 
     async def generate():
         global _active_sse
         _active_sse += 1
+        _sse_per_ip[client_ip] = _sse_per_ip.get(client_ip, 0) + 1
         try:
             last_id = 0
 
@@ -164,6 +172,7 @@ async def event_stream(request: Request):
                     logger.debug(f"SSE poll error: {e}")
         finally:
             _active_sse -= 1
+            _sse_per_ip[client_ip] = max(0, _sse_per_ip.get(client_ip, 1) - 1)
 
     return StreamingResponse(
         generate(),

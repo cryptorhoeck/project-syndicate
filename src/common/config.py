@@ -5,7 +5,7 @@ All system configuration in one place, loaded from .env with sensible defaults.
 Uses pydantic-settings for validation and type coercion.
 """
 
-__version__ = "1.3.0"
+__version__ = "1.5.0"
 
 from pydantic_settings import BaseSettings
 
@@ -226,6 +226,11 @@ class SyndicateConfig(BaseSettings):
     batch_poll_interval_seconds: int = 30
     batch_timeout_seconds: int = 3600
 
+    # Scout Pipeline (anti-starvation)
+    scout_min_confidence_threshold: int = 5  # min confidence to trigger Strategist interrupt
+    scout_discovery_phase_cycles: int = 50  # cycles before Scout exits discovery phase
+    scout_max_consecutive_idle: int = 3  # idle streak before pressure injection
+
     # Phase 8B: Survival Instinct
     strategic_review_cycle_interval: int = 50
     pressure_eval_imminent_days: int = 5
@@ -261,6 +266,15 @@ class SyndicateConfig(BaseSettings):
     genome_diversity_low_threshold: float = 0.3
     tool_inheritance_stat_discount: float = 0.50
     tool_outcome_correlation_lookback_cycles: int = 3
+
+    # Currency & Accounting
+    home_currency: str = "CAD"
+    starting_treasury: float = 500.0  # in CAD
+    currency_cache_ttl_seconds: int = 300  # 5-minute Redis cache
+    usd_cad_fallback_rate: float = 1.38  # used if Kraken API unavailable
+    usdt_cad_fallback_rate: float = 1.38  # used if Kraken API unavailable
+    usdt_cad_manual_override: float = 0.0  # >0 forces this rate (testing)
+    usd_cad_manual_override: float = 0.0  # >0 forces this rate (testing)
 
     # Logging
     log_level: str = "INFO"

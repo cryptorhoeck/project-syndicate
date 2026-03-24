@@ -17,14 +17,18 @@ from sqlalchemy.orm import Session
 from src.common.models import Agent, SystemState
 
 
-def get_db(request: Request) -> Session:
-    """Get a database session from the app state."""
+def get_db(request: Request):
+    """Get a database session from the app state.
+
+    Yields a session that is automatically closed after use.
+    Use as a FastAPI dependency: ``db = Depends(get_db)``.
+    """
     factory = request.app.state.db_session_factory
     session = factory()
     try:
-        return session
+        yield session
     finally:
-        pass  # caller should close
+        session.close()
 
 
 def get_common_context(request: Request) -> dict:

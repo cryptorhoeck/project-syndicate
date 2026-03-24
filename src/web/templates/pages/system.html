@@ -22,7 +22,7 @@
 <!-- Metric cards -->
 <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
     {% for label, value in [
-        ('Treasury', '$' ~ "%.2f"|format(treasury_balance|default(0))),
+        ('Treasury', 'C$' ~ "%.2f"|format(treasury_balance|default(0))),
         ('Market Regime', (current_regime|default('UNKNOWN'))|upper),
         ('Circuit Breaker', "%.1f"|format(circuit_breaker_pct|default(0)) ~ '% from peak'),
     ] %}

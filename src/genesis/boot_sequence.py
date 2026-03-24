@@ -259,14 +259,17 @@ class BootSequenceOrchestrator:
         now = datetime.now(timezone.utc)
 
         # Calculate capital per agent
+        # Treasury is in CAD → convert to USDT for agent capital
         from src.common.models import SystemState
+        from src.common.currency_service import CurrencyService
         state = session.execute(select(SystemState).limit(1)).scalar_one_or_none()
-        total_treasury = state.total_treasury if state else 100.0
+        total_treasury_cad = state.total_treasury if state else config.starting_treasury
 
-        # Reserve ratio
-        available = total_treasury * (1 - config.treasury_reserve_ratio)
-        # Split among 5 agents total
-        per_agent = available / 5
+        # Reserve ratio, then split among 5 agents, then convert to USDT
+        available_cad = total_treasury_cad * (1 - config.treasury_reserve_ratio)
+        per_agent_cad = available_cad / 5
+        cs = CurrencyService()
+        per_agent = cs.cad_to_usdt(per_agent_cad)  # Agent capital in USDT
 
         agent = Agent(
             name=spec["name"],
@@ -275,7 +278,7 @@ class BootSequenceOrchestrator:
             generation=1,
             capital_allocated=per_agent,
             capital_current=per_agent,
-            cash_balance=per_agent,  # Available trading capital
+            cash_balance=per_agent,  # Available trading capital (USDT)
             thinking_budget_daily=config.new_agent_daily_thinking_budget,
             strategy_summary=spec["mandate"],
             survival_clock_start=now,
@@ -345,7 +348,7 @@ class BootSequenceOrchestrator:
 
         logger.info(
             f"Spawned {spec['name']} (wave {wave_num}): "
-            f"${per_agent:.2f} capital, {GEN1_SURVIVAL_DAYS}-day clock"
+            f"C${per_agent_cad:.2f} ({per_agent:.2f} USDT), {GEN1_SURVIVAL_DAYS}-day clock"
         )
 
         return agent

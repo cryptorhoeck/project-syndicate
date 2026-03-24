@@ -2,6 +2,253 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [3.0.0] - 2026-03-24
+
+### Production Readiness — Hardening, Integration Tests, Stress Tests
+
+Three-tier production readiness pass.
+
+#### Tier 1: Hardening Verification & Fixes
+
+14-point audit of production hardening fixes. Report card:
+
+| Fix | Description | Status |
+|-----|-------------|--------|
+| C1 | Atomic budget increments | Already applied |
+| D1 | Death protocol savepoint | Already applied |
+| F1 | Context assembler crash isolation | Already applied (_safe_build wrapper) |
+| F2 | Thinking cycle crash resilience | Already applied (degraded fallback) |
+| F3 | File handle cleanup | Already applied |
+| F5 | Engine disposal | **Fixed** — added to run_trading, genesis_runner, warden_runner |
+| A1 | Unbudgeted API calls | **Fixed** — 5 API calls now tracked (evaluation, last words, post-mortem, SIP review, reproduction) |
+| A5 | Async sleep | Already applied |
+| G5 | Log rotation | Partial (run_arena only; others use structlog console) |
+| S5 | Agora prompt sanitization | Already applied (delimiters, length cap, name sanitization) |
+| R3 | Redis connection resilience | **Fixed** — added socket_timeout/connect_timeout/retry to 6 connections |
+| G2 | Startup config validation | Already applied |
+| S6 | SSE connection limits | **Fixed** — added per-IP limit (MAX_PER_IP=5) alongside existing MAX_TOTAL=50 |
+| A6 | Sandbox daily cost cap | Already applied ($0.50/agent/day) |
+
+#### Tier 2: Integration Test Harness
+
+9 end-to-end pipeline tests in `tests/test_integration.py`:
+1. Scout-to-Trade Pipeline (opportunity → plan → approval → position)
+2. Evaluation and Death Protocol (termination, memorial creation)
+3. Cold Start Boot Sequence (5 agents spawned from empty state)
+4. Budget Gate Survival Mode (near-limit triggers survival)
+5. Budget Gate Skip (exhausted budget blocks cycle)
+6. Black Swan Protocol (16% drawdown triggers yellow alert)
+7. Context Assembler Resilience (corrupted data doesn't crash)
+8. Library Textbook Pipeline (weak metric → textbook injection)
+9. Reproduction and Genome Inheritance (parent → offspring with memory discount)
+
+#### Tier 3: Stress Tests + Smoke Test
+
+7 stress tests in `tests/test_stress.py` (marked `@pytest.mark.stress`):
+1. 100-Cycle Marathon (500 cycles, budget accuracy verified)
+2. Concurrent Budget Atomicity (50 concurrent increments)
+3. Rapid Death/Respawn (15 deaths, 15 births, integrity verified)
+4. Database Disconnect Recovery (priority section fails → others survive)
+5. Redis Disconnect Recovery (cycle continues in DB-only mode)
+6. Log Rotation Under Load (2000 entries, rotation verified)
+7. Clean Slate Verification (all tables emptied, Genesis survives)
+
+Smoke test script (`scripts/smoke_test.py`):
+- 7 checks: PostgreSQL, Redis, Anthropic, Kraken, Config, Logs, Library
+- Output: GREEN / YELLOW / RED
+- Accessible from CLI menu as option [S]
+
+#### CLAUDE.md Updated
+- Phase roadmap reflects reality (Phase 9: Production Readiness Testing)
+- Directory structure matches actual codebase
+- Last Updated: 2026-03-24
+
+### Test Results
+- 759 tests passing (743 unit + 9 integration + 7 stress)
+- 0 failures
+
+## [2.7.0] - 2026-03-23
+
+### Production Readiness Audit + All Warnings Fixed
+
+Full 6-point codebase audit followed by fixes for all 7 identified warnings.
+
+#### Audit Fixes (from initial scan)
+- **BTC dominance placeholder** (`exchange_service.py`) — removed hardcoded 50.0%, set to 0.0 (informational only, not used in regime classification)
+- **Mock ticker live-mode guard** (`market_data.py`) — in live mode, refuses to serve mock data when exchanges unreachable
+- **DB session leak** (`web/dependencies.py`) — `get_db()` fixed to use `yield` + `session.close()`
+
+#### Warning 1: Email service wired into Genesis
+- Genesis `__init__` now accepts `email_service` parameter
+- Daily report method calls `email_service.send_daily_report()` after DB save and Agora post
+- No-op when SMTP credentials are not configured (graceful degradation)
+
+#### Warning 2: 5 unwired modules now connected
+- **tool_tracker** — wired into `action_executor.py` for both `execute_analysis` and `run_tool` actions. Records tool usage in Redis for outcome correlation.
+- **diversity monitor** — wired into Genesis post-evaluation. Checks genome convergence and posts Agora alert when diversity index drops below threshold (0.3).
+- **equity snapshots** — wired into Genesis cycle (step 10b). Takes equity snapshots for all active agents every cycle.
+- **sanity checker** — wired into Genesis cycle (step 10b). Runs cash balance, equity reconciliation, orphaned position, and stale reservation checks.
+- **email service** — wired into Genesis (see Warning 1) and heartbeat (see Warning 4).
+
+#### Warning 3: 4 dead code files removed
+- `src/agents/opportunities.py` — removed (functionality in action_executor)
+- `src/agents/plans.py` — removed (functionality in action_executor)
+- `src/common/market_data.py` — removed (never used in production)
+- `src/genesis/health_check.py` — removed (superseded by evaluation engine)
+- 4 corresponding test files removed (56 tests that tested dead code)
+
+#### Warning 4: Heartbeat escalation now sends email
+- `_escalate()` in `heartbeat.py` now imports EmailService and sends emergency email on critical health check failures
+- Graceful no-op when SMTP is not configured
+
+#### Warning 5: rank_delta now tracked on dashboard
+- New `_calc_rank_delta()` helper in `pages.py` computes rank change from last evaluation
+- Positive = improved (moved up), negative = declined
+
+#### Warning 6: Sandbox cost cap logs on fail-open
+- Bare `pass` replaced with `logger.warning()` when Redis-based budget check fails
+
+#### Warning 7: CLAUDE.md directory structure updated
+- Removed non-existent `src/council/`, `src/operators/`, `src/social/`, `src/console/`
+- Added real directories: `src/agents/`, `src/trading/`, `src/sandbox/`, `src/genome/`, `src/web/`
+
+### Test Results
+- 743 tests passing (799 - 56 removed dead tests, 0 failures)
+
+## [2.6.0] - 2026-03-23
+
+### Fixed — Library Textbook Pipeline
+
+Diagnosed and fixed every broken link in the textbook injection chain. Agents were not receiving Library content during reflection cycles due to three compounding bugs.
+
+#### Bugs Found & Fixed
+
+1. **Asyncio deadlock killed reflection library injection** — `_build_reflection_library_content()` in context_assembler.py checked `if loop.is_running(): return ""`. In production (everything async), the loop is ALWAYS running, so this method always returned empty. Fix: made `select_for_reflection()` synchronous (it only does DB queries and file I/O) and removed the broken asyncio wrapper.
+
+2. **5 of 8 summary files missing** — `data/library/summaries/` had only 3 files (thinking_efficiently, market_mechanics, risk_management). The reflection library selector referenced 5 others that didn't exist. Fix: created all 5 missing summaries (strategy_categories, crypto_fundamentals, technical_analysis, defi_protocols, exchange_apis) — concise ~15-line summaries matching the existing style.
+
+3. **WEAKNESS_TO_RESOURCE filenames mismatched** — the mapping used names like `05_technical_analysis_summary.md` (numbered prefix + `_summary` suffix) but no files matched that pattern. Fix: aligned filenames to match the actual summary directory convention (e.g., `technical_analysis.md`). Updated fallback logic to search textbooks by keyword instead of exact name.
+
+4. **CLAUDE.md PLACEHOLDER marker** — line 62 said textbooks were "(PLACEHOLDER — content pending review)" despite all 8 having real content since Phase 2B. Fix: updated to reflect actual state.
+
+#### Verification
+- All 8 textbooks in `data/library/textbooks/` confirmed AVAILABLE
+- All 8 summaries in `data/library/summaries/` confirmed present
+- Orientation loads 3 summaries per role (2 for critic) — all load successfully
+- Reflection library maps 12 role/metric combinations — all resolve to content
+- Simulated Scout orientation: 4425 chars of training material injected
+- Simulated Scout reflection with low signal_quality: technical_analysis.md correctly offered
+
+### Changed
+- `src/personality/reflection_library.py` v1.1.0 → v1.2.0 — sync `select_for_reflection()`, fixed filenames, improved fallback
+- `src/agents/context_assembler.py` v1.3.0 → v1.4.0 — removed broken asyncio wrapper
+- `tests/test_reflection_library.py` — removed async from test methods
+- `CLAUDE.md` — removed PLACEHOLDER marker for textbooks
+
+### Added
+- `data/library/summaries/strategy_categories.md` — NEW
+- `data/library/summaries/crypto_fundamentals.md` — NEW
+- `data/library/summaries/technical_analysis.md` — NEW
+- `data/library/summaries/defi_protocols.md` — NEW
+- `data/library/summaries/exchange_apis.md` — NEW
+
+## [2.5.0] - 2026-03-23
+
+### Added — CAD Accounting Conversion
+
+Two-layer financial system: agents trade in USDT, owner sees everything in CAD.
+
+#### Currency Service (`src/common/currency_service.py`)
+- **CurrencyService** — fetches live USDT/CAD rate from Kraken, Redis cache (5min TTL), fallback rates
+- Methods: `get_usdt_cad_rate()`, `usdt_to_cad()`, `cad_to_usdt()`, `usd_to_cad()`, `get_usd_cad_rate()`
+- Manual override config for testing (`usdt_cad_manual_override`)
+- Local in-memory cache + Redis cache for hot-path performance
+
+#### Treasury in CAD
+- Starting treasury: C$500 (configurable via `STARTING_TREASURY`)
+- `system_state.total_treasury` and `peak_treasury` now denominated in CAD
+- `treasury_currency` column added to SystemState
+- Capital allocation: treasury deducts CAD, converts to USDT for agent
+- Capital reclamation: agent USDT → converts to CAD → adds to treasury
+- `get_treasury_balance()` returns CAD values with USDT/CAD rate
+
+#### P&L Dual-Tracking
+- Evaluation model: added `pnl_gross_cad`, `pnl_net_cad`, `api_cost_cad` columns
+- Agent model: added `total_true_pnl_cad` column
+- DailyReport model: added `usdt_cad_rate` column
+- Accountant: `calculate_agent_pnl()` returns both USDT and CAD values
+- API costs (USD) converted to CAD via `usd_to_cad()`
+- System summary includes `usdt_cad_rate`, `usd_cad_rate`, CAD-converted API spend
+
+#### Dashboard & Reports — All C$
+- All 6 dashboard templates updated: `$` → `C$`
+- Top bar, nav, system page, agent detail, agent cards, system status
+- API route dollar formatting updated (`api_system.py`)
+- Genesis cycle log and daily report use `C$` prefix
+- Daily report includes USDT/CAD rate in header
+- `clean_slate.py` and `syndicate_services.py` use `config.starting_treasury`
+
+#### Config
+- 7 new variables: `HOME_CURRENCY`, `STARTING_TREASURY`, `CURRENCY_CACHE_TTL_SECONDS`, `USD_CAD_FALLBACK_RATE`, `USDT_CAD_FALLBACK_RATE`, `USDT_CAD_MANUAL_OVERRIDE`, `USD_CAD_MANUAL_OVERRIDE`
+
+### Added — Kraken Pairs Expansion
+
+Queried Kraken live: 14 of top 20 crypto by market cap confirmed available as /USDT pairs.
+
+#### Confirmed Pairs (all tested with ticker + OHLCV)
+BTC, ETH, BNB, XRP, SOL, ADA, DOGE, AVAX, DOT, LINK, SHIB, TON, LTC, BCH
+
+#### Not Available on Kraken
+TRX, MATIC, UNI, NEAR, APT, ICP
+
+#### Scout Watchlist Updates
+- Default scout watchlist: 14 confirmed pairs (was 10)
+- Per-scout splits: `SCOUT_WATCHLISTS` dict in orientation.py
+  - Scout-Alpha: BTC/ETH/SOL + XRP/DOGE/ADA/LINK/LTC (8 pairs)
+  - Scout-Beta: BTC/ETH/SOL + BNB/AVAX/DOT/SHIB/TON/BCH (9 pairs)
+  - 3-pair overlap (BTC/ETH/SOL) ensures no blind spots on majors
+- Strategist default watchlist expanded to include SOL
+- Watchlist extraction now accepts agent name for per-scout routing
+
+#### Tests
+- 17 new tests for CurrencyService + CAD integration
+- Total: 799 tests passing
+
+### Changed
+- `src/common/currency_service.py` v1.0.0 — NEW
+- `src/common/config.py` v1.4.0 → v1.5.0 — CAD config variables
+- `src/common/models.py` — CAD columns on Agent, Evaluation, SystemState, DailyReport
+- `src/genesis/treasury.py` v0.2.0 → v0.3.0 — CAD treasury, CurrencyService integration
+- `src/genesis/genesis.py` — C$ formatting in cycle logs, daily reports
+- `src/genesis/boot_sequence.py` — CAD→USDT conversion during spawn
+- `src/risk/accountant.py` v1.1.0 → v1.2.0 — dual USDT/CAD P&L, CurrencyService
+- `src/agents/orientation.py` v1.5.0 → v1.6.0 — 14 confirmed Kraken pairs, per-scout splits
+- `scripts/clean_slate.py` — uses config.starting_treasury
+- `scripts/syndicate_services.py` — uses config.starting_treasury
+- 6 web templates — $ → C$
+- `src/web/routes/api_system.py` — C$ formatting
+- `.env.example` — CAD config section
+- `tests/conftest.py` — MockCurrencyService fixtures
+
+## [2.4.0] - 2026-03-23
+
+### Fixed — Scout Starvation Problem
+
+The pipeline death spiral (no Scout opps → no plans → no trades → everyone dies) was caused by Scouts choosing `go_idle` indefinitely. Four fixes applied:
+
+- **Expanded watchlists** — default Scout watchlist from 3 pairs to 10 (added XRP, DOGE, ADA, AVAX, LINK, DOT, MATIC) for broader market coverage
+- **Scout role rewrite** — replaced "A bad Scout wastes everyone's time with noise" (which discouraged output) with "silence is the worst signal — cast a wide net"
+- **Discovery phase directive** — new Scouts (< 50 cycles) get explicit instructions to broadcast aggressively. Confidence 4-5 is enough. Downstream agents filter.
+- **Idle streak pressure** — after 3+ consecutive idle cycles, Scouts get escalating warnings that continued silence = termination
+- **go_idle warning** — action description now warns that consecutive idle cycles count against evaluation
+- **3 new config variables** — `scout_min_confidence_threshold` (5), `scout_discovery_phase_cycles` (50), `scout_max_consecutive_idle` (3)
+
+### Changed
+- `src/agents/roles.py` v1.1.0 — Scout description rewrite, go_idle warning
+- `src/agents/context_assembler.py` v1.3.0 — `_build_scout_directive()` method (discovery phase + idle streak)
+- `src/agents/orientation.py` v1.5.0 — expanded default watchlists
+- `src/common/config.py` v1.3.0 — 3 new Scout pipeline config variables
+
 ## [2.3.0] - 2026-03-22
 
 ### Added — Phase 8C: Code Sandbox & Strategy Genome

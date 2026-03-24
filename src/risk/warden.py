@@ -53,7 +53,10 @@ class Warden:
             self.db_session_factory = sessionmaker(bind=engine)
 
         # Redis
-        self.redis = redis.Redis.from_url(config.redis_url, decode_responses=True)
+        self.redis = redis.Redis.from_url(
+            config.redis_url, decode_responses=True,
+            socket_timeout=10, socket_connect_timeout=5, retry_on_timeout=True,
+        )
 
         # Configuration
         self.CIRCUIT_BREAKER_THRESHOLD = config.circuit_breaker_threshold

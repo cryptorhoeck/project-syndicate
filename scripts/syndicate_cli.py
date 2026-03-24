@@ -28,6 +28,8 @@ from scripts.syndicate_services import (
     clean_slate, get_system_status,
     launch_all, shutdown_all,
     start_arena, stop_arena,
+    start_postgresql, stop_postgresql,
+    start_memurai, stop_memurai,
 )
 
 
@@ -74,6 +76,8 @@ def display_menu(console: Console, status: dict) -> None:
         "[bold cyan][6][/bold cyan] View Logs",
         "[bold cyan][7][/bold cyan] Clean Slate",
         "[bold cyan][8][/bold cyan] Settings",
+        "[bold cyan][9][/bold cyan] Services",
+        "[bold cyan][S][/bold cyan] Smoke Test",
         "[bold cyan][0][/bold cyan] Exit",
     ]
     menu_text = "\n  ".join(menu_items)
@@ -335,6 +339,68 @@ def menu_settings(config: dict, console: Console) -> dict:
     return config
 
 
+def menu_services(config: dict, console: Console) -> None:
+    """Individual service start/stop submenu."""
+    while True:
+        pg_up = check_postgresql(config)
+        mem_up = check_memurai(config)
+        arena_up = check_arena(config)
+
+        def _dot(up: bool) -> str:
+            return "[green]ONLINE[/green] " if up else "[red]OFFLINE[/red]"
+
+        console.print()
+        console.print("  [bold]Services[/bold]")
+        console.print(f"  PostgreSQL: {_dot(pg_up)}   Memurai: {_dot(mem_up)}   Arena: {_dot(arena_up)}")
+        console.print()
+        console.print(f"  [cyan][1][/cyan] {'Stop' if pg_up else 'Start'} PostgreSQL")
+        console.print(f"  [cyan][2][/cyan] {'Stop' if mem_up else 'Start'} Memurai")
+        console.print(f"  [cyan][3][/cyan] {'Stop' if arena_up else 'Start'} Arena")
+        console.print("  [cyan][0][/cyan] Back")
+
+        choice = input("\n  Choice: ").strip()
+        if choice == "1":
+            if pg_up:
+                stop_postgresql(config, console)
+            else:
+                start_postgresql(config, console)
+        elif choice == "2":
+            if mem_up:
+                stop_memurai(config, console)
+            else:
+                start_memurai(config, console)
+        elif choice == "3":
+            if arena_up:
+                stop_arena(config, console)
+            else:
+                start_arena(config, console)
+        elif choice == "0":
+            return
+
+
+def menu_smoke_test(config: dict, console: Console) -> None:
+    """Run the pre-launch smoke test."""
+    console.print()
+    console.print("[bold]  SMOKE TEST[/bold]")
+    console.print("  " + "─" * 40)
+    try:
+        result = subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "scripts" / "smoke_test.py")],
+            cwd=str(PROJECT_ROOT),
+            timeout=60,
+        )
+        if result.returncode == 0:
+            console.print("  [green bold]GREEN — ready to launch[/green bold]")
+        elif result.returncode == 2:
+            console.print("  [yellow bold]YELLOW — non-critical warnings[/yellow bold]")
+        else:
+            console.print("  [red bold]RED — blocking issues found[/red bold]")
+    except Exception as e:
+        console.print(f"  [red]Smoke test failed: {e}[/red]")
+    console.print()
+    input("  Press Enter to return to menu...")
+
+
 def menu_exit(config: dict, console: Console) -> bool:
     """Handle exit. Returns True if should exit, False to stay in menu."""
     status = get_system_status(config)
@@ -391,6 +457,10 @@ def main():
             menu_clean_slate(config, console)
         elif choice == "8":
             config = menu_settings(config, console)
+        elif choice == "9":
+            menu_services(config, console)
+        elif choice.upper() == "S":
+            menu_smoke_test(config, console)
         elif choice == "0":
             if menu_exit(config, console):
                 break

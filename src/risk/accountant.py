@@ -5,9 +5,12 @@ Pure calculation engine. No LLM.
 Handles P&L tracking, Sharpe ratio, composite scoring, leaderboard,
 thinking tax collection, and system-wide financial summaries.
 Phase 3.5: Multi-model cost tracking, cache savings, optimization stats.
+
+All owner-facing values are in CAD.  Internal trading P&L is in USDT.
+API costs are in USD.  Both are converted to CAD via CurrencyService.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import math
 from datetime import datetime, timedelta, timezone
@@ -40,13 +43,22 @@ SONNET_OUTPUT_RATE = 15.0
 class Accountant:
     """Pure calculation engine for all financial metrics."""
 
-    def __init__(self, db_session_factory: sessionmaker | None = None) -> None:
+    def __init__(self, db_session_factory: sessionmaker | None = None, currency_service=None) -> None:
         self.log = logger.bind(component="accountant")
+        self._currency = currency_service
         if db_session_factory:
             self.db_session_factory = db_session_factory
         else:
             engine = create_engine(config.database_url)
             self.db_session_factory = sessionmaker(bind=engine)
+
+    @property
+    def currency(self):
+        """Lazy-init CurrencyService if not injected."""
+        if self._currency is None:
+            from src.common.currency_service import CurrencyService
+            self._currency = CurrencyService()
+        return self._currency
 
     # ------------------------------------------------------------------
     # P&L Calculation
@@ -85,12 +97,23 @@ class Accountant:
             allocated = agent.capital_allocated if agent else 0.0
             true_pnl_pct = (true_pnl / allocated * 100) if allocated > 0 else 0.0
 
+            # CAD conversions: gross P&L is USDT, API cost is USD
+            gross_pnl_cad = self.currency.usdt_to_cad(gross_pnl)
+            api_cost_cad = self.currency.usd_to_cad(api_cost)
+            true_pnl_cad = gross_pnl_cad - api_cost_cad
+
             return {
                 "agent_id": agent_id,
+                # USDT values (internal)
                 "gross_pnl": round(gross_pnl, 4),
                 "api_cost": round(api_cost, 4),
                 "true_pnl": round(true_pnl, 4),
                 "true_pnl_pct": round(true_pnl_pct, 2),
+                # CAD values (owner-facing)
+                "gross_pnl_cad": round(gross_pnl_cad, 4),
+                "api_cost_cad": round(api_cost_cad, 4),
+                "true_pnl_cad": round(true_pnl_cad, 4),
+                # Common
                 "total_fees": round(total_fees, 4),
                 "trade_count": trade_count,
                 "win_rate": round(len(wins) / trade_count * 100, 1) if trade_count > 0 else 0.0,
@@ -215,7 +238,7 @@ class Accountant:
         )
         composite = round(composite, 4)
 
-        # Persist
+        # Persist (both USDT and CAD)
         with self.db_session_factory() as session:
             agent = session.get(Agent, agent_id)
             if agent:
@@ -223,6 +246,7 @@ class Accountant:
                 agent.total_gross_pnl = pnl_data["gross_pnl"]
                 agent.total_api_cost = pnl_data["api_cost"]
                 agent.total_true_pnl = pnl_data["true_pnl"]
+                agent.total_true_pnl_cad = pnl_data["true_pnl_cad"]
                 session.commit()
 
         self.log.info(
@@ -471,16 +495,25 @@ class Accountant:
             )
             savings_alltime = round(sonnet_baseline_all - float(total_api_spend), 4)
 
+            # Currency rates for the summary
+            usdt_cad_rate = self.currency.get_usdt_cad_rate()
+            usd_cad_rate = self.currency.get_usd_cad_rate()
+
             return {
-                "total_treasury": round(total_treasury, 2),
-                "peak_treasury": round(peak_treasury, 2),
-                "total_api_spend": round(float(total_api_spend), 4),
-                "total_api_spend_today": round(float(today_api_spend), 4),
+                "total_treasury": round(total_treasury, 2),  # CAD
+                "peak_treasury": round(peak_treasury, 2),  # CAD
+                "total_api_spend": round(float(total_api_spend), 4),  # USD
+                "total_api_spend_today": round(float(today_api_spend), 4),  # USD
+                "total_api_spend_cad": round(float(total_api_spend) * usd_cad_rate, 4),
+                "total_api_spend_today_cad": round(float(today_api_spend) * usd_cad_rate, 4),
                 "active_agents": active_count,
                 "hibernating_agents": hibernating_count,
                 "alert_status": state.alert_status if state else "unknown",
                 "current_regime": state.current_regime if state else "unknown",
                 "distance_from_circuit_breaker_pct": distance_from_cb,
+                "currency": config.home_currency,
+                "usdt_cad_rate": usdt_cad_rate,
+                "usd_cad_rate": usd_cad_rate,
                 # Phase 3.5: Cost optimization stats
                 "estimated_savings_today": max(0, savings_today),
                 "estimated_savings_alltime": max(0, savings_alltime),

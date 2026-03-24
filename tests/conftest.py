@@ -9,6 +9,49 @@ from sqlalchemy.orm import sessionmaker
 from src.common.models import Agent, Base, SystemState
 
 
+class MockCurrencyService:
+    """Mock CurrencyService that returns rate=1.0 (no conversion).
+
+    Used by existing tests so that CAD conversion doesn't change
+    previously-expected numeric values.
+    """
+
+    def __init__(self, rate: float = 1.0):
+        self._rate = rate
+
+    def get_usdt_cad_rate(self) -> float:
+        return self._rate
+
+    def get_usd_cad_rate(self) -> float:
+        return self._rate
+
+    def usdt_to_cad(self, amount: float) -> float:
+        return round(amount * self._rate, 6)
+
+    def cad_to_usdt(self, amount: float) -> float:
+        if self._rate == 0:
+            return 0.0
+        return round(amount / self._rate, 6)
+
+    def usd_to_cad(self, amount: float) -> float:
+        return round(amount * self._rate, 6)
+
+    def invalidate_cache(self) -> None:
+        pass
+
+
+@pytest.fixture
+def mock_currency():
+    """Mock CurrencyService with 1:1 rate (no conversion)."""
+    return MockCurrencyService(rate=1.0)
+
+
+@pytest.fixture
+def mock_currency_realistic():
+    """Mock CurrencyService with realistic 1.38 CAD/USDT rate."""
+    return MockCurrencyService(rate=1.38)
+
+
 @pytest.fixture
 def db_engine():
     """Create an in-memory SQLite engine for testing."""

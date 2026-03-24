@@ -187,9 +187,20 @@ def _escalate(check_name: str) -> None:
     )
     _flag_issue_in_db(check_name)
 
-    # Placeholder for future escalation actions:
-    # - Send email alert
-    # - Trigger exchange API kill switch
+    # Email alert (sends if SMTP is configured, no-op otherwise)
+    try:
+        from src.reports.email_service import EmailService
+        import asyncio
+        email = EmailService()
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(email.send_emergency(
+            f"CRITICAL: Health check '{check_name}' failed "
+            f"{MAX_CONSECUTIVE_FAILURES} consecutive times. "
+            f"Immediate investigation required."
+        ))
+        loop.close()
+    except Exception as exc:
+        log.error("escalation_email_failed", check=check_name, error=str(exc))
 
 
 def _update_heartbeat() -> None:

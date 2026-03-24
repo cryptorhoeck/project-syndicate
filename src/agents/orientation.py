@@ -7,7 +7,7 @@ Validates the agent can produce a coherent first output.
 Sets initial watchlist based on role and first-cycle output.
 """
 
-__version__ = "1.4.0"
+__version__ = "1.6.0"
 
 import logging
 import os
@@ -39,11 +39,30 @@ ROLE_SUMMARIES: dict[str, list[str]] = {
 }
 
 # Default initial watchlists by role
+# 14 confirmed Kraken /USDT pairs from top 20 by market cap.
+# Scout-Alpha and Scout-Beta get different splits with BTC/ETH/SOL overlap.
 DEFAULT_WATCHLISTS: dict[str, list[str]] = {
-    "scout": ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
-    "strategist": ["BTC/USDT", "ETH/USDT"],
+    "scout": [
+        "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT",
+        "ADA/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT", "SHIB/USDT",
+        "BNB/USDT", "TON/USDT", "LTC/USDT", "BCH/USDT",
+    ],
+    "strategist": ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
     "critic": [],
     "operator": [],
+}
+
+# Per-scout watchlist splits for cold start boot sequence.
+# BTC, ETH, SOL overlap on both so neither has a blind spot on major movers.
+SCOUT_WATCHLISTS: dict[str, list[str]] = {
+    "Scout-Alpha": [
+        "BTC/USDT", "ETH/USDT", "SOL/USDT",  # overlap
+        "XRP/USDT", "DOGE/USDT", "ADA/USDT", "LINK/USDT", "LTC/USDT",
+    ],
+    "Scout-Beta": [
+        "BTC/USDT", "ETH/USDT", "SOL/USDT",  # overlap
+        "BNB/USDT", "AVAX/USDT", "DOT/USDT", "SHIB/USDT", "TON/USDT", "BCH/USDT",
+    ],
 }
 
 
@@ -320,7 +339,7 @@ class OrientationProtocol:
 
         # Extract initial watchlist from output
         parsed = validation.parsed
-        watchlist = self._extract_watchlist(parsed, agent.type)
+        watchlist = self._extract_watchlist(parsed, agent.type, agent.name)
 
         # Self-naming with dynasty numeral rules
         chosen_name = parsed.get("chosen_name", "")
@@ -449,12 +468,13 @@ Demonstrate that you understand your role, the cost of thinking, and the rules o
 
         return "\n\n".join(sections)
 
-    def _extract_watchlist(self, parsed: dict, role: str) -> list[str]:
+    def _extract_watchlist(self, parsed: dict, role: str, agent_name: str = "") -> list[str]:
         """Extract initial watchlist from the first-cycle output.
 
         Args:
             parsed: Parsed JSON output.
             role: Agent role.
+            agent_name: Agent name (for per-scout watchlist splits).
 
         Returns:
             List of market symbols.
@@ -476,9 +496,12 @@ Demonstrate that you understand your role, the cost of thinking, and the rules o
             if market:
                 watchlist = [market]
 
-        # Fall back to defaults
+        # Fall back to defaults — use per-scout splits if available
         if not watchlist:
-            watchlist = DEFAULT_WATCHLISTS.get(role, [])
+            if role == "scout" and agent_name in SCOUT_WATCHLISTS:
+                watchlist = SCOUT_WATCHLISTS[agent_name]
+            else:
+                watchlist = DEFAULT_WATCHLISTS.get(role, [])
 
         return watchlist
 

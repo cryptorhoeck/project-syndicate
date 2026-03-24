@@ -31,7 +31,7 @@
 
 <!-- Key metrics -->
 <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-    {% with label="True P&L", value="${%.2f"|format(agent.total_true_pnl) + "}", color="text-emerald-400" if agent.total_true_pnl >= 0 else "text-rose-400" %}
+    {% with label="True P&L (CAD)", value="C$%.2f"|format(agent.total_true_pnl_cad|default(0)) + "", color="text-emerald-400" if agent.total_true_pnl_cad|default(0) >= 0 else "text-rose-400" %}
     {% include "components/stat_card.html" %}
     {% endwith %}
     {% with label="Sharpe Ratio", value="%.2f"|format(agent.sharpe_ratio|default(0)) %}

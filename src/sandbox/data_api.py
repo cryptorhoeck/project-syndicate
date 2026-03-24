@@ -11,6 +11,8 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
+from src.common.config import config
+
 logger = logging.getLogger(__name__)
 
 
@@ -115,7 +117,10 @@ class SandboxDataAPI:
         # Price data from Redis (populated by run_price_fetcher.py)
         try:
             import redis as _redis
-            r = _redis.Redis.from_url("redis://localhost:6379")
+            r = _redis.Redis.from_url(
+                config.redis_url,
+                socket_timeout=10, socket_connect_timeout=5, retry_on_timeout=True,
+            )
 
             # Tickers
             all_symbols = list(set(self.watchlist + ["BTC/USDT", "ETH/USDT"]))

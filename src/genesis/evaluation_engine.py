@@ -350,6 +350,19 @@ The warning will be shown to the agent if they survive."""
                 messages=[{"role": "user", "content": prompt}],
             )
 
+            # Track cost through Accountant
+            try:
+                from src.risk.accountant import Accountant
+                acct = Accountant(db_session_factory=self.db_factory)
+                import asyncio
+                asyncio.get_event_loop().run_until_complete(acct.track_api_call(
+                    agent_id=0, model=config.model_sonnet,
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                ))
+            except Exception:
+                pass
+
             text = response.content[0].text
             # Extract JSON from response
             import re
@@ -533,6 +546,18 @@ The warning will be shown to the agent if they survive."""
                 )
                 words = last_words_response.content[0].text
                 agent.last_words = str(words)[:500] if words else None
+                # Track cost
+                try:
+                    from src.risk.accountant import Accountant
+                    acct = Accountant(db_session_factory=self.db_factory)
+                    import asyncio
+                    asyncio.get_event_loop().run_until_complete(acct.track_api_call(
+                        agent_id=agent.id, model=config.death_last_words_model,
+                        input_tokens=last_words_response.usage.input_tokens,
+                        output_tokens=last_words_response.usage.output_tokens,
+                    ))
+                except Exception:
+                    pass
             except Exception as e:
                 logger.debug(f"Last words generation failed for {agent.name}: {e}")
 
@@ -710,6 +735,19 @@ Respond with JSON:
                 max_tokens=1000,
                 messages=[{"role": "user", "content": prompt}],
             )
+
+            # Track cost
+            try:
+                from src.risk.accountant import Accountant
+                acct = Accountant(db_session_factory=self.db_factory)
+                import asyncio
+                asyncio.get_event_loop().run_until_complete(acct.track_api_call(
+                    agent_id=0, model=config.model_default,
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                ))
+            except Exception:
+                pass
 
             text = response.content[0].text
             import re

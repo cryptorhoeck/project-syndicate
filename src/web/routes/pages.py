@@ -16,10 +16,32 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 from datetime import datetime, timedelta, timezone
 
-from src.common.models import Agent, AgentCycle, Dynasty, LibraryEntry, Lineage, SystemState
+from src.common.models import Agent, AgentCycle, Dynasty, Evaluation, LibraryEntry, Lineage, SystemState
 from src.web.dependencies import get_common_context
 
 router = APIRouter()
+
+
+def _calc_rank_delta(agent, session) -> int:
+    """Calculate rank change since last evaluation.
+
+    Positive = improved (moved up), negative = declined.
+    """
+    try:
+        last_eval = session.execute(
+            select(Evaluation)
+            .where(Evaluation.agent_id == agent.id, Evaluation.role_rank.isnot(None))
+            .order_by(Evaluation.evaluated_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if not last_eval or last_eval.role_rank is None:
+            return 0
+        current_rank = agent.role_rank if hasattr(agent, "role_rank") and agent.role_rank else None
+        if current_rank is None:
+            return 0
+        return last_eval.role_rank - current_rank  # positive = improved
+    except Exception:
+        return 0
 
 
 def _build_agent_card_data(agent, session) -> dict:
@@ -121,7 +143,7 @@ def _build_agent_card_data(agent, session) -> dict:
         "last_cycle_cost": last_cycle_cost,
         "last_status": last_status,
         "dynasty": dynasty_name,
-        "rank_delta": 0,  # TODO: track previous rank
+        "rank_delta": _calc_rank_delta(agent, session)
     }
 
 
