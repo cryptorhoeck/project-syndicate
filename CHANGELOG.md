@@ -2,6 +2,56 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [4.0.0] - 2026-04-13
+
+### Phase 9A — SIP Voting & Colony Maturity
+
+Full democratic governance layer for agent-proposed system changes.
+
+#### Colony Maturity Model
+- 4 stages: NASCENT -> DEVELOPING -> ESTABLISHED -> MATURE
+- Each stage drives governance speed (4hr-24hr debates), strictness, and Genesis posture
+- Maturity can only advance, never regress
+- Transitions posted to Agora system-alerts
+
+#### Parameter Registry
+- 24 seed parameters across 5 categories (evaluation, lifecycle, economics, timing, risk/governance)
+- 3 tiers: Open (standard vote), Structural (75% supermajority), Forbidden (immutable)
+- Runtime parameter reads via `get_param()` helper with config fallback
+- Cumulative drift tracking (softer vs harder changes)
+
+#### SIP Lifecycle
+- Full state machine: DEBATE -> VOTING -> TALLIED -> GENESIS_REVIEW -> OWNER_REVIEW -> IMPLEMENTING -> IMPLEMENTED
+- Prestige-weighted voting (unproven=0.5 through grandmaster=3.0)
+- 60% pass threshold (Tier 1), 75% supermajority (Tier 2)
+- Abstains excluded from denominator
+- Evaluation weight sum-to-1.0 validation at implementation time
+
+#### Agent Actions
+- Updated `propose_sip`: target_parameter, proposed_value, evidence fields
+- New `vote_on_sip`: weighted, deduplicated, Agora-posted
+- New `debate_sip`: position + argument, costs thinking tax
+- New `cosponsor_sip`: required for Tier 2 in mature colonies
+
+#### Genesis Integration
+- Maturity-adaptive ratification posture (permissive -> skeptical)
+- Public vetoes with reasoning, tracked via genesis_veto_used flag
+- Governance seeding for nascent colonies (deferred to runtime)
+- SIP lifecycle advancement in Genesis main cycle
+
+#### Dashboard & API
+- `GET /api/governance/sips` — active SIPs, maturity, drift summary
+- `GET /api/governance/parameters` — full registry with tiers
+- Governance context injected into agent OODA cycles
+
+#### Database
+- 5 new tables: colony_maturity, parameter_registry, parameter_change_log, sip_votes, sip_debates
+- 16 new columns on system_improvement_proposals
+- Alembic migration e5f6a7b8c9d0
+
+#### Tests
+- 45 new tests, 804 total passing
+
 ## [3.1.0] - 2026-04-13
 
 ### Directory Cleanup & Reorganization

@@ -149,6 +149,7 @@ class ContextAssembler:
         memory_text = _safe_build("memory", self._build_memory_context, agent, memory_budget)
         survival_text = _safe_build("survival", self._build_survival_context, agent, budget_status)
         alliance_text = _safe_build("alliance", self._build_alliance_context, agent)
+        governance_text = _safe_build("governance", self._build_governance_context, agent)
 
         # Build user prompt from sections
         if cycle_type == "strategic_review":
@@ -156,7 +157,7 @@ class ContextAssembler:
         elif cycle_type == "reflection":
             user_prompt = self._build_reflection_user_prompt(agent, mandatory_text, priority_text, memory_text)
         else:
-            user_prompt = self._build_normal_user_prompt(mandatory_text, priority_text, memory_text, survival_text, alliance_text)
+            user_prompt = self._build_normal_user_prompt(mandatory_text, priority_text, memory_text, survival_text, alliance_text, governance_text)
 
         total_tokens = count_tokens(system_prompt) + count_tokens(user_prompt)
 
@@ -640,17 +641,122 @@ Watched markets: {agent.watched_markets or []}""" + self._build_evaluation_feedb
         except Exception:
             return ""
 
+    def _build_governance_context(self, agent: Agent) -> str:
+        """Build governance context section (Phase 9A).
+
+        Shows active SIPs in debate/voting, and recently implemented changes.
+        """
+        try:
+            from sqlalchemy import select, func
+            from src.common.models import (
+                ColonyMaturity, SystemImprovementProposal, SIPVote,
+            )
+            from datetime import timedelta
+
+            now = datetime.now(timezone.utc)
+
+            # Colony maturity
+            maturity = self.db.execute(
+                select(ColonyMaturity).limit(1)
+            ).scalar_one_or_none()
+            if not maturity:
+                return ""
+
+            lines = [f"=== GOVERNANCE ==="]
+            lines.append(f"Colony maturity: {maturity.stage.upper()} (Day {maturity.colony_age_days})")
+
+            # SIPs in DEBATE phase
+            debate_sips = list(self.db.execute(
+                select(SystemImprovementProposal).where(
+                    SystemImprovementProposal.lifecycle_status == "debate"
+                )
+            ).scalars().all())
+
+            for sip in debate_sips[:2]:
+                remaining = ""
+                if sip.debate_ends_at:
+                    delta = sip.debate_ends_at.replace(tzinfo=timezone.utc) - now
+                    if delta.total_seconds() > 0:
+                        hrs = int(delta.total_seconds() // 3600)
+                        remaining = f" (closes in {hrs}hr)"
+                target = ""
+                if sip.target_parameter_key:
+                    target = f" Target: {sip.target_parameter_key} -> {sip.proposed_value}."
+                lines.append(
+                    f"\nDEBATE OPEN{remaining}:"
+                    f"\n- SIP #{sip.id}: \"{sip.title}\" by {sip.proposer_agent_name}.{target}"
+                )
+
+            # SIPs in VOTING phase
+            voting_sips = list(self.db.execute(
+                select(SystemImprovementProposal).where(
+                    SystemImprovementProposal.lifecycle_status == "voting"
+                )
+            ).scalars().all())
+
+            for sip in voting_sips[:2]:
+                remaining = ""
+                if sip.voting_ends_at:
+                    delta = sip.voting_ends_at.replace(tzinfo=timezone.utc) - now
+                    if delta.total_seconds() > 0:
+                        hrs = int(delta.total_seconds() // 3600)
+                        remaining = f" (closes in {hrs}hr)"
+
+                pct = f"{sip.vote_pass_percentage * 100:.0f}%" if sip.vote_pass_percentage else "N/A"
+                voted = self.db.execute(
+                    select(SIPVote).where(
+                        SIPVote.sip_id == sip.id,
+                        SIPVote.agent_id == agent.id,
+                    )
+                ).scalar_one_or_none()
+                vote_status = "You have NOT voted." if not voted else f"You voted: {voted.vote}."
+
+                lines.append(
+                    f"\nVOTING OPEN{remaining}:"
+                    f"\n- SIP #{sip.id}: \"{sip.title}\" by {sip.proposer_agent_name}."
+                    f"\n  Tally: {sip.weighted_support:.1f} for, {sip.weighted_oppose:.1f} against. {vote_status}"
+                )
+
+            # Recently implemented (last 7 days)
+            cutoff = now - timedelta(days=7)
+            recent = list(self.db.execute(
+                select(SystemImprovementProposal).where(
+                    SystemImprovementProposal.lifecycle_status == "implemented",
+                    SystemImprovementProposal.implemented_at >= cutoff,
+                ).order_by(SystemImprovementProposal.implemented_at.desc()).limit(3)
+            ).scalars().all())
+
+            if recent:
+                lines.append("\nRECENTLY IMPLEMENTED:")
+                for sip in recent:
+                    if sip.target_parameter_key:
+                        lines.append(
+                            f"- SIP #{sip.id}: {sip.target_parameter_key} changed to {sip.proposed_value}"
+                        )
+                    else:
+                        lines.append(f"- SIP #{sip.id}: \"{sip.title}\" (general)")
+
+            # Only return if there's actual governance activity
+            if len(lines) <= 2 and not debate_sips and not voting_sips and not recent:
+                return ""
+
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
     def _build_normal_user_prompt(
-        self, mandatory: str, priority: str, memory: str, survival: str = "", alliance: str = ""
+        self, mandatory: str, priority: str, memory: str, survival: str = "",
+        alliance: str = "", governance: str = ""
     ) -> str:
         """Build the user prompt for a normal cycle."""
         survival_section = f"\n\n{survival}" if survival else ""
         alliance_section = f"\n\n{alliance}" if alliance else ""
+        governance_section = f"\n\n{governance}" if governance else ""
         return f"""{mandatory}
 
 {priority}
 
-{memory}{survival_section}{alliance_section}
+{memory}{survival_section}{alliance_section}{governance_section}
 
 === YOUR ASSESSMENT ===
 Analyze the situation and choose your action."""

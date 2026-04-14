@@ -2,39 +2,35 @@
 
 ## Last Updated: 2026-04-13
 
-## Phase: Arena Launch Pending (Phase 9 Complete)
+## Phase: 9A Complete — Arena Launch Pending
 
-### Completed This Session — Directory Cleanup & Reorganization
+### Completed This Session
 
-#### Full Codebase Audit
-- [x] Directory inventory: 576 project files, 91 source modules, 73 test files
-- [x] Root file triage: 28 files classified (9 operational, 14 reference, 3 dead, 3 misplaced, 4 stale)
-- [x] Code health check: 0 broken imports, 0 orphaned modules, 0 duplicate functionality
-- [x] Test suite: 759 tests (757 pass, 2 known sandbox failures)
-- [x] Config audit: 5 missing .env.example vars identified, 6 unused packages found
+#### Phase 9A: SIP Voting & Colony Maturity (3 tiers)
+- [x] **Tier 1:** Colony maturity tracker, parameter registry, 24 seed parameters, migration, tests (23 tests)
+- [x] **Tier 2:** SIP lifecycle manager, vote weights, debate/vote/cosponsor actions, action handlers (15 tests)
+- [x] **Tier 3:** Genesis ratification with maturity-adaptive posture, param_reader helper, governance context injection, dashboard API, Genesis cycle wiring (7 tests)
 
-#### Directory Reorganization
-- [x] Created `docs/kickoffs/` — moved 11 PHASE_*_KICKOFF.md files
-- [x] Created `docs/archive/` — moved 6 historical docs (original chat, scorecard, React mockup, etc.)
-- [x] Deleted `syndicateapi.png` (orphaned, unreferenced)
-- [x] Cleaned 19 `__pycache__` directories
+#### Key Design Decisions Implemented
+- Colony maturity drives governance speed (4hr-24hr debate/vote periods)
+- Prestige-weighted voting (0.5x unproven through 3.0x grandmaster)
+- 60% pass threshold (Tier 1), 75% supermajority (Tier 2), Tier 3 immutable
+- Genesis ratifies (not decides) — vetoes are public and tracked
+- Parameter registry is the implementation target with safe ranges
+- Everything public via Agora
 
-#### Configuration Cleanup
-- [x] `.gitignore` — added `.claude/` entry
-- [x] `requirements.txt` — removed 6 unused packages (langgraph, langchain-*, web3, ta, apscheduler)
-- [x] Alembic migration fork fixed — linearized chain (CAD columns → last_words)
-
-#### Documentation Updates
-- [x] `CLAUDE.md` — comprehensive rewrite reflecting Phase 9 reality (Python 3.13, custom OODA loop, 48 tables, all phases documented, corrected technical decisions)
-- [x] `DEFERRED_ITEMS_TRACKER.md` — updated to 2026-04-13, added CLEANUP ITEMS section with 4 new items
-- [x] `CURRENT_STATUS.md` — this file
+#### Directory Cleanup (also this session)
+- [x] Moved 11 kickoff docs to docs/kickoffs/, 6 historical docs to docs/archive/
+- [x] Removed 6 unused packages from requirements.txt
+- [x] Fixed Alembic migration fork
+- [x] Rewrote CLAUDE.md to reflect reality
 
 ### Test Status
-- 759 tests (757 pass, 2 known sandbox failures)
-- 148 deprecation warnings (SQLAlchemy legacy API, datetime.utcnow)
+- 804 tests passing, 0 failures
+- 45 new Phase 9A tests across colony maturity, parameter registry, SIP lifecycle, voting, implementation, governance API
 
 ### Previously Completed
-- Phase 9: Production Readiness Testing (hardening, integration, stress)
+- Phase 9: Production Readiness Testing
 - Phase 8C: Code Sandbox & Strategy Genome
 - Phase 8B: Survival Instinct
 - Phase 8A: CLI Launcher
@@ -45,17 +41,19 @@
 ### What's Next — The Arena
 - [ ] Get valid Anthropic API key (smoke test will go GREEN)
 - [ ] Run clean_slate to apply all new DB columns
+- [ ] Run scripts/seed_parameter_registry.py to populate parameter registry
 - [ ] Double-click syndicate.bat → [S] Smoke Test → GREEN → [1] Launch All
-- [ ] Watch agents trade 14 Kraken pairs, evolve, compete in CAD
+- [ ] Watch agents trade, evolve, debate SIPs, vote on governance
 
 ### Known Issues
 - **Anthropic API key invalid** — only remaining blocker for Arena
 - SMTP not configured (email alerts non-functional)
-- 2 sandbox test failures (RestrictedPython compatibility, pre-existing)
+- CLI SIP review menu option not yet added (owner can review via DB or future CLI update)
+- Genesis governance seeding prompt (for nascent colonies) deferred to runtime
 
 ### Environment Notes
 - Python venv: E:\project syndicate\.venv (Python 3.13.7)
-- PostgreSQL: C:/ProDesk/pgsql/bin/ (48 tables, running)
+- PostgreSQL: C:/ProDesk/pgsql/bin/ (53 tables after migration)
 - Memurai: C:/Program Files/Memurai/ (running)
 - Web: http://localhost:8000
 - CLI: syndicate.bat (option [S] for smoke test)

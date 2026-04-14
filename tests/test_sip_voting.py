@@ -619,6 +619,105 @@ class TestImplementation:
         assert val == 12.0
 
 
+# ── Tier 3 Tests ────────────────────────────────────────
+
+class TestGenesisRatification:
+
+    @pytest.mark.asyncio
+    async def test_owner_approve_advances_to_implemented(self, db_session):
+        """Owner approval moves general SIP through implementing to implemented."""
+        from src.governance.sip_lifecycle import SIPLifecycleManager
+
+        tracker = ColonyMaturityTracker()
+        registry = ParameterRegistry()
+        lifecycle = SIPLifecycleManager(tracker, registry)
+
+        agent = _seed_agent(db_session)
+        sip = _seed_sip(db_session, agent_id=agent.id)
+        sip.lifecycle_status = "owner_review"
+        sip.owner_decision = "accepted"
+        db_session.flush()
+
+        await lifecycle.advance_all_sips(db_session)
+        # General SIP (no target param) goes straight through to implemented
+        assert sip.lifecycle_status == "implemented"
+
+    @pytest.mark.asyncio
+    async def test_owner_reject_sets_rejected(self, db_session):
+        """Owner rejection sets lifecycle_status to rejected_by_owner."""
+        from src.governance.sip_lifecycle import SIPLifecycleManager
+
+        tracker = ColonyMaturityTracker()
+        registry = ParameterRegistry()
+        lifecycle = SIPLifecycleManager(tracker, registry)
+
+        agent = _seed_agent(db_session)
+        sip = _seed_sip(db_session, agent_id=agent.id)
+        sip.lifecycle_status = "owner_review"
+        sip.owner_decision = "rejected"
+        sip.owner_notes = "Not now"
+        db_session.flush()
+
+        await lifecycle.advance_all_sips(db_session)
+        assert sip.lifecycle_status == "rejected_by_owner"
+
+    @pytest.mark.asyncio
+    async def test_owner_defer_stays(self, db_session):
+        """Owner defer keeps SIP in owner_review status."""
+        from src.governance.sip_lifecycle import SIPLifecycleManager
+
+        tracker = ColonyMaturityTracker()
+        registry = ParameterRegistry()
+        lifecycle = SIPLifecycleManager(tracker, registry)
+
+        agent = _seed_agent(db_session)
+        sip = _seed_sip(db_session, agent_id=agent.id)
+        sip.lifecycle_status = "owner_review"
+        sip.owner_decision = "deferred"
+        db_session.flush()
+
+        await lifecycle.advance_all_sips(db_session)
+        assert sip.lifecycle_status == "owner_review"
+
+
+class TestParameterWiring:
+
+    @pytest.mark.asyncio
+    async def test_param_reader_returns_value(self, db_session):
+        """get_param reads from registry."""
+        from src.governance.param_reader import get_param
+
+        _seed_param(db_session, current=14.0)
+        val = await get_param("lifecycle.survival_clock_days", db_session)
+        assert val == 14.0
+
+    @pytest.mark.asyncio
+    async def test_param_reader_uses_fallback(self, db_session):
+        """get_param falls back when key doesn't exist."""
+        from src.governance.param_reader import get_param
+
+        val = await get_param("nonexistent.param", db_session, fallback=42.0)
+        assert val == 42.0
+
+    @pytest.mark.asyncio
+    async def test_param_reader_raises_without_fallback(self, db_session):
+        """get_param raises without fallback for missing key."""
+        from src.governance.param_reader import get_param
+
+        with pytest.raises(KeyError):
+            await get_param("nonexistent.param", db_session)
+
+
+class TestGovernanceAPI:
+
+    def test_governance_api_endpoint_exists(self):
+        """Governance API router is importable."""
+        from src.web.routes.api_governance import router
+        routes = [r.path for r in router.routes]
+        assert "/api/governance/sips" in routes
+        assert "/api/governance/parameters" in routes
+
+
 class TestSeedScript:
 
     def test_seed_script_is_idempotent(self, db_session):

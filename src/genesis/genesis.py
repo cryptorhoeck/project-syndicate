@@ -254,7 +254,32 @@ class GenesisAgent(BaseAgent):
             except Exception as exc:
                 self.log.debug("intel_settlement_skipped", error=str(exc))
 
-            # 9d. HIBERNATION WAKE CHECK — prevent total ecosystem death
+            # 9d. GOVERNANCE — Colony Maturity + SIP Lifecycle (Phase 9A)
+            try:
+                from src.governance.maturity_tracker import ColonyMaturityTracker
+                from src.governance.sip_lifecycle import SIPLifecycleManager
+                from src.governance.parameter_registry import ParameterRegistry
+
+                with self.db_session_factory() as gov_session:
+                    maturity_tracker = ColonyMaturityTracker()
+                    stage, did_transition = await maturity_tracker.update(
+                        gov_session, agora_service=self.agora
+                    )
+                    cycle_report["colony_maturity"] = stage.value if hasattr(stage, 'value') else str(stage)
+
+                    sip_lifecycle = SIPLifecycleManager(
+                        maturity_tracker, ParameterRegistry(), self.agora
+                    )
+                    await sip_lifecycle.advance_all_sips(gov_session)
+
+                    # Genesis reviews tallied SIPs (passed the popular vote)
+                    await self._review_tallied_sips(gov_session, maturity_tracker)
+
+                    gov_session.commit()
+            except Exception as exc:
+                self.log.debug("governance_cycle_skipped", error=str(exc))
+
+            # 9e. HIBERNATION WAKE CHECK — prevent total ecosystem death
             await self._check_hibernation_wake()
 
             # 10. HOURLY MAINTENANCE (expired messages cleanup)
@@ -773,52 +798,54 @@ class GenesisAgent(BaseAgent):
             self.log.info("sip_proposals_found", count=len(sips))
             await self.mark_agora_read("sip-proposals")
 
-            # Phase 8B: Genesis reviews pending SIPs (max 2 per cycle)
-            try:
-                from src.common.models import SystemImprovementProposal
-                with self.db_session_factory() as sip_session:
-                    pending_sips = list(sip_session.execute(
-                        select(SystemImprovementProposal)
-                        .where(
-                            SystemImprovementProposal.status == "proposed",
-                            SystemImprovementProposal.genesis_verdict.is_(None),
-                        )
-                        .limit(2)
-                    ).scalars().all())
+            # Phase 8B/9A: Genesis SIP review
+            # If voting is enabled (Phase 9A), tallied SIPs are handled
+            # in the governance cycle (step 9d). The legacy flow below
+            # only runs when voting is disabled.
+            if not config.sip_voting_enabled:
+                try:
+                    from src.common.models import SystemImprovementProposal
+                    with self.db_session_factory() as sip_session:
+                        pending_sips = list(sip_session.execute(
+                            select(SystemImprovementProposal)
+                            .where(
+                                SystemImprovementProposal.status == "proposed",
+                                SystemImprovementProposal.genesis_verdict.is_(None),
+                            )
+                            .limit(2)
+                        ).scalars().all())
 
-                    for sip in pending_sips:
-                        try:
-                            response = self.claude.messages.create(
-                                model=config.death_last_words_model,  # Haiku for cost efficiency
-                                max_tokens=200,
-                                system="You are Genesis, evaluating a System Improvement Proposal for an AI trading ecosystem.",
-                                messages=[{"role": "user", "content": (
-                                    f"Proposer: {sip.proposer_agent_name}\n"
-                                    f"Title: {sip.title}\nCategory: {sip.category}\n"
-                                    f"Proposal: {sip.proposal[:500]}\nRationale: {sip.rationale[:300]}\n\n"
-                                    f"Respond in JSON: {{\"verdict\": \"approve|reject|defer\", \"reasoning\": \"under 100 words\"}}"
-                                )}],
-                            )
-                            import json
+                        for sip in pending_sips:
                             try:
-                                verdict_data = json.loads(response.content[0].text)
-                                sip.genesis_verdict = verdict_data.get("verdict", "defer")
-                                sip.genesis_reasoning = verdict_data.get("reasoning", "")[:500]
-                            except json.JSONDecodeError:
-                                sip.genesis_verdict = "defer"
-                                sip.genesis_reasoning = response.content[0].text[:500]
-                            sip.status = "reviewed"
-                            # Track cost
-                            await self.accountant.track_api_call(
-                                agent_id=0, model=config.death_last_words_model,
-                                input_tokens=response.usage.input_tokens,
-                                output_tokens=response.usage.output_tokens,
-                            )
-                        except Exception as e:
-                            self.log.debug(f"SIP review failed: {e}")
-                    sip_session.commit()
-            except Exception as e:
-                self.log.debug(f"SIP review cycle failed: {e}")
+                                response = self.claude.messages.create(
+                                    model=config.death_last_words_model,
+                                    max_tokens=200,
+                                    system="You are Genesis, evaluating a System Improvement Proposal for an AI trading ecosystem.",
+                                    messages=[{"role": "user", "content": (
+                                        f"Proposer: {sip.proposer_agent_name}\n"
+                                        f"Title: {sip.title}\nCategory: {sip.category}\n"
+                                        f"Proposal: {sip.proposal[:500]}\nRationale: {sip.rationale[:300]}\n\n"
+                                        f"Respond in JSON: {{\"verdict\": \"approve|reject|defer\", \"reasoning\": \"under 100 words\"}}"
+                                    )}],
+                                )
+                                try:
+                                    verdict_data = json.loads(response.content[0].text)
+                                    sip.genesis_verdict = verdict_data.get("verdict", "defer")
+                                    sip.genesis_reasoning = verdict_data.get("reasoning", "")[:500]
+                                except json.JSONDecodeError:
+                                    sip.genesis_verdict = "defer"
+                                    sip.genesis_reasoning = response.content[0].text[:500]
+                                sip.status = "reviewed"
+                                await self.accountant.track_api_call(
+                                    agent_id=0, model=config.death_last_words_model,
+                                    input_tokens=response.usage.input_tokens,
+                                    output_tokens=response.usage.output_tokens,
+                                )
+                            except Exception as e:
+                                self.log.debug(f"SIP review failed: {e}")
+                        sip_session.commit()
+                except Exception as e:
+                    self.log.debug(f"SIP review cycle failed: {e}")
 
         # Get overall message count for the report
         with self.db_session_factory() as session:
@@ -832,6 +859,108 @@ class GenesisAgent(BaseAgent):
             "messages_last_hour": recent,
             "unread_channels": unread,
         }
+
+    # ------------------------------------------------------------------
+    # Phase 9A: Genesis Ratification of Tallied SIPs
+    # ------------------------------------------------------------------
+
+    async def _review_tallied_sips(self, db_session, maturity_tracker) -> None:
+        """Review SIPs that passed the popular vote. Ratify or veto."""
+        from src.common.models import SystemImprovementProposal, SIPDebate
+        from src.governance.maturity_tracker import MATURITY_CONFIGS, MaturityStage
+
+        tallied = list(db_session.execute(
+            select(SystemImprovementProposal).where(
+                SystemImprovementProposal.lifecycle_status == "tallied"
+            ).limit(2)
+        ).scalars().all())
+
+        if not tallied:
+            return
+
+        config_obj = maturity_tracker.get_config(db_session)
+        posture = config_obj.genesis_posture
+
+        posture_text = {
+            "permissive": "In this early stage, you are inclined to let agents experiment. Only veto if clearly harmful.",
+            "balanced": "Evaluate whether the proposal benefits the ecosystem broadly or primarily serves the proposer.",
+            "conservative": "The colony is established. Changes should be well-justified. Consider whether the current system works well enough.",
+            "skeptical": "The colony is mature. The bar for change is high. Veto unless compelling evidence exists.",
+        }
+
+        for sip in tallied:
+            now = datetime.now(timezone.utc)
+            try:
+                # Get debate arguments
+                debates = db_session.execute(
+                    select(SIPDebate).where(SIPDebate.sip_id == sip.id)
+                ).scalars().all()
+                for_args = [d.argument[:200] for d in debates if d.position == "for"][:3]
+                against_args = [d.argument[:200] for d in debates if d.position == "against"][:3]
+
+                pct = f"{sip.vote_pass_percentage * 100:.0f}%" if sip.vote_pass_percentage else "N/A"
+
+                prompt = (
+                    f"Proposer: {sip.proposer_agent_name}\n"
+                    f"Title: {sip.title}\nCategory: {sip.category}\n"
+                    f"Proposal: {sip.proposal[:500]}\nRationale: {sip.rationale[:300]}\n"
+                    f"Target parameter: {sip.target_parameter_key or 'general proposal'}\n"
+                    f"Proposed value: {sip.proposed_value}\n\n"
+                    f"Vote result: {pct} support ({sip.weighted_support:.1f} for, {sip.weighted_oppose:.1f} against)\n"
+                    f"Debate: {len(debates)} arguments\n"
+                    f"Key arguments FOR: {'; '.join(for_args) or 'None'}\n"
+                    f"Key arguments AGAINST: {'; '.join(against_args) or 'None'}\n\n"
+                    f"Colony maturity: {config_obj.stage.value}\n"
+                    f"{posture_text.get(posture, '')}\n\n"
+                    f'Respond in JSON: {{"decision": "ratify"|"veto", "reasoning": "under 100 words"}}'
+                )
+
+                response = self.claude.messages.create(
+                    model=config.death_last_words_model,
+                    max_tokens=200,
+                    system="You are Genesis, the immortal God Node of an AI trading ecosystem. A SIP has passed the agent vote. You must ratify or veto.",
+                    messages=[{"role": "user", "content": prompt}],
+                )
+
+                try:
+                    verdict = json.loads(response.content[0].text)
+                except json.JSONDecodeError:
+                    verdict = {"decision": "ratify", "reasoning": response.content[0].text[:200]}
+
+                decision = verdict.get("decision", "ratify").lower()
+                reasoning = verdict.get("reasoning", "")[:500]
+
+                sip.genesis_verdict = "approved" if decision == "ratify" else "rejected"
+                sip.genesis_reasoning = reasoning
+                sip.genesis_reviewed_at = now
+
+                if decision == "ratify":
+                    sip.lifecycle_status = "owner_review"
+                    await self.post_to_agora(
+                        "sip-proposals",
+                        f"[GENESIS RATIFICATION] SIP #{sip.id}: RATIFIED. {reasoning}",
+                        message_type=MessageType.SYSTEM,
+                    )
+                else:
+                    sip.lifecycle_status = "vetoed_by_genesis"
+                    sip.genesis_veto_used = True
+                    sip.resolved_at = now
+                    await self.post_to_agora(
+                        "system-alerts",
+                        f"[GENESIS VETO] SIP #{sip.id} '{sip.title}' VETOED despite "
+                        f"{pct} popular support. Reasoning: {reasoning}",
+                        message_type=MessageType.SYSTEM,
+                    )
+
+                # Track API cost
+                await self.accountant.track_api_call(
+                    agent_id=0, model=config.death_last_words_model,
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                )
+
+            except Exception as e:
+                self.log.debug(f"SIP ratification failed for #{sip.id}: {e}")
 
     # ------------------------------------------------------------------
     # Hibernation Wake Check

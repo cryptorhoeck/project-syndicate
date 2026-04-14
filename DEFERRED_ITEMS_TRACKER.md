@@ -117,6 +117,26 @@
 
 ---
 
+## PHASE 10+ — Governance Evolution (Identified Phase 9A)
+
+- [ ] **Vote accuracy tracking**: Did agents vote for SIPs that actually improved performance? Track outcome correlation. *(Identified: Phase 9A design)*
+
+- [ ] **Alliance bloc detection**: Genesis identifies coordinated voting patterns. Flag when allied agents consistently vote the same way. *(Identified: Phase 9A design)*
+
+- [ ] **SIP rollback mechanism**: If an implemented SIP causes measurable harm (e.g., evaluation scores drop after weight change), auto-revert. *(Identified: Phase 9A design)*
+
+- [ ] **Multi-parameter SIPs**: Propose changes to multiple related parameters in one SIP (e.g., rebalance all evaluation weights). *(Identified: Phase 9A design)*
+
+- [ ] **Parameter visualization**: Dashboard graph showing parameter evolution over time. *(Identified: Phase 9A design)*
+
+- [ ] **Agent governance score**: Track engagement and quality of governance participation as part of evaluation. *(Identified: Phase 9A design)*
+
+- [ ] **CLI SIP review menu**: Add option [7] to syndicate_cli.py for owner to approve/reject/defer SIPs. *(Identified: Phase 9A implementation)*
+
+- [ ] **Genesis governance seeding**: `seed_governance_prompt()` method for nascent/developing colonies — Genesis suggests areas for SIP investigation. *(Identified: Phase 9A design, deferred to runtime)*
+
+---
+
 ## CLEANUP ITEMS (Identified 2026-04-13)
 
 - [ ] **Add 5 missing config vars to .env.example**: `min_survival_clock_days`, `max_survival_clock_days`, `scout_discovery_phase_cycles`, `scout_max_consecutive_idle`, `scout_min_confidence_threshold` — all have defaults in config.py but are not documented in .env.example. *(Identified: Directory Cleanup audit)*

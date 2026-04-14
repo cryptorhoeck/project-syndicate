@@ -15,10 +15,10 @@ Project Syndicate is an autonomous, self-evolving multi-agent AI financial ecosy
 See `CURRENT_STATUS.md` for detailed session-by-session progress.
 
 ### Codebase Stats
-- **91 source modules** across 14 packages (~29,000 lines of Python)
-- **73 test files**, **759 tests** (757 pass, 2 known sandbox failures)
-- **47 SQLAlchemy models** → 48 database tables
-- **8 Alembic migrations** (linear chain, no forks)
+- **97 source modules** across 15 packages (~31,000 lines of Python)
+- **74 test files**, **804 tests**
+- **52 SQLAlchemy models** → 53 database tables
+- **9 Alembic migrations** (linear chain)
 - **29 HTML templates** + 1 JS module (constellation.js)
 
 ## Architecture Quick Reference
@@ -147,6 +147,18 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **Genome Manager** (`src/genome/genome_manager.py`) — CRUD, agent-directed modifications, fitness tracking
 - **Diversity Monitor** (`src/genome/diversity.py`) — convergence detection
 
+### Phase 9A: Governance Layer (SIP Voting & Colony Maturity)
+- **Colony Maturity Tracker** (`src/governance/maturity_tracker.py`) — 4 stages (NASCENT/DEVELOPING/ESTABLISHED/MATURE), drives governance speed, strictness, Genesis posture. Can only advance, never regress.
+- **Parameter Registry** (`src/governance/parameter_registry.py`) — database-backed runtime config for SIP-modifiable parameters. 3 tiers: Open (Tier 1, 60% vote), Structural (Tier 2, 75% supermajority), Forbidden (Tier 3, immutable). Cumulative drift tracking.
+- **SIP Lifecycle Manager** (`src/governance/sip_lifecycle.py`) — full lifecycle state machine: DEBATE -> VOTING -> TALLIED -> GENESIS_REVIEW -> OWNER_REVIEW -> IMPLEMENTING -> IMPLEMENTED. Prestige-weighted voting, auto-implementation with eval weight validation.
+- **Vote Weights** (`src/governance/vote_weights.py`) — prestige-to-weight lookup (unproven=0.5, journeyman=1.0, expert=1.5, master=2.0, grandmaster=3.0)
+- **Parameter Reader** (`src/governance/param_reader.py`) — helper for system components: reads from registry with config fallback
+- **Seed Script** (`scripts/seed_parameter_registry.py`) — 24 seed parameters across evaluation, lifecycle, economics, timing, risk/governance
+- **New agent actions:** vote_on_sip, debate_sip, cosponsor_sip (+ updated propose_sip)
+- **Genesis ratification:** maturity-adaptive posture (permissive -> skeptical), public vetoes
+- **Dashboard API:** `/api/governance/sips`, `/api/governance/parameters`
+- **Context injection:** governance section in agent OODA cycles (debate/voting SIPs, recent implementations)
+
 ### Phase 6A: Web Dashboard (Command Center)
 - **Dark theme only** (deep navy `#080c18`), sci-fi aesthetic (Stellaris meets Bloomberg Terminal)
 - **Tech:** FastAPI + Jinja2 + HTMX + Tailwind CSS (Play CDN) + vanilla JS
@@ -201,6 +213,7 @@ E:\project syndicate\
 │   ├── economy/                 ← Reputation, intel market, reviews, settlement, gaming detection
 │   ├── genesis/                 ← Genesis agent, boot sequence, treasury, evaluation, regime, role metrics
 │   ├── genome/                  ← Strategy genome, mutation, diversity monitoring
+│   ├── governance/              ← Colony maturity, parameter registry, SIP lifecycle, voting
 │   ├── library/                 ← Knowledge layer, textbooks, archives, contributions
 │   ├── personality/             ← Behavioral profiles, temperature, identity, trust, divergence
 │   ├── reports/                 ← Email service, alert system
@@ -319,6 +332,7 @@ At the beginning of every script or module, include (or call) standard boilerpla
 | 8B | Survival Instinct (competitive behavior, alliances, SIPs) | **COMPLETE** |
 | 8C | Code Sandbox & Strategy Genome | **COMPLETE** |
 | 9 | Production Readiness Testing (hardening, integration, stress) | **COMPLETE** |
+| 9A | SIP Voting & Colony Maturity (democratic governance) | **COMPLETE** |
 | 4 | The Arena (full paper trading — 21-day run) | **NEXT** |
 | 5 | Social Presence + Solana | Pending |
 | 6B | Owner Console + Auth | Pending |
