@@ -282,6 +282,11 @@ class SyndicateConfig(BaseSettings):
     # Sandbox cost cap
     daily_sandbox_cap_usd: float = 0.50
 
+    # Phase 9A: SIP Voting & Colony Maturity
+    sip_voting_enabled: bool = True
+    sip_default_debate_hours: int = 8
+    sip_default_voting_hours: int = 8
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

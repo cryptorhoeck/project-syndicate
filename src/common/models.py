@@ -1525,6 +1525,24 @@ class SystemImprovementProposal(Base):
     proposed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    # Phase 9A: SIP Voting lifecycle columns
+    lifecycle_status: Mapped[str] = mapped_column(String(30), default="debate")
+    debate_ends_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    voting_ends_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    tallied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    genesis_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    implemented_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    target_parameter_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    proposed_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    weighted_support: Mapped[float] = mapped_column(Float, default=0.0)
+    weighted_oppose: Mapped[float] = mapped_column(Float, default=0.0)
+    weighted_total_cast: Mapped[float] = mapped_column(Float, default=0.0)
+    vote_pass_percentage: Mapped[float | None] = mapped_column(Float, nullable=True)
+    parameter_tier: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    colony_maturity_at_proposal: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    genesis_veto_used: Mapped[bool] = mapped_column(Boolean, default=False)
+    cosponsor_agent_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("agents.id"), nullable=True)
+
     proposer: Mapped["Agent"] = relationship("Agent", foreign_keys=[proposer_agent_id])
 
 
@@ -1633,3 +1651,98 @@ class IntelChallenge(Base):
     challenger_reputation_change: Mapped[float | None] = mapped_column(Float, nullable=True)
     target_reputation_change: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+# ---------------------------------------------------------------------------
+# Phase 9A: SIP Voting & Colony Maturity
+# ---------------------------------------------------------------------------
+
+class ColonyMaturity(Base):
+    """Singleton table tracking colony maturity stage."""
+    __tablename__ = "colony_maturity"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    stage: Mapped[str] = mapped_column(String(20), nullable=False, default="nascent")
+    colony_age_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    total_sips_passed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    active_agent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_stage_transition_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_computed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ParameterRegistryEntry(Base):
+    """SIP-modifiable system parameters with safe ranges and tier classification."""
+    __tablename__ = "parameter_registry"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    parameter_key: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(String(50), nullable=False)
+    current_value: Mapped[float] = mapped_column(Float, nullable=False)
+    default_value: Mapped[float] = mapped_column(Float, nullable=False)
+    min_value: Mapped[float] = mapped_column(Float, nullable=False)
+    max_value: Mapped[float] = mapped_column(Float, nullable=False)
+    tier: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    unit: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    last_modified_by_sip_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("system_improvement_proposals.id"), nullable=True
+    )
+    last_modified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ParameterChangeLog(Base):
+    """Audit trail of SIP-driven parameter changes with drift tracking."""
+    __tablename__ = "parameter_change_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    parameter_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    old_value: Mapped[float] = mapped_column(Float, nullable=False)
+    new_value: Mapped[float] = mapped_column(Float, nullable=False)
+    changed_by_sip_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("system_improvement_proposals.id"), nullable=False
+    )
+    changed_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    drift_direction: Mapped[str] = mapped_column(String(10), nullable=False)
+
+
+class SIPVote(Base):
+    """Agent votes on SIPs with prestige-weighted influence."""
+    __tablename__ = "sip_votes"
+    __table_args__ = (
+        UniqueConstraint("sip_id", "agent_id", name="uq_sip_vote_agent"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sip_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("system_improvement_proposals.id"), nullable=False
+    )
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    vote: Mapped[str] = mapped_column(
+        String(10), CheckConstraint("vote IN ('support', 'oppose', 'abstain')"), nullable=False
+    )
+    vote_weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    agora_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    voted_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class SIPDebate(Base):
+    """Agent debate entries on SIPs."""
+    __tablename__ = "sip_debates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    sip_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("system_improvement_proposals.id"), nullable=False
+    )
+    agent_id: Mapped[int] = mapped_column(Integer, ForeignKey("agents.id"), nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    position: Mapped[str] = mapped_column(
+        String(10), CheckConstraint("position IN ('for', 'against', 'neutral')"), nullable=False
+    )
+    argument: Mapped[str] = mapped_column(Text, nullable=False)
+    agora_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    posted_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
