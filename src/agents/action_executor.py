@@ -17,6 +17,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.agora.schemas import AgoraMessage
@@ -106,6 +107,9 @@ class ActionExecutor:
             "modify_genome": self._handle_broadcast,
             # Phase 8B: Survival actions
             "propose_sip": self._handle_propose_sip,
+            "vote_on_sip": self._handle_vote_on_sip,
+            "debate_sip": self._handle_debate_sip,
+            "cosponsor_sip": self._handle_cosponsor_sip,
             "offer_intel": self._handle_offer_intel,
             "request_alliance": self._handle_request_alliance,
             "accept_alliance": self._handle_accept_alliance,
@@ -577,20 +581,242 @@ class ActionExecutor:
     async def _handle_propose_sip(
         self, agent: Agent, action_type: str, params: dict
     ) -> ActionResult:
-        """Handle SIP proposals (and evaluation criteria challenges)."""
+        """Handle SIP proposals with Phase 9A lifecycle integration."""
         title = params.get("title", params.get("target_metric", "Untitled SIP"))
         proposal = params.get("proposal", params.get("argument", ""))
         rationale = params.get("rationale", params.get("proposed_change", ""))
         category = params.get("category", "evaluation")
+        target_param = params.get("target_parameter")
+        proposed_value = params.get("proposed_value")
 
-        # Agent's rationale IS the message; title + category go in metadata
-        content = f"{title} — {rationale}" if rationale else f"{title} — {proposal[:200]}"
-        await self._post_to_agora(agent, "sip-proposals", content, action_type, params)
+        # Create SIP record in database
+        try:
+            from src.common.models import SystemImprovementProposal
+            sip = SystemImprovementProposal(
+                proposer_agent_id=agent.id,
+                proposer_agent_name=agent.name,
+                title=title,
+                category=category,
+                proposal=proposal[:2000],
+                rationale=rationale[:1000],
+                metrics_affected=str(params.get("metrics_affected", [])),
+                status="proposed",
+                target_parameter_key=target_param,
+                proposed_value=float(proposed_value) if proposed_value is not None else None,
+            )
+            self.db.add(sip)
+            self.db.flush()
+
+            # Integrate with SIP lifecycle if voting is enabled
+            from src.common.config import config
+            if config.sip_voting_enabled:
+                from src.governance.sip_lifecycle import SIPLifecycleManager
+                from src.governance.maturity_tracker import ColonyMaturityTracker
+                from src.governance.parameter_registry import ParameterRegistry
+
+                lifecycle = SIPLifecycleManager(
+                    ColonyMaturityTracker(), ParameterRegistry(), self.agora
+                )
+                success, msg = await lifecycle.initiate_sip(sip.id, self.db)
+                if not success:
+                    return ActionResult(
+                        success=False,
+                        action_type=action_type,
+                        details=f"SIP rejected: {msg}",
+                    )
+            else:
+                # Legacy flow: just post to Agora
+                content = f"{title} — {rationale}" if rationale else f"{title} — {proposal[:200]}"
+                await self._post_to_agora(agent, "sip-proposals", content, action_type, params)
+
+        except Exception as e:
+            logger.warning(f"SIP creation failed: {e}")
+            # Fallback: post to Agora
+            content = f"{title} — {rationale}" if rationale else f"{title} — {proposal[:200]}"
+            await self._post_to_agora(agent, "sip-proposals", content, action_type, params)
 
         return ActionResult(
             success=True,
             action_type=action_type,
             details=f"SIP proposed: {title}",
+        )
+
+    async def _handle_vote_on_sip(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Handle agent votes on SIPs."""
+        sip_id = params.get("sip_id")
+        vote = params.get("vote", "abstain")
+        reasoning = params.get("reasoning", "")
+
+        if vote not in ("support", "oppose", "abstain"):
+            return ActionResult(success=False, action_type=action_type,
+                                details=f"Invalid vote: {vote}")
+
+        try:
+            from src.common.models import SystemImprovementProposal, SIPVote
+            from src.governance.vote_weights import get_vote_weight
+
+            sip = self.db.execute(
+                select(SystemImprovementProposal).where(
+                    SystemImprovementProposal.id == sip_id
+                )
+            ).scalar_one_or_none()
+
+            if not sip:
+                return ActionResult(success=False, action_type=action_type,
+                                    details=f"SIP #{sip_id} not found")
+            if sip.lifecycle_status != "voting":
+                return ActionResult(success=False, action_type=action_type,
+                                    details=f"SIP #{sip_id} is not in voting phase")
+
+            # Check for duplicate vote
+            existing = self.db.execute(
+                select(SIPVote).where(
+                    SIPVote.sip_id == sip_id,
+                    SIPVote.agent_id == agent.id,
+                )
+            ).scalar_one_or_none()
+            if existing:
+                return ActionResult(success=False, action_type=action_type,
+                                    details=f"Already voted on SIP #{sip_id}")
+
+            weight = get_vote_weight(agent.prestige_title)
+
+            vote_record = SIPVote(
+                sip_id=sip_id,
+                agent_id=agent.id,
+                agent_name=agent.name,
+                vote=vote,
+                vote_weight=weight,
+            )
+            self.db.add(vote_record)
+
+            # Update denormalized counters
+            if vote == "support":
+                sip.support_count = (sip.support_count or 0) + 1
+            elif vote == "oppose":
+                sip.oppose_count = (sip.oppose_count or 0) + 1
+
+            self.db.flush()
+
+            # Post to Agora
+            prestige = agent.prestige_title or "unproven"
+            content = (
+                f"[VOTE] {agent.name} ({prestige}, weight {weight}) "
+                f"votes {vote.upper()} on SIP #{sip_id}: {reasoning[:200]}"
+            )
+            await self._post_to_agora(agent, "sip-proposals", content, action_type, params)
+
+        except Exception as e:
+            logger.warning(f"Vote failed: {e}")
+            return ActionResult(success=False, action_type=action_type,
+                                details=f"Vote failed: {e}")
+
+        return ActionResult(
+            success=True,
+            action_type=action_type,
+            details=f"Voted {vote} on SIP #{sip_id} (weight {weight})",
+        )
+
+    async def _handle_debate_sip(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Handle agent debate entries on SIPs."""
+        sip_id = params.get("sip_id")
+        position = params.get("position", "neutral")
+        argument = params.get("argument", "")
+
+        if position not in ("for", "against", "neutral"):
+            return ActionResult(success=False, action_type=action_type,
+                                details=f"Invalid position: {position}")
+
+        try:
+            from src.common.models import SystemImprovementProposal, SIPDebate
+
+            sip = self.db.execute(
+                select(SystemImprovementProposal).where(
+                    SystemImprovementProposal.id == sip_id
+                )
+            ).scalar_one_or_none()
+
+            if not sip:
+                return ActionResult(success=False, action_type=action_type,
+                                    details=f"SIP #{sip_id} not found")
+            if sip.lifecycle_status != "debate":
+                return ActionResult(success=False, action_type=action_type,
+                                    details=f"SIP #{sip_id} is not in debate phase")
+
+            debate = SIPDebate(
+                sip_id=sip_id,
+                agent_id=agent.id,
+                agent_name=agent.name,
+                position=position,
+                argument=argument[:2000],
+            )
+            self.db.add(debate)
+            self.db.flush()
+
+            content = (
+                f"[DEBATE] {agent.name} argues {position.upper()} on SIP #{sip_id}: "
+                f"{argument[:500]}"
+            )
+            await self._post_to_agora(agent, "sip-proposals", content, action_type, params)
+
+        except Exception as e:
+            logger.warning(f"Debate failed: {e}")
+            return ActionResult(success=False, action_type=action_type,
+                                details=f"Debate failed: {e}")
+
+        return ActionResult(
+            success=True,
+            action_type=action_type,
+            details=f"Debated {position} on SIP #{sip_id}",
+        )
+
+    async def _handle_cosponsor_sip(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Handle SIP co-sponsorship."""
+        sip_id = params.get("sip_id")
+
+        try:
+            from src.common.models import SystemImprovementProposal
+
+            sip = self.db.execute(
+                select(SystemImprovementProposal).where(
+                    SystemImprovementProposal.id == sip_id
+                )
+            ).scalar_one_or_none()
+
+            if not sip:
+                return ActionResult(success=False, action_type=action_type,
+                                    details=f"SIP #{sip_id} not found")
+            if sip.lifecycle_status != "debate":
+                return ActionResult(success=False, action_type=action_type,
+                                    details=f"SIP #{sip_id} is not in debate phase")
+            if sip.proposer_agent_id == agent.id:
+                return ActionResult(success=False, action_type=action_type,
+                                    details="Cannot co-sponsor your own SIP")
+            if sip.cosponsor_agent_id is not None:
+                return ActionResult(success=False, action_type=action_type,
+                                    details=f"SIP #{sip_id} already has a co-sponsor")
+
+            sip.cosponsor_agent_id = agent.id
+            self.db.flush()
+
+            content = f"[CO-SPONSOR] {agent.name} co-sponsors SIP #{sip_id}."
+            await self._post_to_agora(agent, "sip-proposals", content, action_type, params)
+
+        except Exception as e:
+            logger.warning(f"Cosponsor failed: {e}")
+            return ActionResult(success=False, action_type=action_type,
+                                details=f"Cosponsor failed: {e}")
+
+        return ActionResult(
+            success=True,
+            action_type=action_type,
+            details=f"Co-sponsored SIP #{sip_id}",
         )
 
     async def _handle_offer_intel(

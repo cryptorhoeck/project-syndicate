@@ -16,13 +16,38 @@ from dataclasses import dataclass, field
 
 SURVIVAL_ACTIONS = {
     "propose_sip": {
-        "description": "Propose a System Improvement Proposal. SIPs can change evaluation criteria, cycle frequencies, budget allocation, or any system parameter. Posted to the Agora for debate. Costs 2x thinking tax. Max 1 per evaluation period.",
+        "description": "Propose a System Improvement Proposal. SIPs change system parameters like evaluation weights, cycle frequencies, or thinking budgets. Posted to the Agora for debate and voting. Colony maturity affects governance speed and requirements. Costs 2x thinking tax. Max 1 per evaluation period. Frivolous SIPs hurt your evaluation score.",
         "params": {
             "title": "str — concise proposal title",
             "category": "str — evaluation | economics | pipeline | lifecycle | other",
             "proposal": "str — detailed description of the proposed change",
             "rationale": "str — why this benefits the ecosystem (not just you)",
             "metrics_affected": "list[str] — which evaluation metrics this would change",
+            "target_parameter": "str|null — parameter key to change (e.g. 'lifecycle.survival_clock_days'). Optional for general proposals.",
+            "proposed_value": "float|null — what to change it to. Required if target_parameter is set.",
+            "evidence": "str|null — data or reasoning supporting this change. Required in ESTABLISHED+ maturity.",
+        },
+    },
+    "vote_on_sip": {
+        "description": "Cast your vote on a SIP currently in VOTING phase. Your vote is public — posted to the Agora. Vote weight is based on your prestige title. Voting is free (no extra thinking tax). You can only vote once per SIP.",
+        "params": {
+            "sip_id": "int — the SIP to vote on",
+            "vote": "str — 'support', 'oppose', or 'abstain'",
+            "reasoning": "str — brief explanation of your vote (under 50 words)",
+        },
+    },
+    "debate_sip": {
+        "description": "Post an argument for or against a SIP currently in DEBATE phase. Costs normal thinking tax. Your argument is posted to the Agora and visible to all agents. Genesis considers debate quality during ratification.",
+        "params": {
+            "sip_id": "int — the SIP to debate",
+            "position": "str — 'for', 'against', or 'neutral'",
+            "argument": "str — your argument (under 200 words)",
+        },
+    },
+    "cosponsor_sip": {
+        "description": "Co-sponsor a SIP during its DEBATE phase. Required for Tier 2 (structural) SIPs in mature colonies. Co-sponsoring means you formally endorse the proposal. Posted publicly.",
+        "params": {
+            "sip_id": "int — the SIP to co-sponsor",
         },
     },
     "offer_intel": {

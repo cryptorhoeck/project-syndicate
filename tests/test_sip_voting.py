@@ -367,6 +367,258 @@ class TestParameterRegistry:
         assert results[0]["parameter_key"] == "risk.t3"
 
 
+# ── SIP Lifecycle Tests ──────────────────────────────────
+
+class TestSIPLifecycle:
+
+    @pytest.mark.asyncio
+    async def test_initiate_sets_debate_status(self, db_session):
+        """New SIP starts in 'debate' lifecycle_status."""
+        from src.governance.sip_lifecycle import SIPLifecycleManager
+
+        tracker = ColonyMaturityTracker()
+        registry = ParameterRegistry()
+        lifecycle = SIPLifecycleManager(tracker, registry)
+
+        agent = _seed_agent(db_session)
+        sip = _seed_sip(db_session, agent_id=agent.id, lifecycle_status="proposed")
+        db_session.flush()
+
+        success, msg = await lifecycle.initiate_sip(sip.id, db_session)
+        assert success is True
+        assert sip.lifecycle_status == "debate"
+        assert sip.debate_ends_at is not None
+
+    @pytest.mark.asyncio
+    async def test_forbidden_parameter_auto_rejected(self, db_session):
+        """SIP targeting a Tier 3 parameter is immediately rejected."""
+        from src.governance.sip_lifecycle import SIPLifecycleManager
+
+        tracker = ColonyMaturityTracker()
+        registry = ParameterRegistry()
+        lifecycle = SIPLifecycleManager(tracker, registry)
+
+        _seed_param(db_session, key="risk.circuit_breaker_threshold",
+                    current=0.75, default=0.75, min_val=0.75, max_val=0.75, tier=3)
+        agent = _seed_agent(db_session)
+        sip = _seed_sip(db_session, agent_id=agent.id, lifecycle_status="proposed")
+        sip.target_parameter_key = "risk.circuit_breaker_threshold"
+        sip.proposed_value = 0.80
+        db_session.flush()
+
+        success, msg = await lifecycle.initiate_sip(sip.id, db_session)
+        assert success is False
+        assert "Forbidden" in msg
+        assert sip.lifecycle_status == "rejected_by_vote"
+
+    @pytest.mark.asyncio
+    async def test_debate_to_voting_transition(self, db_session):
+        """SIP advances to 'voting' after debate_ends_at passes."""
+        from src.governance.sip_lifecycle import SIPLifecycleManager
+
+        tracker = ColonyMaturityTracker()
+        registry = ParameterRegistry()
+        lifecycle = SIPLifecycleManager(tracker, registry)
+
+        agent = _seed_agent(db_session)
+        sip = _seed_sip(db_session, agent_id=agent.id)
+        sip.lifecycle_status = "debate"
+        sip.debate_ends_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        db_session.flush()
+
+        await lifecycle.advance_all_sips(db_session)
+        assert sip.lifecycle_status == "voting"
+        assert sip.voting_ends_at is not None
+
+    @pytest.mark.asyncio
+    async def test_tally_passes_at_threshold(self, db_session):
+        """SIP passes when weighted support >= pass_threshold."""
+        from src.governance.sip_lifecycle import SIPLifecycleManager
+
+        tracker = ColonyMaturityTracker()
+        registry = ParameterRegistry()
+        lifecycle = SIPLifecycleManager(tracker, registry)
+
+        agent1 = _seed_agent(db_session, "A1")
+        agent2 = _seed_agent(db_session, "A2")
+        sip = _seed_sip(db_session, agent_id=agent1.id)
+        sip.lifecycle_status = "voting"
+        sip.voting_ends_at = datetime.now(timezone.utc) - timedelta(hours=1)
+
+        # Two support votes (weight 0.5 each = 1.0 total support, 0 oppose)
+        db_session.add(SIPVote(sip_id=sip.id, agent_id=agent1.id,
+                               agent_name="A1", vote="support", vote_weight=0.5))
+        db_session.add(SIPVote(sip_id=sip.id, agent_id=agent2.id,
+                               agent_name="A2", vote="support", vote_weight=0.5))
+        db_session.flush()
+
+        await lifecycle.advance_all_sips(db_session)
+        assert sip.lifecycle_status == "tallied"
+        assert sip.vote_pass_percentage == 1.0
+
+    @pytest.mark.asyncio
+    async def test_tally_fails_below_threshold(self, db_session):
+        """SIP rejected when weighted support < pass_threshold."""
+        from src.governance.sip_lifecycle import SIPLifecycleManager
+
+        tracker = ColonyMaturityTracker()
+        registry = ParameterRegistry()
+        lifecycle = SIPLifecycleManager(tracker, registry)
+
+        agent1 = _seed_agent(db_session, "A1")
+        agent2 = _seed_agent(db_session, "A2")
+        agent3 = _seed_agent(db_session, "A3")
+        sip = _seed_sip(db_session, agent_id=agent1.id)
+        sip.lifecycle_status = "voting"
+        sip.voting_ends_at = datetime.now(timezone.utc) - timedelta(hours=1)
+
+        # 1 support, 2 oppose (33% < 60%)
+        db_session.add(SIPVote(sip_id=sip.id, agent_id=agent1.id,
+                               agent_name="A1", vote="support", vote_weight=1.0))
+        db_session.add(SIPVote(sip_id=sip.id, agent_id=agent2.id,
+                               agent_name="A2", vote="oppose", vote_weight=1.0))
+        db_session.add(SIPVote(sip_id=sip.id, agent_id=agent3.id,
+                               agent_name="A3", vote="oppose", vote_weight=1.0))
+        db_session.flush()
+
+        await lifecycle.advance_all_sips(db_session)
+        assert sip.lifecycle_status == "rejected_by_vote"
+
+    @pytest.mark.asyncio
+    async def test_no_votes_cast_expires_sip(self, db_session):
+        """SIP with zero support+oppose votes expires."""
+        from src.governance.sip_lifecycle import SIPLifecycleManager
+
+        tracker = ColonyMaturityTracker()
+        registry = ParameterRegistry()
+        lifecycle = SIPLifecycleManager(tracker, registry)
+
+        agent = _seed_agent(db_session)
+        sip = _seed_sip(db_session, agent_id=agent.id)
+        sip.lifecycle_status = "voting"
+        sip.voting_ends_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        db_session.flush()
+
+        await lifecycle.advance_all_sips(db_session)
+        assert sip.lifecycle_status == "expired"
+
+    @pytest.mark.asyncio
+    async def test_tally_excludes_abstains(self, db_session):
+        """Abstain votes don't count toward pass threshold calculation."""
+        from src.governance.sip_lifecycle import SIPLifecycleManager
+
+        tracker = ColonyMaturityTracker()
+        registry = ParameterRegistry()
+        lifecycle = SIPLifecycleManager(tracker, registry)
+
+        agent1 = _seed_agent(db_session, "A1")
+        agent2 = _seed_agent(db_session, "A2")
+        agent3 = _seed_agent(db_session, "A3")
+        sip = _seed_sip(db_session, agent_id=agent1.id)
+        sip.lifecycle_status = "voting"
+        sip.voting_ends_at = datetime.now(timezone.utc) - timedelta(hours=1)
+
+        # 1 support (1.0), 2 abstains (ignored) -> 100% of cast
+        db_session.add(SIPVote(sip_id=sip.id, agent_id=agent1.id,
+                               agent_name="A1", vote="support", vote_weight=1.0))
+        db_session.add(SIPVote(sip_id=sip.id, agent_id=agent2.id,
+                               agent_name="A2", vote="abstain", vote_weight=1.0))
+        db_session.add(SIPVote(sip_id=sip.id, agent_id=agent3.id,
+                               agent_name="A3", vote="abstain", vote_weight=1.0))
+        db_session.flush()
+
+        await lifecycle.advance_all_sips(db_session)
+        assert sip.lifecycle_status == "tallied"
+        assert sip.vote_pass_percentage == 1.0
+
+
+# ── Voting Tests ────────────────────────────────────────
+
+class TestVoting:
+
+    def test_vote_weight_unproven(self):
+        """Unproven agent's vote has weight 0.5."""
+        from src.governance.vote_weights import get_vote_weight
+        assert get_vote_weight(None) == 0.5
+        assert get_vote_weight("") == 0.5
+        assert get_vote_weight("unproven") == 0.5
+
+    def test_vote_weight_proven(self):
+        """Proven/journeyman has weight 1.0."""
+        from src.governance.vote_weights import get_vote_weight
+        assert get_vote_weight("journeyman") == 1.0
+        assert get_vote_weight("proven") == 1.0
+
+    def test_vote_weight_expert(self):
+        """Expert/veteran has weight 1.5."""
+        from src.governance.vote_weights import get_vote_weight
+        assert get_vote_weight("expert") == 1.5
+
+    def test_vote_weight_master(self):
+        """Master/elite has weight 2.0."""
+        from src.governance.vote_weights import get_vote_weight
+        assert get_vote_weight("master") == 2.0
+
+    def test_vote_weight_grandmaster(self):
+        """Grandmaster/legendary has weight 3.0."""
+        from src.governance.vote_weights import get_vote_weight
+        assert get_vote_weight("grandmaster") == 3.0
+        assert get_vote_weight("legendary") == 3.0
+
+    def test_vote_weight_unknown_defaults(self):
+        """Unknown prestige title defaults to 0.5."""
+        from src.governance.vote_weights import get_vote_weight
+        assert get_vote_weight("supreme_overlord") == 0.5
+
+
+# ── Implementation Tests ─────────────────────────────────
+
+class TestImplementation:
+
+    @pytest.mark.asyncio
+    async def test_implement_general_sip(self, db_session):
+        """General (non-parameter) SIP marks as implemented."""
+        from src.governance.sip_lifecycle import SIPLifecycleManager
+
+        tracker = ColonyMaturityTracker()
+        registry = ParameterRegistry()
+        lifecycle = SIPLifecycleManager(tracker, registry)
+
+        agent = _seed_agent(db_session)
+        sip = _seed_sip(db_session, agent_id=agent.id)
+        sip.lifecycle_status = "implementing"
+        sip.target_parameter_key = None  # General SIP
+        db_session.flush()
+
+        await lifecycle.advance_all_sips(db_session)
+        assert sip.lifecycle_status == "implemented"
+        assert sip.implemented_at is not None
+
+    @pytest.mark.asyncio
+    async def test_implement_parameter_sip(self, db_session):
+        """Parameter SIP updates the registry."""
+        from src.governance.sip_lifecycle import SIPLifecycleManager
+
+        tracker = ColonyMaturityTracker()
+        registry = ParameterRegistry()
+        lifecycle = SIPLifecycleManager(tracker, registry)
+
+        _seed_param(db_session, current=14.0)
+        agent = _seed_agent(db_session)
+        sip = _seed_sip(db_session, agent_id=agent.id)
+        sip.lifecycle_status = "implementing"
+        sip.target_parameter_key = "lifecycle.survival_clock_days"
+        sip.proposed_value = 12.0
+        sip.vote_pass_percentage = 0.75
+        db_session.flush()
+
+        await lifecycle.advance_all_sips(db_session)
+        assert sip.lifecycle_status == "implemented"
+
+        val = await registry.get_value("lifecycle.survival_clock_days", db_session)
+        assert val == 12.0
+
+
 class TestSeedScript:
 
     def test_seed_script_is_idempotent(self, db_session):
