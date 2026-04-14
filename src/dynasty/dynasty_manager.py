@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
+from src.agora.schemas import AgoraMessage, MessageType
 from src.common.models import Agent, Dynasty, Lineage
 
 logger = logging.getLogger(__name__)
@@ -115,13 +116,13 @@ class DynastyManager:
 
             if agora_service:
                 try:
-                    await agora_service.post_message(
+                    await agora_service.post_message(AgoraMessage(
                         agent_id=0, agent_name="Genesis",
                         channel="genesis-log",
                         content=extinction_msg,
-                        message_type="system",
-                        importance=5,
-                    )
+                        message_type=MessageType.SYSTEM,
+                        importance=2,
+                    ))
                 except Exception as e:
                     self.log.debug(f"Agora extinction post failed: {e}")
 

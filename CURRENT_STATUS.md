@@ -1,59 +1,46 @@
 # Current Status — Project Syndicate
 
-## Last Updated: 2026-03-24
+## Last Updated: 2026-04-13
 
-## Phase: 9 — Production Readiness Testing (COMPLETE)
+## Phase: Arena Launch Pending (Phase 9 Complete)
 
-### Completed This Session
+### Completed This Session — Directory Cleanup & Reorganization
 
-#### Tier 1: Hardening Verification
-- [x] 14-point audit: 8 already applied, 4 fixed, 2 acceptable partial
-- [x] R3: Redis timeouts added to 6 unprotected connections
-- [x] A1: 5 unbudgeted API calls now tracked through Accountant
-- [x] F5: Engine disposal added to 3 runner scripts
-- [x] S6: Per-IP SSE limit (MAX_PER_IP=5) added
+#### Full Codebase Audit
+- [x] Directory inventory: 576 project files, 91 source modules, 73 test files
+- [x] Root file triage: 28 files classified (9 operational, 14 reference, 3 dead, 3 misplaced, 4 stale)
+- [x] Code health check: 0 broken imports, 0 orphaned modules, 0 duplicate functionality
+- [x] Test suite: 759 tests (757 pass, 2 known sandbox failures)
+- [x] Config audit: 5 missing .env.example vars identified, 6 unused packages found
 
-#### Tier 2: Integration Test Harness
-- [x] 9 end-to-end pipeline tests (tests/test_integration.py)
-- [x] All mocked externals, real DB via SQLite
-- [x] Pipeline: Scout → Strategist → Critic → Operator verified
-- [x] Boot sequence, budget gate, Black Swan, Library, reproduction tested
+#### Directory Reorganization
+- [x] Created `docs/kickoffs/` — moved 11 PHASE_*_KICKOFF.md files
+- [x] Created `docs/archive/` — moved 6 historical docs (original chat, scorecard, React mockup, etc.)
+- [x] Deleted `syndicateapi.png` (orphaned, unreferenced)
+- [x] Cleaned 19 `__pycache__` directories
 
-#### Tier 3: Stress Tests + Smoke Test
-- [x] 7 stress tests (tests/test_stress.py, @pytest.mark.stress)
-- [x] 100-cycle marathon, concurrent atomicity, rapid death/respawn
-- [x] DB disconnect, Redis disconnect, log rotation, clean slate
-- [x] Smoke test script (scripts/smoke_test.py) — pre-launch gate
-- [x] Smoke test wired into CLI menu as option [S]
+#### Configuration Cleanup
+- [x] `.gitignore` — added `.claude/` entry
+- [x] `requirements.txt` — removed 6 unused packages (langgraph, langchain-*, web3, ta, apscheduler)
+- [x] Alembic migration fork fixed — linearized chain (CAD columns → last_words)
 
-#### CLAUDE.md Updated
-- [x] Phase roadmap reflects reality
-- [x] Directory structure matches codebase
+#### Documentation Updates
+- [x] `CLAUDE.md` — comprehensive rewrite reflecting Phase 9 reality (Python 3.13, custom OODA loop, 48 tables, all phases documented, corrected technical decisions)
+- [x] `DEFERRED_ITEMS_TRACKER.md` — updated to 2026-04-13, added CLEANUP ITEMS section with 4 new items
+- [x] `CURRENT_STATUS.md` — this file
 
 ### Test Status
-- 759 tests passing (743 unit + 9 integration + 7 stress)
-- 0 failures
-
-### Smoke Test Result
-- PostgreSQL: OK (48 tables)
-- Redis: OK (PONG)
-- Anthropic: FAIL (invalid key — known issue)
-- Kraken: OK (BTC/USDT = $70,334)
-- Config: OK (paper/CAD/C$500)
-- Logs: OK (writable)
-- Library: OK (8/8 textbooks, 8/8 summaries)
-- **Overall: YELLOW** (Anthropic key blocks Arena launch)
+- 759 tests (757 pass, 2 known sandbox failures)
+- 148 deprecation warnings (SQLAlchemy legacy API, datetime.utcnow)
 
 ### Previously Completed
+- Phase 9: Production Readiness Testing (hardening, integration, stress)
 - Phase 8C: Code Sandbox & Strategy Genome
 - Phase 8B: Survival Instinct
 - Phase 8A: CLI Launcher
 - Phase 6A: Command Center dashboard
 - Phase 3.5: API Cost Optimization
-- All earlier phases (3F-0)
-- CAD Accounting, Kraken Pairs, Scout Starvation Fix
-- Library Textbook Pipeline Fix
-- Production Audit + 7 Warning Fixes
+- All earlier phases (3F through 0)
 
 ### What's Next — The Arena
 - [ ] Get valid Anthropic API key (smoke test will go GREEN)
@@ -62,11 +49,12 @@
 - [ ] Watch agents trade 14 Kraken pairs, evolve, compete in CAD
 
 ### Known Issues
-- **Anthropic API key invalid** — only remaining blocker
+- **Anthropic API key invalid** — only remaining blocker for Arena
 - SMTP not configured (email alerts non-functional)
+- 2 sandbox test failures (RestrictedPython compatibility, pre-existing)
 
 ### Environment Notes
-- Python venv: E:\project syndicate\.venv
+- Python venv: E:\project syndicate\.venv (Python 3.13.7)
 - PostgreSQL: C:/ProDesk/pgsql/bin/ (48 tables, running)
 - Memurai: C:/Program Files/Memurai/ (running)
 - Web: http://localhost:8000

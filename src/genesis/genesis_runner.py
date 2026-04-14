@@ -18,6 +18,7 @@ from sqlalchemy.orm import sessionmaker
 
 from src.agora import create_agora_service
 from src.common.config import config
+from src.common.exchange_service import ExchangeService
 from src.economy import EconomyService
 from src.genesis.genesis import GenesisAgent
 from src.library import LibraryService
@@ -51,6 +52,9 @@ async def main() -> None:
     engine = create_engine(config.database_url)
     session_factory = sessionmaker(bind=engine)
 
+    # Initialize exchange service (public endpoints work without API keys)
+    exchange_service = ExchangeService()
+
     # Initialize Agora service
     redis_client = aioredis.from_url(
         config.redis_url, decode_responses=True,
@@ -76,12 +80,12 @@ async def main() -> None:
     economy = EconomyService(
         db_session_factory=session_factory,
         agora_service=agora,
-        exchange_service=None,  # Will be set when exchange keys are configured
+        exchange_service=exchange_service,
     )
 
     genesis = GenesisAgent(
         db_session_factory=session_factory,
-        exchange_service=None,  # Will be set when exchange keys are configured
+        exchange_service=exchange_service,
         agora_service=agora,
         library_service=library,
         economy_service=economy,

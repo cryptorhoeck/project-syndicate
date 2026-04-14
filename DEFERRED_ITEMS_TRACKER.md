@@ -1,5 +1,5 @@
 ## PROJECT SYNDICATE — DEFERRED ITEMS TRACKER
-## Last updated: Phase 3F Design Session (March 2026)
+## Last updated: 2026-04-13 (Directory Cleanup Session)
 ## ================================================================
 ## 
 ## This document tracks design decisions, requirements, and features
@@ -51,12 +51,6 @@
 
 ---
 
-## PHASE 2 BACKLOG — Internal Economy
-
-- [ ] **Internal Economy actions in action spaces**: Every agent role needs economy actions added to their menus: `request_intel`, `offer_intel`, `hire_agent`, `trade_reputation`. Without these in the action space, agents can't participate in the economy. Add once the economy system is active and tested. *(Identified: Phase 3A gap analysis #6)*
-
----
-
 ## PHASE 3F — First Death, First Reproduction, First Dynasty
 
 - [x] **Temperature inheritance**: Offspring inherit parent's evolved temperature, not role default. A Scout dynasty that evolved to 0.85 passes that to next generation. Config and storage are built in Phase 3E — the inheritance mechanism belongs in 3F's reproduction logic. *(Identified: Phase 3E temperature evolution design)* → **RESOLVED: Offspring inherit parent's temperature ± random 0.03 perturbation. Clamped to role bounds. Creates diversity within dynasties.**
@@ -64,6 +58,12 @@
 - [x] **Behavioral profile inheritance**: Parent's profile is included in lineage record. Offspring doesn't inherit the profile itself (they build their own), but Genesis can see the parent's profile when deciding spawn parameters. *(Identified: Phase 3E behavioral profile design)* → **RESOLVED: Parent's profile snapshot stored in lineage record at reproduction time. Genesis references it during reproduction decisions. Offspring builds its own profile from scratch.**
 
 - [x] **Relationship inheritance**: Should offspring inherit parent's trust relationships? Argument for: don't waste time re-evaluating agents the parent already assessed. Argument against: parent's trust data may be outdated, and offspring should form their own opinions. Needs design decision. *(Identified: Phase 3E relationship memory design)* → **RESOLVED: Inherit at 50% strength (blend parent trust with neutral prior). Gives head start without blind trust. Time decay still applies — inherited trust fades to neutral if not reinforced by offspring's own interactions.**
+
+---
+
+## PHASE 2 BACKLOG — Internal Economy
+
+- [ ] **Internal Economy actions in action spaces**: Every agent role needs economy actions added to their menus: `request_intel`, `offer_intel`, `hire_agent`, `trade_reputation`. Without these in the action space, agents can't participate in the economy. Add once the economy system is active and tested. *(Identified: Phase 3A gap analysis #6)*
 
 ---
 
@@ -76,8 +76,6 @@
 - [ ] **Haiku quality monitoring**: Track validation failure rates per model. If Haiku fails significantly more than Sonnet, adjust routing thresholds or tighten output schemas. Data needed: ~100 cycles per model. *(Identified: Phase 3.5 model router design)*
 
 - [ ] **Dynamic model routing based on agent performance**: High-performing agents could earn Sonnet access for all cycles. Low-performers get Haiku-only to reduce their burn rate. Ties into the thinking budget tier system. *(Identified: Phase 3.5 model router design)*
-
-## PHASE 4 — Natural Selection (continued)
 
 - [ ] **Parallel cycle processing**: Phase 3A uses sequential processing (one cycle at a time). At 20+ agents, this becomes a bottleneck. Phase 4 should add parallel processing lanes with deconfliction logic. *(Identified: Phase 3A cycle scheduler design)*
 
@@ -116,6 +114,18 @@
 - [ ] **LiveTradingService implementation**: Build the live implementation of TradeExecutionService that routes orders to real exchanges via ccxt. Same interface as PaperTradingService. Switch is one env variable: `TRADING_MODE=live`. *(Identified: Phase 3C architecture)*
 
 - [ ] **Exchange state reconciliation**: Live trading needs reconciliation between DB state and exchange state. If the system crashes and restarts, positions on the exchange may differ from what's in the database. Build a reconciliation check on startup. *(Identified: Phase 3C architecture)*
+
+---
+
+## CLEANUP ITEMS (Identified 2026-04-13)
+
+- [ ] **Add 5 missing config vars to .env.example**: `min_survival_clock_days`, `max_survival_clock_days`, `scout_discovery_phase_cycles`, `scout_max_consecutive_idle`, `scout_min_confidence_threshold` — all have defaults in config.py but are not documented in .env.example. *(Identified: Directory Cleanup audit)*
+
+- [ ] **SQLAlchemy legacy API warnings**: 148 test warnings from `Query.get()` (deprecated in SQLAlchemy 2.0). Should migrate to `Session.get()`. *(Identified: Test suite output)*
+
+- [ ] **datetime.utcnow() deprecation**: Test code uses `datetime.utcnow()` which is deprecated in Python 3.12+. Migrate to `datetime.now(datetime.UTC)`. *(Identified: Test suite output)*
+
+- [ ] **2 sandbox test failures**: `test_simple_math` and `test_output_function` in `test_code_sandbox.py` — RestrictedPython compatibility issue. Pre-existing, not regression. *(Identified: Test suite, Phase 9)*
 
 ---
 

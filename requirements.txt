@@ -1,9 +1,5 @@
 anthropic
-langgraph
-langchain-anthropic
-langchain-core
 ccxt
-web3
 redis
 psycopg2-binary
 sqlalchemy
@@ -16,10 +12,7 @@ pydantic
 pydantic-settings
 pytest
 pytest-asyncio
-apscheduler
-schedule
 numpy
-ta
 structlog
 jinja2
 python-multipart

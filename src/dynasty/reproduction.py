@@ -22,6 +22,7 @@ from src.common.config import config
 from src.common.models import (
     Agent, AgentLongTermMemory, AgentRelationship, SystemState,
 )
+from src.agora.schemas import AgoraMessage, MessageType
 from src.dynasty.dynasty_manager import DynastyManager
 from src.dynasty.lineage_manager import LineageManager
 
@@ -507,13 +508,13 @@ Respond in JSON:
                     "inherited_temperature": round(temp, 3),
                     "posthumous": posthumous,
                 }
-                await agora_service.post_message(
+                await agora_service.post_message(AgoraMessage(
                     agent_id=0, agent_name="Genesis",
                     channel="genesis-log",
                     content=json.dumps(announcement),
-                    message_type="system",
-                    importance=4,
-                )
+                    message_type=MessageType.SYSTEM,
+                    importance=2,
+                ))
             except Exception as e:
                 self.log.debug(f"Agora birth announcement failed: {e}")
 

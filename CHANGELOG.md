@@ -2,6 +2,51 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [3.1.0] - 2026-04-13
+
+### Directory Cleanup & Reorganization
+
+Full codebase audit and directory reorganization after Phase 9 completion.
+
+#### Audit Results
+- 576 project files, 91 source modules, 73 test files, 759 tests
+- 0 broken imports, 0 orphaned modules, 0 duplicate functionality
+- 6 unused packages in requirements.txt, 5 missing .env.example vars
+- Alembic migration fork (2 branches from same parent) identified and fixed
+
+#### Directory Changes
+- **Moved** 11 PHASE_*_KICKOFF.md files → `docs/kickoffs/`
+- **Moved** 6 historical docs → `docs/archive/` (original chat, Phase 2 scorecard, React mockup, CC kickoff, preflight checklist, textbook prompt)
+- **Deleted** `syndicateapi.png` (orphaned, unreferenced image)
+- **Cleaned** 19 `__pycache__` directories outside .venv
+
+#### Configuration Cleanup
+- **requirements.txt** — removed 6 unused packages: langgraph, langchain-anthropic, langchain-core, web3, ta, apscheduler
+- **.gitignore** — added `.claude/` to prevent worktree clutter from being tracked
+- **Alembic** — linearized migration chain: c4a9d7f1b2e8 (CAD columns) → c1d2e3f4a5b6 (last_words). No more fork.
+
+#### Documentation Overhaul
+- **CLAUDE.md** — comprehensive rewrite: corrected Python version (3.13.7), replaced LangGraph with actual Custom OODA loop framework, updated all 48 DB tables, documented all phases through 9, corrected Key Technical Decisions table, updated directory structure, added all scripts
+- **DEFERRED_ITEMS_TRACKER.md** — updated to 2026-04-13, added CLEANUP ITEMS section (5 missing .env vars, SQLAlchemy warnings, datetime deprecation, sandbox test failures)
+- **CURRENT_STATUS.md** — updated to reflect cleanup session
+
+## [3.0.1] - 2026-03-23
+
+### Database Schema Fix — Missing CAD Currency Columns
+
+Added Alembic migration `c4a9d7f1b2e8` for 6 columns that were added to
+SQLAlchemy models during the currency layer work but never migrated to the
+database:
+
+- `system_state.treasury_currency` — VARCHAR(10), default 'CAD'
+- `agents.total_true_pnl_cad` — FLOAT, default 0.0
+- `evaluations.pnl_gross_cad` — FLOAT, default 0.0
+- `evaluations.pnl_net_cad` — FLOAT, default 0.0
+- `evaluations.api_cost_cad` — FLOAT, default 0.0
+- `daily_reports.usdt_cad_rate` — FLOAT, nullable
+
+Fixes: `clean_slate.py` crash on `treasury_currency` column not found.
+
 ## [3.0.0] - 2026-03-24
 
 ### Production Readiness — Hardening, Integration Tests, Stress Tests
