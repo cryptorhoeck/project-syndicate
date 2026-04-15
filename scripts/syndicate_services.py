@@ -492,7 +492,86 @@ def apply_schema_updates(config: dict, console: Console) -> bool:
                 created_at TIMESTAMP DEFAULT NOW(),
                 updated_at TIMESTAMP DEFAULT NOW()
             )""",
+            # Phase 9A: Colony Maturity & SIP Voting
+            """CREATE TABLE IF NOT EXISTS colony_maturity (
+                id SERIAL PRIMARY KEY,
+                stage VARCHAR(20) NOT NULL DEFAULT 'nascent',
+                colony_age_days INT NOT NULL DEFAULT 0,
+                max_generation INT NOT NULL DEFAULT 1,
+                total_sips_passed INT NOT NULL DEFAULT 0,
+                active_agent_count INT NOT NULL DEFAULT 0,
+                last_stage_transition_at TIMESTAMP,
+                last_computed_at TIMESTAMP DEFAULT NOW(),
+                created_at TIMESTAMP DEFAULT NOW()
+            )""",
+            """CREATE TABLE IF NOT EXISTS parameter_registry (
+                id SERIAL PRIMARY KEY,
+                parameter_key VARCHAR(100) NOT NULL UNIQUE,
+                display_name VARCHAR(200) NOT NULL,
+                description TEXT NOT NULL,
+                category VARCHAR(50) NOT NULL,
+                current_value FLOAT NOT NULL,
+                default_value FLOAT NOT NULL,
+                min_value FLOAT NOT NULL,
+                max_value FLOAT NOT NULL,
+                tier INT NOT NULL DEFAULT 1,
+                unit VARCHAR(30),
+                last_modified_by_sip_id INT,
+                last_modified_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT NOW()
+            )""",
+            """CREATE TABLE IF NOT EXISTS parameter_change_log (
+                id SERIAL PRIMARY KEY,
+                parameter_key VARCHAR(100) NOT NULL,
+                old_value FLOAT NOT NULL,
+                new_value FLOAT NOT NULL,
+                changed_by_sip_id INT NOT NULL,
+                changed_at TIMESTAMP DEFAULT NOW(),
+                drift_direction VARCHAR(10) NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS sip_votes (
+                id SERIAL PRIMARY KEY,
+                sip_id INT NOT NULL,
+                agent_id INT NOT NULL,
+                agent_name VARCHAR(100) NOT NULL,
+                vote VARCHAR(10) NOT NULL CHECK (vote IN ('support', 'oppose', 'abstain')),
+                vote_weight FLOAT NOT NULL DEFAULT 1.0,
+                agora_message_id INT,
+                voted_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(sip_id, agent_id)
+            )""",
+            """CREATE TABLE IF NOT EXISTS sip_debates (
+                id SERIAL PRIMARY KEY,
+                sip_id INT NOT NULL,
+                agent_id INT NOT NULL,
+                agent_name VARCHAR(100) NOT NULL,
+                position VARCHAR(10) NOT NULL CHECK (position IN ('for', 'against', 'neutral')),
+                argument TEXT NOT NULL,
+                agora_message_id INT,
+                posted_at TIMESTAMP DEFAULT NOW()
+            )""",
         ]
+
+        # Phase 9A: SIP lifecycle columns on system_improvement_proposals
+        sip_columns = [
+            ("system_improvement_proposals", "lifecycle_status", "VARCHAR(30) DEFAULT 'debate'"),
+            ("system_improvement_proposals", "debate_ends_at", "TIMESTAMP"),
+            ("system_improvement_proposals", "voting_ends_at", "TIMESTAMP"),
+            ("system_improvement_proposals", "tallied_at", "TIMESTAMP"),
+            ("system_improvement_proposals", "genesis_reviewed_at", "TIMESTAMP"),
+            ("system_improvement_proposals", "implemented_at", "TIMESTAMP"),
+            ("system_improvement_proposals", "target_parameter_key", "VARCHAR(100)"),
+            ("system_improvement_proposals", "proposed_value", "FLOAT"),
+            ("system_improvement_proposals", "weighted_support", "FLOAT DEFAULT 0.0"),
+            ("system_improvement_proposals", "weighted_oppose", "FLOAT DEFAULT 0.0"),
+            ("system_improvement_proposals", "weighted_total_cast", "FLOAT DEFAULT 0.0"),
+            ("system_improvement_proposals", "vote_pass_percentage", "FLOAT"),
+            ("system_improvement_proposals", "parameter_tier", "INT"),
+            ("system_improvement_proposals", "colony_maturity_at_proposal", "VARCHAR(20)"),
+            ("system_improvement_proposals", "genesis_veto_used", "BOOLEAN DEFAULT FALSE"),
+            ("system_improvement_proposals", "cosponsor_agent_id", "INT"),
+        ]
+        add_columns.extend(sip_columns)
 
         with engine.connect() as conn:
             applied = 0
@@ -526,6 +605,43 @@ def apply_schema_updates(config: dict, console: Console) -> bool:
         return True  # Non-fatal — don't block launch
 
 
+def _seed_governance(config: dict, console: Console) -> None:
+    """Seed Phase 9A governance tables (idempotent)."""
+    console.print("  Seeding governance layer...", end="")
+    try:
+        from sqlalchemy import create_engine, text
+        pg = config.get("postgresql", {})
+        db_url = (
+            f"postgresql://{pg.get('user', 'postgres')}"
+            f"@localhost:{pg.get('port', 5432)}"
+            f"/{pg.get('database', 'syndicate')}"
+        )
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            # Ensure colony_maturity singleton exists
+            count = conn.execute(text("SELECT COUNT(*) FROM colony_maturity")).scalar()
+            if count == 0:
+                conn.execute(text("INSERT INTO colony_maturity (stage) VALUES ('nascent')"))
+                conn.commit()
+
+            # Seed parameter registry
+            param_count = conn.execute(text("SELECT COUNT(*) FROM parameter_registry")).scalar()
+            if param_count == 0:
+                try:
+                    from scripts.seed_parameter_registry import seed
+                    seed(db_url)
+                    param_count = conn.execute(text("SELECT COUNT(*) FROM parameter_registry")).scalar()
+                except Exception as e:
+                    console.print(f" [yellow]seed failed: {e}[/yellow]")
+                    engine.dispose()
+                    return
+
+        engine.dispose()
+        console.print(f" [green]OK[/green] ({param_count} parameters)")
+    except Exception as e:
+        console.print(f" [yellow]skipped[/yellow] ({e})")
+
+
 # ── Composite Operations ────────────────────────────────────
 
 def launch_all(config: dict, console: Console) -> bool:
@@ -547,6 +663,10 @@ def launch_all(config: dict, console: Console) -> bool:
     # 1.5. Schema updates (idempotent — runs every launch)
     if pg_ok:
         apply_schema_updates(config, console)
+
+    # 1.6. Seed parameter registry + colony maturity (Phase 9A)
+    if pg_ok:
+        _seed_governance(config, console)
 
     # 2. Memurai
     mem_ok = start_memurai(config, console)
@@ -638,8 +758,10 @@ def clean_slate(config: dict, console: Console) -> bool:
         engine = create_engine(db_url)
 
         # All tables to truncate — FK-safe order (children before parents).
-        # Includes Phase 8B/8C tables. Missing tables are silently skipped.
+        # Includes Phase 8B/8C/9A tables. Missing tables are silently skipped.
         tables = [
+            # Phase 9A (must come before system_improvement_proposals)
+            "sip_votes", "sip_debates", "parameter_change_log",
             # Phase 8C
             "sandbox_executions", "agent_tools", "agent_genomes",
             # Phase 8B
@@ -781,6 +903,22 @@ def clean_slate(config: dict, console: Console) -> bool:
                 console.print("  Redis flushed")
             except Exception:
                 console.print("  [dim]Redis flush skipped[/dim]")
+
+        # Step 6: Reset colony maturity to nascent and re-seed parameter registry
+        try:
+            engine2 = create_engine(db_url)
+            with engine2.connect() as conn:
+                conn.execute(text("DELETE FROM colony_maturity"))
+                conn.execute(text("INSERT INTO colony_maturity (stage) VALUES ('nascent')"))
+                conn.execute(text("DELETE FROM parameter_registry"))
+                conn.commit()
+            engine2.dispose()
+            # Re-seed parameters
+            from scripts.seed_parameter_registry import seed
+            seed(db_url)
+            console.print("  Colony maturity reset + parameters re-seeded")
+        except Exception as e:
+            console.print(f"  [dim]Governance reset: {e}[/dim]")
 
         console.print("  [green]Clean slate complete.[/green] Ready for a fresh Arena run.")
         return True

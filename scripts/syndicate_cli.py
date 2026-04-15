@@ -80,6 +80,7 @@ def display_menu(console: Console, status: dict) -> None:
         "[bold cyan][7][/bold cyan] Clean Slate",
         "[bold cyan][8][/bold cyan] Settings",
         "[bold cyan][9][/bold cyan] Services",
+        "[bold cyan][R][/bold cyan] Review SIPs",
         "[bold cyan][S][/bold cyan] Smoke Test",
         "[bold cyan][0][/bold cyan] Exit",
     ]
@@ -404,6 +405,122 @@ def menu_smoke_test(config: dict, console: Console) -> None:
     input("  Press Enter to return to menu...")
 
 
+def menu_review_sips(config: dict, console: Console) -> None:
+    """Review pending SIPs awaiting owner decision."""
+    console.print()
+    console.print("[bold]  SIP REVIEW — Owner Decisions[/bold]")
+    console.print("  " + "-" * 40)
+
+    try:
+        from sqlalchemy import create_engine, text
+        from dotenv import load_dotenv
+        load_dotenv(str(PROJECT_ROOT / ".env"), override=True)
+
+        pg = config.get("postgresql", {})
+        db_url = (
+            f"postgresql://{pg.get('user', 'postgres')}"
+            f"@localhost:{pg.get('port', 5432)}"
+            f"/{pg.get('database', 'syndicate')}"
+        )
+        engine = create_engine(db_url)
+
+        with engine.connect() as conn:
+            # Fetch SIPs in owner_review
+            rows = conn.execute(text(
+                "SELECT id, title, proposer_agent_name, category, "
+                "target_parameter_key, proposed_value, "
+                "vote_pass_percentage, weighted_support, weighted_oppose, "
+                "genesis_verdict, genesis_reasoning "
+                "FROM system_improvement_proposals "
+                "WHERE lifecycle_status = 'owner_review' "
+                "ORDER BY id"
+            )).fetchall()
+
+        if not rows:
+            console.print("  [dim]No SIPs awaiting your review.[/dim]")
+
+            # Show recent governance activity
+            with engine.connect() as conn:
+                active = conn.execute(text(
+                    "SELECT id, title, lifecycle_status FROM system_improvement_proposals "
+                    "WHERE lifecycle_status IN ('debate','voting','tallied','genesis_review') "
+                    "ORDER BY id"
+                )).fetchall()
+                resolved = conn.execute(text(
+                    "SELECT id, title, lifecycle_status FROM system_improvement_proposals "
+                    "WHERE lifecycle_status IN ('implemented','rejected_by_vote','vetoed_by_genesis','rejected_by_owner') "
+                    "ORDER BY resolved_at DESC LIMIT 5"
+                )).fetchall()
+
+            if active:
+                console.print()
+                console.print("  [bold]Active SIPs:[/bold]")
+                for r in active:
+                    console.print(f"    #{r[0]}: {r[1]} [{r[2]}]")
+
+            if resolved:
+                console.print()
+                console.print("  [bold]Recent outcomes:[/bold]")
+                for r in resolved:
+                    color = "green" if r[2] == "implemented" else "red"
+                    console.print(f"    #{r[0]}: {r[1]} [{color}]{r[2]}[/{color}]")
+
+            engine.dispose()
+            console.print()
+            input("  Press Enter to return to menu...")
+            return
+
+        for row in rows:
+            sip_id, title, proposer, category, param_key, proposed_val, \
+                vote_pct, w_support, w_oppose, verdict, reasoning = row
+
+            console.print()
+            console.print(f"  [bold cyan]SIP #{sip_id}:[/bold cyan] {title}")
+            console.print(f"  Proposer: {proposer}  |  Category: {category}")
+            if param_key:
+                console.print(f"  Parameter: {param_key} -> {proposed_val}")
+            if vote_pct is not None:
+                console.print(f"  Vote: {vote_pct*100:.0f}% support ({w_support:.1f} for, {w_oppose:.1f} against)")
+            if verdict:
+                console.print(f"  Genesis: {verdict} — {reasoning[:200] if reasoning else ''}")
+            console.print()
+
+            while True:
+                choice = input("  [A]pprove / [R]eject / [D]efer / [S]kip: ").strip().upper()
+                if choice in ("A", "R", "D", "S"):
+                    break
+                console.print("  [yellow]Invalid. Choose A, R, D, or S.[/yellow]")
+
+            if choice == "S":
+                continue
+
+            notes = ""
+            if choice == "R":
+                notes = input("  Reason for rejection (optional): ").strip()
+
+            decision_map = {"A": "accepted", "R": "rejected", "D": "deferred"}
+            decision = decision_map[choice]
+
+            with engine.connect() as conn:
+                conn.execute(text(
+                    "UPDATE system_improvement_proposals "
+                    "SET owner_decision = :decision, owner_notes = :notes "
+                    "WHERE id = :sip_id"
+                ), {"decision": decision, "notes": notes or None, "sip_id": sip_id})
+                conn.commit()
+
+            label = {"A": "[green]APPROVED[/green]", "R": "[red]REJECTED[/red]", "D": "[yellow]DEFERRED[/yellow]"}
+            console.print(f"  SIP #{sip_id}: {label[choice]}")
+
+        engine.dispose()
+
+    except Exception as e:
+        console.print(f"  [red]Error: {e}[/red]")
+
+    console.print()
+    input("  Press Enter to return to menu...")
+
+
 def menu_exit(config: dict, console: Console) -> bool:
     """Handle exit. Returns True if should exit, False to stay in menu."""
     status = get_system_status(config)
@@ -462,6 +579,8 @@ def main():
             config = menu_settings(config, console)
         elif choice == "9":
             menu_services(config, console)
+        elif choice.upper() == "R":
+            menu_review_sips(config, console)
         elif choice.upper() == "S":
             menu_smoke_test(config, console)
         elif choice == "0":

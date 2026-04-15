@@ -142,6 +142,36 @@ def _preflight_checks() -> bool:
     else:
         log.info("preflight_trading_mode", status="OK", mode="paper")
 
+    # Phase 9A: Governance tables + parameter registry
+    try:
+        from sqlalchemy import create_engine, text
+        from src.common.config import config as cfg
+        engine = create_engine(cfg.database_url, pool_pre_ping=True)
+        with engine.connect() as conn:
+            for table in ["colony_maturity", "parameter_registry", "sip_votes",
+                          "sip_debates", "parameter_change_log"]:
+                conn.execute(text(f"SELECT 1 FROM {table} LIMIT 1"))
+
+            # Check parameter registry is seeded
+            param_count = conn.execute(
+                text("SELECT COUNT(*) FROM parameter_registry")
+            ).scalar()
+            if param_count == 0:
+                log.info("preflight_governance", status="SEEDING",
+                         message="Parameter registry empty — seeding now")
+                from scripts.seed_parameter_registry import seed
+                seed(cfg.database_url)
+                param_count = conn.execute(
+                    text("SELECT COUNT(*) FROM parameter_registry")
+                ).scalar()
+
+        engine.dispose()
+        log.info("preflight_governance", status="OK",
+                 tables=5, parameters=param_count)
+    except Exception as e:
+        log.error("preflight_governance", status="FAIL", error=str(e))
+        checks_passed = False
+
     return checks_passed
 
 
