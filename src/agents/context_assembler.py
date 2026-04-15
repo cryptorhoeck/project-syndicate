@@ -393,7 +393,23 @@ Idle rate: {agent.idle_rate:.1%} | Validation fail rate: {agent.validation_fail_
 
 === SYSTEM STATE ===
 Market regime: {regime} | Alert level: {alert}
-Watched markets: {agent.watched_markets or []}""" + self._build_evaluation_feedback(agent) + self._build_portfolio_awareness(agent)
+Watched markets: {agent.watched_markets or []}""" + self._build_cold_start_notice() + self._build_evaluation_feedback(agent) + self._build_portfolio_awareness(agent)
+
+    def _build_cold_start_notice(self) -> str:
+        """Inject cold start notice if system booted recently."""
+        try:
+            from src.agents.survival_context import get_minutes_since_boot
+            minutes = get_minutes_since_boot(self.db)
+            if minutes is not None and minutes < syndicate_config.cold_start_grace_minutes:
+                return (
+                    f"\nCOLD START IN PROGRESS — System booted {int(minutes)} minutes ago. "
+                    "The pipeline is initializing. Scouts are beginning their first scans. "
+                    "Allow at least 30 minutes before evaluating pipeline health. "
+                    "Do NOT flag empty pipeline as a failure during cold start."
+                )
+        except Exception:
+            pass
+        return ""
 
     def _build_evaluation_feedback(self, agent: Agent) -> str:
         """Inject evaluation scorecard and warnings (one-time delivery)."""

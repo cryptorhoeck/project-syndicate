@@ -272,6 +272,21 @@ def main() -> None:
 
     _print_banner()
 
+    # Stamp boot time for cold start grace period
+    try:
+        from sqlalchemy import create_engine, text
+        from src.common.config import config
+        engine = create_engine(config.database_url)
+        with engine.connect() as conn:
+            conn.execute(text(
+                "UPDATE system_state SET last_arena_boot_at = NOW() WHERE id = 1"
+            ))
+            conn.commit()
+        engine.dispose()
+        log.info("arena_boot_timestamp", status="stamped")
+    except Exception as e:
+        log.warning("arena_boot_timestamp_failed", error=str(e))
+
     log.info("arena_starting", version=__version__, processes=list(PROCESSES.keys()))
 
     # Start all processes — Warden first (safety critical)

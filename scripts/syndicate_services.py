@@ -362,6 +362,7 @@ def apply_schema_updates(config: dict, console: Console) -> bool:
             ("agents", "last_words", "TEXT"),
             ("agent_cycles", "model_used", "VARCHAR(60)"),
             ("agent_cycles", "model_reason", "VARCHAR(30)"),
+            ("system_state", "last_arena_boot_at", "TIMESTAMP"),
         ]
 
         # Tables to create (IF NOT EXISTS — idempotent)

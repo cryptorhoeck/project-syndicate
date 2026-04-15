@@ -11,6 +11,8 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from src.web.dependencies import format_utc_timestamp
+
 logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Request
@@ -99,7 +101,7 @@ def _format_event(msg) -> dict:
         "color": color,
         "text": f"{msg.agent_name or 'System'}: {content[:500]}",
         "time": time_str,
-        "timestamp": str(ts) if ts else "",
+        "timestamp": format_utc_timestamp(ts),
         "is_major": is_major,
     }
 

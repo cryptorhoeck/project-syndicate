@@ -10,8 +10,9 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
-
 from sqlalchemy import func, select
+
+from src.web.dependencies import format_utc_timestamp
 
 from src.common.models import AgoraChannel, Agent, Message
 
@@ -28,7 +29,7 @@ def _message_to_dict(row: Message, agent_type_map: dict) -> dict:
         "content": row.content,
         "message_type": row.message_type or "chat",
         "importance": row.importance or 0,
-        "timestamp": str(row.timestamp) if row.timestamp else "",
+        "timestamp": format_utc_timestamp(row.timestamp),
     }
 
 

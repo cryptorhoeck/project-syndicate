@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 
 from src.common.models import Agent, Message, ReputationTransaction
+from src.web.dependencies import format_utc_timestamp
 from src.web.routes.pages import _build_agent_card_data
 
 router = APIRouter()
@@ -65,7 +66,7 @@ async def agent_messages(request: Request, agent_id: int, limit: int = 20):
                 "content": r.content,
                 "message_type": r.message_type or "chat",
                 "importance": r.importance or 0,
-                "timestamp": str(r.timestamp) if r.timestamp else "",
+                "timestamp": format_utc_timestamp(r.timestamp),
             }
             for r in rows
         ]
@@ -108,7 +109,7 @@ async def agent_reputation(request: Request, agent_id: int, limit: int = 20):
                 f'<div class="flex items-center justify-between px-4 py-2" style="border-bottom: 1px solid #1a244440;">'
                 f'<span class="font-mono text-sm" style="{color}">{amount_str}</span>'
                 f'<span class="text-xs truncate max-w-xs" style="color:#8892b0;">{t.reason or "—"}</span>'
-                f'<span class="font-mono text-xs text-syn-text-dim" data-timestamp="{t.timestamp}">{t.timestamp}</span>'
+                f'<span class="font-mono text-xs text-syn-text-dim" data-timestamp="{format_utc_timestamp(t.timestamp)}">{format_utc_timestamp(t.timestamp)}</span>'
                 f'</div>'
             )
 

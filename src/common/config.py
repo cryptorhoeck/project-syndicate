@@ -282,6 +282,9 @@ class SyndicateConfig(BaseSettings):
     # Sandbox cost cap
     daily_sandbox_cap_usd: float = 0.50
 
+    # Cold start grace period (minutes before pipeline health checks activate)
+    cold_start_grace_minutes: int = 30
+
     # Phase 9A: SIP Voting & Colony Maturity
     sip_voting_enabled: bool = True
     sip_default_debate_hours: int = 8

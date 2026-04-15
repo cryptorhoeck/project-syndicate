@@ -58,6 +58,10 @@ def create_app() -> FastAPI:
     # Templates
     app.state.templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
+    # Jinja2 filter for UTC ISO timestamps
+    from src.web.dependencies import format_utc_timestamp
+    app.state.templates.env.filters["utc_iso"] = format_utc_timestamp
+
     # Routes
     from src.web.routes.pages import router as pages_router
     from src.web.routes.api_agora import router as api_agora_router

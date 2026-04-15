@@ -17,6 +17,19 @@ from sqlalchemy.orm import Session
 from src.common.models import Agent, SystemState
 
 
+def format_utc_timestamp(ts) -> str:
+    """Format a datetime as ISO 8601 with Z suffix for correct JS parsing.
+
+    Database timestamps are stored as naive UTC. This ensures the browser's
+    ``new Date(isoStr)`` interprets them as UTC rather than local time.
+    """
+    if ts is None:
+        return ""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def get_db(request: Request):
     """Get a database session from the app state.
 

@@ -13,6 +13,8 @@ from fastapi.responses import HTMLResponse
 
 from sqlalchemy import func, select
 
+from src.web.dependencies import format_utc_timestamp
+
 from src.common.models import (
     Agent,
     AgentCycle,
@@ -103,21 +105,21 @@ async def system_processes(request: Request):
     processes = [
         {
             "name": "Genesis",
-            "last_activity": str(genesis_last) if genesis_last else "",
+            "last_activity": format_utc_timestamp(genesis_last),
             "last_activity_ago": _ago(genesis_last),
             "interval": "5min",
             "healthy": _healthy(genesis_last, 600),
         },
         {
             "name": "Warden",
-            "last_activity": str(updated_at) if updated_at else "",
+            "last_activity": format_utc_timestamp(updated_at),
             "last_activity_ago": _ago(updated_at),
             "interval": "30s",
             "healthy": _healthy(updated_at, 120),
         },
         {
             "name": "Heartbeat",
-            "last_activity": str(heartbeat_at) if heartbeat_at else "",
+            "last_activity": format_utc_timestamp(heartbeat_at),
             "last_activity_ago": _ago(heartbeat_at),
             "interval": "10s",
             "healthy": _healthy(heartbeat_at, 30),
@@ -200,7 +202,7 @@ async def system_alerts(request: Request):
                 "content": r.content,
                 "message_type": r.message_type or "alert",
                 "importance": r.importance or 0,
-                "timestamp": str(r.timestamp) if r.timestamp else "",
+                "timestamp": format_utc_timestamp(r.timestamp),
             }
             for r in rows
         ]

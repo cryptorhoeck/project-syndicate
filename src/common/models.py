@@ -362,6 +362,7 @@ class SystemState(Base):
     alert_status: Mapped[str] = mapped_column(String(20), default="green")  # green, yellow, red, circuit_breaker
     last_backup_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_arena_boot_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     def __repr__(self) -> str:

@@ -22,6 +22,21 @@ from src.common.models import Agent, Opportunity, Plan, Position, SystemState
 logger = logging.getLogger(__name__)
 
 
+def get_minutes_since_boot(db_session: Session) -> float | None:
+    """Return minutes since last Arena boot, or None if unknown."""
+    try:
+        state = db_session.execute(select(SystemState).limit(1)).scalar_one_or_none()
+        if state and state.last_arena_boot_at:
+            boot = state.last_arena_boot_at
+            if boot.tzinfo is None:
+                boot = boot.replace(tzinfo=timezone.utc)
+            delta = (datetime.now(timezone.utc) - boot).total_seconds() / 60
+            return max(0, delta)
+    except Exception:
+        pass
+    return None
+
+
 class SurvivalContextAssembler:
     """Assembles competitive landscape context for an agent."""
 
@@ -58,6 +73,12 @@ class SurvivalContextAssembler:
 
     def build_pressure_addenda(self, agent: Agent, db_session: Session) -> str:
         """Extra text when agent is in danger. Empty if safe."""
+        # Suppress pressure during cold start — agents need time to warm up
+        minutes_since_boot = get_minutes_since_boot(db_session)
+        if (minutes_since_boot is not None
+                and minutes_since_boot < config.cold_start_grace_minutes):
+            return ""
+
         lines = []
 
         rank, total = self._get_role_rank(agent, db_session)
@@ -292,13 +313,24 @@ class SurvivalContextAssembler:
             f"  Pipeline (24h): {opps} opps → {plans} plans → {trades} trades",
         ]
 
-        # Bottleneck
-        if opps > 0 and plans == 0:
-            lines.append("  ⚠️ Bottleneck: strategy (no plans from opportunities)")
-        elif plans > 0 and trades == 0:
-            lines.append("  ⚠️ Bottleneck: execution (no trades from plans)")
-        elif opps == 0:
-            lines.append("  ⚠️ Bottleneck: scouting (no opportunities found)")
+        # Cold start grace — suppress pipeline bottleneck warnings
+        minutes_since_boot = get_minutes_since_boot(db_session)
+        in_cold_start = (minutes_since_boot is not None
+                         and minutes_since_boot < config.cold_start_grace_minutes)
+
+        if in_cold_start:
+            lines.append(
+                f"  Pipeline is in cold start phase ({int(minutes_since_boot)}m since boot). "
+                "Monitoring will begin after warm-up."
+            )
+        else:
+            # Bottleneck detection (only after warm-up)
+            if opps > 0 and plans == 0:
+                lines.append("  ⚠️ Bottleneck: strategy (no plans from opportunities)")
+            elif plans > 0 and trades == 0:
+                lines.append("  ⚠️ Bottleneck: execution (no trades from plans)")
+            elif opps == 0:
+                lines.append("  ⚠️ Bottleneck: scouting (no opportunities found)")
 
         lines.append(f"  Treasury: ${treasury:.2f} | Alert: {alert}")
 

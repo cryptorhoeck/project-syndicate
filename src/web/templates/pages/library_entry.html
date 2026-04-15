@@ -32,7 +32,7 @@
                 {% endif %}
                 <div class="flex justify-between">
                     <span class="text-slate-500">Created</span>
-                    <span class="text-slate-200 font-mono text-xs" data-timestamp="{{ entry.created_at }}">{{ entry.created_at }}</span>
+                    <span class="text-slate-200 font-mono text-xs" data-timestamp="{{ entry.created_at|utc_iso }}">{{ entry.created_at|utc_iso }}</span>
                 </div>
                 {% if entry.market_regime_at_creation %}
                 <div class="flex justify-between">
