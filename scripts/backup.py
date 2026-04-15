@@ -42,7 +42,7 @@ CONFIG_DIR = PROJECT_ROOT / "config"
 # ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
-load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(PROJECT_ROOT / ".env", override=True)
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 PG_DUMP_PATH = os.getenv("PG_DUMP_PATH", "pg_dump")

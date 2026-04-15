@@ -627,7 +627,7 @@ def clean_slate(config: dict, console: Console) -> bool:
     try:
         from sqlalchemy import create_engine, text
         from dotenv import load_dotenv
-        load_dotenv(str(PROJECT_ROOT / ".env"))
+        load_dotenv(str(PROJECT_ROOT / ".env"), override=True)
 
         pg = config.get("postgresql", {})
         db_url = (

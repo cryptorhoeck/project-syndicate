@@ -17,6 +17,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from dotenv import load_dotenv
+load_dotenv(str(PROJECT_ROOT / ".env"), override=True)
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
