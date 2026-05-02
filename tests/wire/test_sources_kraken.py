@@ -103,3 +103,61 @@ class TestKrakenParse:
         except SourceFetchError:
             return
         raise AssertionError("expected SourceFetchError on malformed RSS")
+
+
+_RSS_WITH_CATEGORIES = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+<channel>
+  <title>Kraken Blog</title>
+  <item>
+    <title>Asset listing — XYZ</title>
+    <link>https://blog.kraken.com/post/xyz</link>
+    <guid>https://blog.kraken.com/post/xyz</guid>
+    <pubDate>Fri, 02 May 2026 10:00:00 +0000</pubDate>
+    <description>XYZ available for trading.</description>
+    <category><![CDATA[Asset Listings]]></category>
+  </item>
+  <item>
+    <title>Kraken sponsors a marathon</title>
+    <link>https://blog.kraken.com/post/marathon</link>
+    <guid>https://blog.kraken.com/post/marathon</guid>
+    <pubDate>Fri, 02 May 2026 10:30:00 +0000</pubDate>
+    <description>Sponsorship news.</description>
+    <category><![CDATA[Lifestyle]]></category>
+    <category><![CDATA[Marketing]]></category>
+  </item>
+  <item>
+    <title>Plain post with no categories</title>
+    <link>https://blog.kraken.com/post/uncat</link>
+    <guid>https://blog.kraken.com/post/uncat</guid>
+    <pubDate>Fri, 02 May 2026 10:45:00 +0000</pubDate>
+    <description>No categories.</description>
+  </item>
+</channel>
+</rss>
+"""
+
+
+class TestKrakenCategoryFilter:
+    def test_filters_out_non_announcement_categories(self) -> None:
+        client = FakeHttpClient(FakeResponse(text=_RSS_WITH_CATEGORIES))
+        source = KrakenAnnouncementsSource(http_client=client)
+        items = list(source.fetch_raw())
+        titles = [i.raw_payload["title"] for i in items]
+        # Asset Listings hits the inclusion set; marathon's Lifestyle/Marketing
+        # don't, so it must be excluded. Uncategorized items pass (title rules
+        # still apply).
+        assert "Asset listing — XYZ" in titles
+        assert "Plain post with no categories" in titles
+        assert "Kraken sponsors a marathon" not in titles
+
+    def test_explicit_match_categories_overrides_default(self) -> None:
+        client = FakeHttpClient(FakeResponse(text=_RSS_WITH_CATEGORIES))
+        source = KrakenAnnouncementsSource(
+            http_client=client,
+            config={"match_categories": ["Lifestyle"]},
+        )
+        items = list(source.fetch_raw())
+        titles = [i.raw_payload["title"] for i in items]
+        assert "Kraken sponsors a marathon" in titles
+        assert "Asset listing — XYZ" not in titles

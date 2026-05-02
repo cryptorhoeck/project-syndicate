@@ -181,13 +181,21 @@ class TestFred:
 
 
 class TestTradingEconomics:
+    def test_missing_api_key_raises(self) -> None:
+        try:
+            list(TradingEconomicsSource().fetch_raw())
+        except SourceFetchError as exc:
+            assert "TRADINGECONOMICS_API_KEY" in str(exc)
+            return
+        raise AssertionError("expected SourceFetchError on missing key")
+
     def test_skips_low_importance(self) -> None:
         fixture = [
             {"CalendarId": "1", "Event": "Minor data", "Country": "US",
              "Importance": 1, "Date": "2026-04-15T12:00:00"},
         ]
         client = FakeHttpClient(FakeResponse(json_data=fixture))
-        source = TradingEconomicsSource(http_client=client)
+        source = TradingEconomicsSource(api_key="dummy", http_client=client)
         items = list(source.fetch_raw())
         assert items == []
 
@@ -198,7 +206,7 @@ class TestTradingEconomics:
              "Importance": 3, "Date": "2099-01-01T19:00:00"},
         ]
         client = FakeHttpClient(FakeResponse(json_data=fixture))
-        source = TradingEconomicsSource(http_client=client)
+        source = TradingEconomicsSource(api_key="dummy", http_client=client)
         items = list(source.fetch_raw())
         assert len(items) == 1
         assert items[0].deterministic_severity == SEVERITY_NOTABLE

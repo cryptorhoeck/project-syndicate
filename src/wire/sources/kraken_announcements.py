@@ -102,13 +102,36 @@ class KrakenAnnouncementsSource(WireSourceBase):
     requires_api_key = False
     api_key_env_var = None
 
-    DEFAULT_FEED_URL = "https://blog.kraken.com/category/announcement/feed"
+    # Kraken's category-filtered feed (/category/announcement/feed) is gone.
+    # The all-blog feed at /feed/ works and exposes per-item <category> tags
+    # we filter on client-side. ANNOUNCEMENT_CATEGORIES below is the inclusive
+    # set; missing-category items still pass when match_categories is empty.
+    DEFAULT_FEED_URL = "https://blog.kraken.com/feed/"
+
+    ANNOUNCEMENT_CATEGORIES_DEFAULT = (
+        "Asset Listings",
+        "Announcements",
+        "Maintenance",
+        "API",
+        "Security",
+        "Support",
+    )
 
     def fetch_raw(self) -> Iterable[FetchedItem]:
         url = self.config.get("base_url") or self.DEFAULT_FEED_URL
+        match_categories = self.config.get("match_categories")
+        if match_categories is None:
+            match_categories = list(self.ANNOUNCEMENT_CATEGORIES_DEFAULT)
+        match_lower = {c.lower() for c in match_categories} if match_categories else set()
+
         client = self.http_client or httpx
         try:
-            response = client.get(url, timeout=15.0, headers={"User-Agent": "syndicate-wire/1.0"})
+            response = client.get(
+                url,
+                timeout=15.0,
+                follow_redirects=True,
+                headers={"User-Agent": "syndicate-wire/1.0"},
+            )
             response.raise_for_status()
             body = response.text
         except Exception as exc:  # broad: network, ssl, dns, status
@@ -138,6 +161,19 @@ class KrakenAnnouncementsSource(WireSourceBase):
             if not title:
                 continue
 
+            # Client-side category filter. Skip items that explicitly carry
+            # categories which all fall outside the announcement set; if an
+            # item lists no categories we keep it and rely on title rules.
+            categories = [
+                (c.text or "").strip()
+                for c in item.findall("category")
+                if c is not None and c.text
+            ]
+            if categories and match_lower:
+                cats_lower = {c.lower() for c in categories}
+                if not (cats_lower & match_lower):
+                    continue
+
             occurred_at: datetime | None = None
             if pub_date_str:
                 try:
@@ -153,8 +189,12 @@ class KrakenAnnouncementsSource(WireSourceBase):
                 "link": link,
                 "description": description,
                 "pub_date": pub_date_str,
+                "categories": categories,
             }
-            haiku_brief = f"Kraken announcement: {title}\n{description}".strip()
+            cat_str = (", ".join(categories[:3]) or "uncategorized")
+            haiku_brief = (
+                f"Kraken blog ({cat_str}): {title}\n{description}".strip()
+            )
 
             items.append(
                 FetchedItem(

@@ -141,7 +141,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    from src.wire.logging_config import configure_wire_logging
+    configure_wire_logging()
     args = build_parser().parse_args(argv)
     return int(args.func(args))
 

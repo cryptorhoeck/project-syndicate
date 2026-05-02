@@ -233,6 +233,16 @@ async def agora_page(request: Request, channel: str = ""):
     return templates.TemplateResponse("pages/agora.html", ctx)
 
 
+@router.get("/dashboard/wire", response_class=HTMLResponse)
+@router.get("/wire", response_class=HTMLResponse)
+async def wire_page(request: Request):
+    """The Wire dashboard: live ticker, source health grid, treasury gauge."""
+    templates = request.app.state.templates
+    ctx = get_common_context(request)
+    ctx["current_page"] = "wire"
+    return templates.TemplateResponse("pages/wire.html", ctx)
+
+
 @router.get("/leaderboard", response_class=HTMLResponse)
 async def leaderboard_page(request: Request):
     templates = request.app.state.templates

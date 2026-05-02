@@ -28,6 +28,9 @@ from src.wire.sources.base import FetchedItem, SourceFetchError, WireSourceBase
 logger = logging.getLogger(__name__)
 
 
+# Kraken perpetuals symbols on krakenfutures use PI_/PF_ prefixes; ccxt's
+# unified symbols are "BTC/USD:USD" etc. — the default pairs below stay
+# unchanged because ccxt does the translation.
 DEFAULT_PAIRS: list[str] = ["BTC/USD:USD", "ETH/USD:USD"]
 
 
@@ -43,24 +46,50 @@ class FundingRatesSource(WireSourceBase):
         pairs: list[str] = self.config.get("pairs") or list(DEFAULT_PAIRS)
 
         # The ccxt client is injectable for tests; in production we lazy-import
-        # to avoid pulling ccxt at module load.
+        # to avoid pulling ccxt at module load. Kraken SPOT (`ccxt.kraken()`)
+        # does NOT support funding rates — we use krakenfutures, which does.
         client = self.http_client
         if client is None:
             try:
                 import ccxt  # noqa: WPS433
             except ImportError as exc:
                 raise SourceFetchError(f"ccxt unavailable: {exc}") from exc
-            client = ccxt.kraken({"enableRateLimit": True})
+            client = ccxt.krakenfutures({"enableRateLimit": True})
 
+        # Prefer the bulk fetchFundingRates when supported; fall back per-symbol.
         items: list[FetchedItem] = []
         now = datetime.now(timezone.utc)
-        for symbol in pairs:
+
+        rates_map: dict[str, dict] = {}
+        bulk_supported = bool(getattr(client, "has", {}).get("fetchFundingRates"))
+        if bulk_supported:
             try:
-                rate_obj = client.fetch_funding_rate(symbol)
+                bulk = client.fetch_funding_rates(pairs)
             except Exception as exc:
                 raise SourceFetchError(
-                    f"funding_rates fetch failed for {symbol}: {exc}"
+                    f"funding_rates bulk fetch failed: {exc}"
                 ) from exc
+            if isinstance(bulk, dict):
+                for sym, obj in bulk.items():
+                    if isinstance(obj, dict):
+                        rates_map[sym] = obj
+            elif isinstance(bulk, list):
+                for obj in bulk:
+                    if isinstance(obj, dict) and obj.get("symbol"):
+                        rates_map[obj["symbol"]] = obj
+
+        for symbol in pairs:
+            rate_obj = rates_map.get(symbol)
+            if rate_obj is None:
+                # Fallback: per-symbol fetch. krakenfutures' fetchFundingRate
+                # is emulated via fetchFundingRates internally; this path is
+                # mostly defensive for other ccxt exchanges.
+                try:
+                    rate_obj = client.fetch_funding_rate(symbol)
+                except Exception as exc:
+                    raise SourceFetchError(
+                        f"funding_rates fetch failed for {symbol}: {exc}"
+                    ) from exc
 
             if not isinstance(rate_obj, dict):
                 continue
@@ -78,8 +107,8 @@ class FundingRatesSource(WireSourceBase):
             direction = "bearish" if rate > 0 else "bullish"
 
             coin = symbol.split("/")[0]
-            day_bucket = now.strftime("%Y-%m-%d-%H")  # one item per pair per hour
-            ext_id = f"{symbol}::{day_bucket}"
+            hour_bucket = now.strftime("%Y-%m-%d-%H")  # one item per pair per hour
+            ext_id = f"{symbol}::{hour_bucket}"
             payload_dict: dict[str, Any] = {
                 "symbol": symbol,
                 "funding_rate": rate,

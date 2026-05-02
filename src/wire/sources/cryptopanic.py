@@ -22,20 +22,23 @@ logger = logging.getLogger(__name__)
 
 class CryptoPanicSource(WireSourceBase):
     name = SOURCE_CRYPTOPANIC
-    display_name = "CryptoPanic (Free)"
+    display_name = "CryptoPanic"
     default_interval_seconds = 600
-    requires_api_key = False
-    api_key_env_var = None
+    requires_api_key = True
+    api_key_env_var = "CRYPTOPANIC_API_KEY"
 
     DEFAULT_BASE_URL = "https://cryptopanic.com/api/v1/posts/"
 
     def fetch_raw(self) -> Iterable[FetchedItem]:
+        if not self.api_key:
+            # CryptoPanic now returns 404 for unauthenticated calls — even on
+            # the public posts endpoint. Fail fast like FRED/Etherscan rather
+            # than emit empty results silently.
+            raise SourceFetchError(
+                "cryptopanic requires CRYPTOPANIC_API_KEY"
+            )
         url = self.config.get("base_url") or self.DEFAULT_BASE_URL
-        params = {"public": "true"}
-        # Optional API key. Free public feed works without one but can be
-        # rate-limited harder; if a key is supplied, send it.
-        if self.api_key:
-            params["auth_token"] = self.api_key
+        params = {"public": "true", "auth_token": self.api_key}
 
         client = self.http_client or httpx
         try:
@@ -43,6 +46,7 @@ class CryptoPanicSource(WireSourceBase):
                 url,
                 params=params,
                 timeout=15.0,
+                follow_redirects=True,
                 headers={"User-Agent": "syndicate-wire/1.0"},
             )
             response.raise_for_status()

@@ -48,6 +48,7 @@ class DefiLlamaSource(WireSourceBase):
             response = client.get(
                 url,
                 timeout=20.0,
+                follow_redirects=True,
                 headers={"User-Agent": "syndicate-wire/1.0"},
             )
             response.raise_for_status()

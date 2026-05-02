@@ -33,45 +33,45 @@ _FIXTURE = {
 class TestCryptoPanicParse:
     def test_returns_two_items(self) -> None:
         client = FakeHttpClient(FakeResponse(json_data=_FIXTURE))
-        source = CryptoPanicSource(http_client=client)
+        source = CryptoPanicSource(api_key="dummy", http_client=client)
         items = list(source.fetch_raw())
         assert len(items) == 2
 
     def test_external_id_is_string_id(self) -> None:
         client = FakeHttpClient(FakeResponse(json_data=_FIXTURE))
-        source = CryptoPanicSource(http_client=client)
+        source = CryptoPanicSource(api_key="dummy", http_client=client)
         items = list(source.fetch_raw())
         assert items[0].external_id == "1234567"
 
     def test_first_currency_extracted_as_coin(self) -> None:
         client = FakeHttpClient(FakeResponse(json_data=_FIXTURE))
-        source = CryptoPanicSource(http_client=client)
+        source = CryptoPanicSource(api_key="dummy", http_client=client)
         items = list(source.fetch_raw())
         assert items[0].deterministic_coin == "BTC"
         assert items[1].deterministic_coin == "ETH"
 
     def test_no_severity_set_haiku_decides(self) -> None:
         client = FakeHttpClient(FakeResponse(json_data=_FIXTURE))
-        source = CryptoPanicSource(http_client=client)
+        source = CryptoPanicSource(api_key="dummy", http_client=client)
         items = list(source.fetch_raw())
         assert items[0].deterministic_severity is None
         assert items[0].deterministic_event_type is None
 
     def test_empty_results_returns_empty_list(self) -> None:
         client = FakeHttpClient(FakeResponse(json_data={"results": []}))
-        source = CryptoPanicSource(http_client=client)
+        source = CryptoPanicSource(api_key="dummy", http_client=client)
         items = list(source.fetch_raw())
         assert items == []
 
     def test_missing_results_key_returns_empty(self) -> None:
         client = FakeHttpClient(FakeResponse(json_data={"count": 0}))
-        source = CryptoPanicSource(http_client=client)
+        source = CryptoPanicSource(api_key="dummy", http_client=client)
         items = list(source.fetch_raw())
         assert items == []
 
     def test_non_dict_body_raises(self) -> None:
         client = FakeHttpClient(FakeResponse(json_data=["a", "b"]))
-        source = CryptoPanicSource(http_client=client)
+        source = CryptoPanicSource(api_key="dummy", http_client=client)
         try:
             list(source.fetch_raw())
         except SourceFetchError:
@@ -80,7 +80,7 @@ class TestCryptoPanicParse:
 
     def test_results_not_list_raises(self) -> None:
         client = FakeHttpClient(FakeResponse(json_data={"results": "oops"}))
-        source = CryptoPanicSource(http_client=client)
+        source = CryptoPanicSource(api_key="dummy", http_client=client)
         try:
             list(source.fetch_raw())
         except SourceFetchError:
@@ -90,6 +90,16 @@ class TestCryptoPanicParse:
     def test_post_without_id_skipped(self) -> None:
         bad_fixture = {"results": [{"title": "no id here"}]}
         client = FakeHttpClient(FakeResponse(json_data=bad_fixture))
-        source = CryptoPanicSource(http_client=client)
+        source = CryptoPanicSource(api_key="dummy", http_client=client)
         items = list(source.fetch_raw())
         assert items == []
+
+    def test_missing_api_key_raises(self) -> None:
+        # Defensive: CryptoPanic now 404s without auth_token. The source must
+        # fail fast like FRED/Etherscan do, not emit empty results silently.
+        try:
+            list(CryptoPanicSource().fetch_raw())
+        except SourceFetchError as exc:
+            assert "CRYPTOPANIC_API_KEY" in str(exc)
+            return
+        raise AssertionError("expected SourceFetchError on missing key")

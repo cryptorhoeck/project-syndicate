@@ -61,6 +61,7 @@ class FredSource(WireSourceBase):
                     url,
                     params=params,
                     timeout=15.0,
+                    follow_redirects=True,
                     headers={"User-Agent": "syndicate-wire/1.0"},
                 )
                 response.raise_for_status()

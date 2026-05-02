@@ -31,21 +31,33 @@ class TradingEconomicsSource(WireSourceBase):
     name = SOURCE_TRADING_ECONOMICS
     display_name = "TradingEconomics Calendar"
     default_interval_seconds = 86400
-    requires_api_key = False
-    api_key_env_var = None
+    requires_api_key = True
+    api_key_env_var = "TRADINGECONOMICS_API_KEY"
 
     DEFAULT_BASE_URL = "https://api.tradingeconomics.com/calendar"
 
     def fetch_raw(self) -> Iterable[FetchedItem]:
+        if not self.api_key:
+            # The free guest tier (c=guest:guest) was deprecated server-side
+            # in 2026 and now returns 410 Gone. A paid TradingEconomics key
+            # is required to use this source.
+            raise SourceFetchError(
+                "trading_economics requires TRADINGECONOMICS_API_KEY "
+                "(guest tier deprecated, returns 410 Gone)"
+            )
         base_url = self.config.get("base_url") or self.DEFAULT_BASE_URL
         preceded_by = float(self.config.get("preceded_by_hours", 4.0))
-        params = {"c": "guest:guest", "f": "json"}
+        # API expects "client_id:client_secret" or just an api_key per docs.
+        # We treat the env var as a single token; users with split creds can
+        # supply them as "client_id:client_secret" verbatim.
+        params = {"c": self.api_key, "f": "json"}
         client = self.http_client or httpx
         try:
             response = client.get(
                 base_url,
                 params=params,
                 timeout=15.0,
+                follow_redirects=True,
                 headers={"User-Agent": "syndicate-wire/1.0"},
             )
             response.raise_for_status()

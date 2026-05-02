@@ -25,19 +25,19 @@ def _seed_sources(session: Session) -> dict[str, WireSource]:
     """Seed wire_sources to mirror the alembic seed migration."""
     seeds = [
         ("kraken_announcements", "Kraken Announcements", "A", 300, True, False, None,
-         "https://blog.kraken.com/category/announcement/feed", {"severity_floor": 3}),
-        ("cryptopanic", "CryptoPanic (Free)", "A", 600, True, False, None,
+         "https://blog.kraken.com/feed/", {"severity_floor": 3}),
+        ("cryptopanic", "CryptoPanic", "A", 600, True, True, "CRYPTOPANIC_API_KEY",
          "https://cryptopanic.com/api/v1/posts/", {"public": True}),
         ("defillama", "DefiLlama", "A", 1800, True, False, None,
          "https://api.llama.fi", {"tvl_delta_threshold": 0.05}),
         ("etherscan_transfers", "Etherscan Large Transfers", "A", 900, False, True,
          "ETHERSCAN_API_KEY", "https://api.etherscan.io/api", {"min_value_eth": 1000}),
         ("funding_rates", "Kraken Perp Funding Rates", "A", 300, False, False, None,
-         "ccxt://kraken", {"extreme_threshold": 0.001}),
+         "ccxt://krakenfutures", {"extreme_threshold": 0.001}),
         ("fred", "FRED Macro Series", "B", 86400, False, True, "FRED_API_KEY",
          "https://api.stlouisfed.org/fred/", {"series": ["DGS10"]}),
-        ("trading_economics", "TradingEconomics Calendar", "B", 86400, False, False, None,
-         "https://api.tradingeconomics.com/calendar", {"guest_tier": True}),
+        ("trading_economics", "TradingEconomics Calendar", "B", 86400, False, True,
+         "TRADINGECONOMICS_API_KEY", "https://api.tradingeconomics.com/calendar", {}),
         ("fear_greed", "Fear & Greed Index", "B", 86400, False, False, None,
          "https://api.alternative.me/fng/", {}),
     ]
@@ -187,5 +187,11 @@ def make_fake_haiku_client(
 
 @pytest.fixture
 def fixed_now():
-    """Return a fixed reference datetime."""
-    return datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
+    """Return a stable-for-this-test reference datetime anchored on real now.
+
+    Previously a hardcoded calendar date (2026-05-01); that drifted out of
+    every API/lookback window the moment time moved on. Anchoring on real
+    now keeps tests valid forever while remaining deterministic within a
+    single test run.
+    """
+    return datetime.now(timezone.utc).replace(microsecond=0)
