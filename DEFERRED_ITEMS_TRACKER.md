@@ -139,6 +139,14 @@
 
 ## PHASE 10 PRE-FLIGHT (Identified 2026-05-02)
 
+- [ ] **Wire URL/secret leak via httpx INFO logging**
+  - Surfaced during: Phase 10 live validation Step B
+  - Symptom: httpx logs full URLs at INFO including query string API keys; FRED and Etherscan keys written to disk in logs/wire_validation.log
+  - Mitigation applied immediately: log file deleted; keys rotated by Andrew (pending)
+  - Permanent fix needed: configure httpx logger to WARNING level globally, OR scrub query strings from URL logs, OR move all source auth from query-string keys to headers where the API supports it
+  - Risk class: high — secrets-in-logs is a recurring class of bug; needs a structural fix, not just a one-off cleanup
+  - Action when picked up: Add a logging config module that downgrades httpx + urllib3 + asyncio loggers to WARNING by default. Add a pre-commit / CI check that scans logs/ for secret patterns. Audit every WireSource for whether keys go in query strings (rotate to headers if API allows).
+
 - [ ] **test_code_sandbox.py ordering dependency**
   - Surfaced during: Phase 10 build pre-flight
   - Symptom: Two tests in test_code_sandbox.py fail in full suite run, pass in isolation
