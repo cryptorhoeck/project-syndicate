@@ -23,10 +23,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.wire.digest.haiku_digester import HaikuClientProto, HaikuDigester
+from src.wire.health.breach_monitor import BreachMonitor
 from src.wire.ingestors.runner import SourceRunner
 from src.wire.models import WireSource
 
 logger = logging.getLogger(__name__)
+
+
+# How often the volume-floor + diversity scan runs (separate from per-source cadence).
+DEFAULT_BREACH_CHECK_INTERVAL_SECONDS = 30 * 60
 
 
 @dataclass
@@ -45,8 +50,10 @@ class IngestorScheduler:
         default_factory=lambda: lambda: datetime.now(timezone.utc)
     )
     min_loop_interval_seconds: float = 5.0
+    breach_check_interval_seconds: float = DEFAULT_BREACH_CHECK_INTERVAL_SECONDS
 
     _next_due: dict[int, datetime] = field(default_factory=dict, init=False)
+    _last_breach_check: Optional[datetime] = field(default=None, init=False)
 
     def _due_sources(self, session: Session) -> list[WireSource]:
         sources = (
@@ -87,9 +94,21 @@ class IngestorScheduler:
                 digester = HaikuDigester(haiku_client=self.haiku_client, session=session)
                 digest_results = digester.digest_pending(limit=200)
 
+            breach_report = None
+            now = self.now_func()
+            if (
+                self._last_breach_check is None
+                or (now - self._last_breach_check).total_seconds()
+                >= self.breach_check_interval_seconds
+            ):
+                breach_monitor = BreachMonitor(session, now=now)
+                breach_report = breach_monitor.run()
+                self._last_breach_check = now
+
             return {
                 "runs": run_results,
                 "digests": digest_results,
+                "breach": breach_report,
             }
         finally:
             session.close()

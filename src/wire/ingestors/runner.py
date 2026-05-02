@@ -30,17 +30,26 @@ from src.wire.models import WireRawItem, WireSource, WireSourceHealth
 from src.wire.sources.base import FetchedItem, SourceFetchError, WireSourceBase
 from src.wire.sources.cryptopanic import CryptoPanicSource
 from src.wire.sources.defillama import DefiLlamaSource
+from src.wire.sources.etherscan_transfers import EtherscanTransfersSource
+from src.wire.sources.fear_greed import FearGreedSource
+from src.wire.sources.fred import FredSource
+from src.wire.sources.funding_rates import FundingRatesSource
 from src.wire.sources.kraken_announcements import KrakenAnnouncementsSource
+from src.wire.sources.trading_economics import TradingEconomicsSource
 
 logger = logging.getLogger(__name__)
 
 
 # Class registry: source.name -> concrete WireSourceBase subclass.
-# Tier 2 sources will be appended here as they're implemented.
 SOURCE_REGISTRY: dict[str, type[WireSourceBase]] = {
     KrakenAnnouncementsSource.name: KrakenAnnouncementsSource,
     CryptoPanicSource.name: CryptoPanicSource,
     DefiLlamaSource.name: DefiLlamaSource,
+    EtherscanTransfersSource.name: EtherscanTransfersSource,
+    FundingRatesSource.name: FundingRatesSource,
+    FredSource.name: FredSource,
+    TradingEconomicsSource.name: TradingEconomicsSource,
+    FearGreedSource.name: FearGreedSource,
 }
 
 
