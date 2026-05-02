@@ -13,6 +13,13 @@ build/
 # Environment
 .env
 
+# Secrets / API keys (any *key*.txt or *secret*.txt anywhere)
+*api*key*.txt
+*api*key*.json
+*secret*.txt
+docs/*key*.txt
+docs/*secret*.txt
+
 # Project data
 backups/
 data/
