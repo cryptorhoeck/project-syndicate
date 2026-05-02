@@ -2,6 +2,30 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Phase 10] - 2026-05-01 - The Wire (External Intelligence Pipeline)
+
+### Added
+- New `src/wire/` package: 8 sources, ingestor scheduler, Haiku digestion, dedup, publish, agent integration.
+- 6 new database tables: `wire_sources`, `wire_raw_items`, `wire_events`, `wire_source_health`, `wire_query_log`, `wire_treasury_ledger`.
+- 3 Alembic migrations (`phase_10_wire_001..003`): schema, seed catalog, Tier 2 enable.
+- Sources: Kraken announcements (RSS), CryptoPanic free, DefiLlama TVL deltas, Etherscan large transfers, Kraken funding rates (ccxt), FRED macro series, TradingEconomics calendar, Fear & Greed index.
+- Ticker (push) and Archive (pull) APIs for agent consumption. Archive queries are token-costed against agent thinking budget.
+- Scout `recent_signals` context block injected by `ContextAssembler._build_wire_recent_signals`.
+- Strategist + Critic Archive helpers (`build_strategist_archive_helper`, `build_critic_archive_helper`). Critics get 3 free queries per critique cycle.
+- Severity-5 deterministic-only path: Operator halt for `exchange_outage`/`withdrawal_halt`/`chain_halt`, Genesis regime review hook for any sev-5.
+- Volume floor (6h, 3 events) and source diversity (24h, 70%) breach monitor wired into the scheduler tick on a 30-minute cadence.
+- Wire dashboard widget (`/api/wire/{ticker,health,treasury,stats}` + `templates/fragments/wire_ticker.html`).
+- 147 new Wire tests across unit, integration, end-to-end. Includes the **silent-failure callback test** (`test_silent_failure.py`) that asserts a 6h empty feed raises `wire.volume_floor_breach`.
+
+### Changed
+- Scout OODA context now includes `=== THE WIRE — RECENT SIGNALS ===` block from the Wire ticker.
+- `alembic/env.py` now imports `src.wire.models` so Wire tables register on `Base.metadata`.
+
+### Deferred
+- Sentiment data sources (Twitter/Reddit) -> Phase 11.
+- Paid premium sources (CryptoPanic Pro, Messari, Glassnode) -> Phase 10.5.
+- Live integration validation (1h scheduler run, network kill, real Haiku) -> awaits valid `ANTHROPIC_API_KEY` + free `FRED_API_KEY`/`ETHERSCAN_API_KEY`.
+
 ## [4.0.0] - 2026-04-13
 
 ### Phase 9A — SIP Voting & Colony Maturity

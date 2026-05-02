@@ -529,6 +529,12 @@ Watched markets: {agent.watched_markets or []}""" + self._build_cold_start_notic
         if pipeline_text:
             sections.append(pipeline_text)
 
+        # Wire recent signals (Scouts only — push, free).
+        if agent.type == "scout":
+            wire_text = self._build_wire_recent_signals(agent)
+            if wire_text:
+                sections.append(wire_text)
+
         # Recent cycle history (last 5 cycles with outcomes)
         recent_cycles = (
             self.db.query(AgentCycle)
@@ -854,6 +860,35 @@ Produce a strategic review in valid JSON:
 {library_section}
 
 Review your recent performance and produce a reflection."""
+
+    def _build_wire_recent_signals(self, agent: Agent) -> str:
+        """Inject the Wire's last severity-3+ ticker events into Scout OODA context.
+
+        Free for the agent (no token cost recorded). Returns "" if Wire is
+        unavailable or no signals exist — Scouts should always see an explicit
+        section so they don't hallucinate signals when there are none.
+        """
+        try:
+            from src.wire.integration.agent_context import build_recent_signals_block
+        except Exception:  # pragma: no cover — Wire optional
+            return ""
+        try:
+            block = build_recent_signals_block(self.db, limit=5, lookback_hours=24)
+        except Exception:  # pragma: no cover — defensive: never break OODA on Wire fault
+            return ""
+        events = block.get("recent_signals") or []
+        lines = ["=== THE WIRE — RECENT SIGNALS (last 24h) ==="]
+        if not events:
+            lines.append("(no severity-3+ events on the wire)")
+        else:
+            for e in events:
+                sev = e.get("severity", "?")
+                coin = e.get("coin") or "macro"
+                etype = e.get("event_type") or "?"
+                summary = (e.get("summary") or "")[:160]
+                lines.append(f"S{sev} [{coin}] {etype}: {summary}")
+        lines.append("=== END WIRE ===")
+        return "\n".join(lines)
 
     def _build_pipeline_context(self, agent: Agent) -> str:
         """Build pipeline context: active opportunities and plans relevant to this agent's role."""

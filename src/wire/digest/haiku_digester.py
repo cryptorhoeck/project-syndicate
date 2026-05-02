@@ -39,7 +39,10 @@ from src.wire.constants import (
 from src.wire.digest.deduper import canonical_hash, find_duplicate
 from src.wire.digest.prompts import SYSTEM_PROMPT, build_user_prompt
 from src.wire.digest.severity import apply_severity_rules
+from src.wire.integration.genesis_regime import maybe_dispatch as dispatch_severity_5
+from src.wire.integration.operator_halt import publish_halt_for_event
 from src.wire.models import WireEvent, WireRawItem, WireTreasuryLedger
+from src.wire.publishing.ticker import WireTicker
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +195,8 @@ class HaikuDigester:
     now_func: Callable[[], datetime] = field(
         default_factory=lambda: lambda: datetime.now(timezone.utc)
     )
+    # Tier 3 post-digest hooks. None = skip that hook.
+    ticker: Optional[WireTicker] = None
 
     def fetch_pending(self, limit: int = 50) -> list[WireRawItem]:
         stmt = (
@@ -315,6 +320,28 @@ class HaikuDigester:
         self.session.add(raw)
         self.session.flush()  # ensure event.id assigned for ledger row
         self._record_treasury_cost(total_cost, related_event_id=event.id)
+
+        # Tier 3 post-digest hooks (ticker push, severity-5 dispatch, op halt).
+        if self.ticker is not None:
+            self.ticker.publish_event(self.session, event)
+
+        if event.severity >= 5:
+            dispatch_severity_5(
+                event_id=event.id,
+                severity=event.severity,
+                coin=event.coin,
+                event_type=event.event_type,
+                summary=event.summary,
+                occurred_at_iso=event.occurred_at.isoformat() if event.occurred_at else None,
+            )
+            publish_halt_for_event(
+                event_id=event.id,
+                coin=event.coin,
+                event_type=event.event_type,
+                severity=event.severity,
+                summary=event.summary,
+            )
+
         self.session.commit()
 
         return DigestionResult(
