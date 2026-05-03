@@ -137,6 +137,25 @@
 
 ---
 
+## WARDEN HOTFIX (Identified 2026-05-03)
+
+- [ ] **Warden alert-refresh DB read perf — measured, not currently a problem**
+  - Surfaced during: War Room iteration on `hotfix/warden-trade-gate-wiring` (Finding 4)
+  - Measurement: 100 sequential `evaluate_trade` calls against production Postgres after a warm-up call
+    - mean = 0.97 ms, p50 = 0.94 ms, p95 = 1.13 ms, p99 = 1.25 ms, max = 1.25 ms
+  - Decision: shipped as-is. The directive's threshold for adding a TTL cache was mean > ~10ms; we are 10x below that.
+  - Watch-list condition: if a future Arena run shows a sustained increase in evaluate_trade latency (e.g. due to DB load from many concurrent agents, or PG running on different hardware), revisit and add a 1-5s TTL in-process cache that invalidates whenever the Warden process publishes an alert_status change.
+  - Action when picked up: instrument `Warden.evaluate_trade` to record per-call latency to a Redis counter; add a dashboard read; gate on observed p99.
+
+- [ ] **Warden alert-refresh consecutive-failure counter (observability)**
+  - Surfaced during: War Room iteration 3 on `hotfix/warden-trade-gate-wiring` (Finding 1-Recovery)
+  - The directive said a consecutive-failure counter is "appropriate" but not "must add." We shipped iteration 3 with auto-recovery semantics + a regression-class test (`test_safety_unknown_auto_clears_on_db_recovery`) but no counter — that's a separate observability layer.
+  - Risk class: low. The fail-closed-to-red mechanism already prevents trades during DB unavailability; a counter would only help on-call see "this is happening more than usual" earlier than the existing ERROR log spam would.
+  - Action when picked up: add `self._consecutive_refresh_failures: int` to `Warden.__init__`. Increment in both fail-closed branches of `_refresh_alert_status_from_db`; reset to 0 on success. If the counter crosses a threshold (e.g. 5), emit a system-alerts message via Agora (separate from the per-failure ERROR log). The counter must NOT itself become a sticky latch — the success path resets it, period.
+  - Test when picked up: `test_consecutive_refresh_failure_counter_resets_on_recovery` — drive 3 failures (counter = 3), then one success (counter must = 0).
+
+---
+
 ## DMS HOTFIX TEST SUITE (Identified 2026-05-03)
 
 - [ ] **Un-awaited coroutines in evaluation_engine.py — POSSIBLE SILENT FAILURE**

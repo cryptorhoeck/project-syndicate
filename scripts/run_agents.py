@@ -37,6 +37,7 @@ from src.agents.cycle_scheduler import CycleScheduler
 from src.agents.thinking_cycle import ThinkingCycle
 from src.common.config import config
 from src.common.price_cache import PriceCache
+from src.risk.warden import Warden
 from src.trading.execution_service import get_trading_service
 from src.trading.fee_schedule import FeeSchedule
 from src.trading.slippage_model import SlippageModel
@@ -64,14 +65,35 @@ def _handle_signal(signum: int, _frame) -> None:
     _running = False
 
 
-def build_trading_service(db_factory, redis_client, agora_service=None):
+def build_warden(db_factory, agora_service=None):
+    """Construct the in-process Warden for the agent runtime.
+
+    The Warden process (`scripts/run_warden.py`) is the source of truth for
+    `system_state.alert_status` — it computes Yellow/Red/circuit_breaker
+    via rolling drawdown and writes the verdict to the DB. This in-process
+    Warden, constructed inside `run_agents.py`, refreshes its alert_status
+    from the same DB column at the top of every `evaluate_trade` call so
+    the trade gate reflects the live state. See WIRING_AUDIT_REPORT.md
+    subsystem N for the wiring gap this closes.
+
+    Same testable-helper pattern as `build_trading_service` —
+    `test_warden_trade_gate_wiring.py` calls this directly so a future
+    regression in the constructor surfaces in the suite, not in an Arena.
+    """
+    return Warden(
+        db_session_factory=db_factory,
+        agora_service=agora_service,
+    )
+
+
+def build_trading_service(db_factory, redis_client, agora_service=None, warden=None):
     """Construct the colony's TradeExecutionService for the configured mode.
 
-    Extracted to a module-level function so
-    `tests/test_action_executor_wiring.py` can call the SAME constructor
-    the production runner calls — that is what closes the wiring gap
-    permanently. If a future change in this function silently returns
-    None or skips an argument, the wiring test will catch it.
+    `warden` is now a required collaborator for production paths — pass the
+    Warden instance from `build_warden` so PaperTradingService.evaluate_trade
+    actually fires. The factory still accepts None for tests that
+    deliberately construct without a Warden, but `run_agents.py` enforces
+    non-None at runtime via the fail-fast check below.
     """
     price_cache = PriceCache(redis_client=redis_client)
     return get_trading_service(
@@ -79,6 +101,7 @@ def build_trading_service(db_factory, redis_client, agora_service=None):
         price_cache=price_cache,
         slippage_model=SlippageModel(),
         fee_schedule=FeeSchedule(),
+        warden=warden,
         redis_client=redis_client,
         agora_service=agora_service,
     )
@@ -115,20 +138,46 @@ async def main() -> None:
     except Exception as e:
         log.warning("agora_unavailable", error=str(e))
 
+    # Warden — in-process safety gate. Closes the gap from
+    # WIRING_AUDIT_REPORT.md subsystem N. Without this, PaperTradingService
+    # has self.warden = None and the if-self.warden guard at
+    # execution_service.py:172 short-circuits — every Yellow/Red/circuit-
+    # breaker is detected by the Warden process but never gates a trade.
+    try:
+        warden = build_warden(db_factory, agora_service=agora)
+    except Exception as exc:
+        log.error("warden_construction_failed",
+                  error=str(exc),
+                  message="Refusing to start agents — colony's mechanical safety gate cannot be built.")
+        sys.exit(2)
+    if warden is None:
+        log.error("warden_unavailable",
+                  message="Refusing to start agents — Warden returned None.")
+        sys.exit(2)
+    log.info("warden_wired", impl=type(warden).__name__)
+
     # Trading service. This is the wiring that closes the gap exposed in
     # ARENA_TRADING_SERVICE_DIAGNOSIS.md. The factory returns the right
     # concrete TradeExecutionService for the configured mode (paper today).
     # If this raises or returns None, we surface and abort: every Operator
     # trade would otherwise fall into the [NO SERVICE] fallback again.
-    trading_service = build_trading_service(db_factory, redis_client, agora_service=agora)
+    # Warden is now passed in so PaperTradingService.evaluate_trade fires.
+    trading_service = build_trading_service(
+        db_factory, redis_client, agora_service=agora, warden=warden,
+    )
     if trading_service is None:
         log.error("trading_service_unavailable",
                   trading_mode=config.trading_mode,
                   message="Refusing to start agents — Operator would silently no-op every trade.")
         sys.exit(2)
+    if getattr(trading_service, "warden", None) is None:
+        log.error("trading_service_warden_missing",
+                  message="Refusing to start agents — TradeExecutionService was built without a Warden.")
+        sys.exit(2)
     log.info("trading_service_wired",
              impl=type(trading_service).__name__,
-             trading_mode=config.trading_mode)
+             trading_mode=config.trading_mode,
+             warden=type(getattr(trading_service, "warden", None)).__name__)
 
     log.info("agent_runner_started", poll_interval=POLL_INTERVAL)
 
@@ -158,6 +207,7 @@ async def main() -> None:
                                 claude_client=claude,
                                 redis_client=redis_client,
                                 agora_service=agora,
+                                warden=warden,
                                 config=config,
                                 trading_service=trading_service,
                             )

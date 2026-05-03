@@ -103,12 +103,18 @@ def production_trading_service(db_factory, fake_redis_client):
     `scripts.run_agents.build_trading_service` is the production seam.
     Calling it here means our wiring assertion is testing what runs in
     production, not a hand-rolled equivalent.
+
+    After the warden-trade-gate-wiring hotfix, `build_trading_service`
+    threads a Warden through; we build one via the same helper the runner
+    uses so the test reflects the full production chain.
     """
     run_agents = importlib.import_module("scripts.run_agents")
+    warden = run_agents.build_warden(db_factory, agora_service=None)
     return run_agents.build_trading_service(
         db_factory=db_factory,
         redis_client=fake_redis_client,
         agora_service=None,
+        warden=warden,
     )
 
 

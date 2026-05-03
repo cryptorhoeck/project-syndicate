@@ -5,8 +5,24 @@ Tests for the Warden — trade gate, alerts, loss limits.
 import pytest
 from unittest.mock import MagicMock, patch
 
+from sqlalchemy import select
+
 from src.common.models import Agent, SystemState
 from src.risk.warden import Warden
+
+
+def _set_alert_status_in_db(session_factory, status: str) -> None:
+    """Write alert_status to system_state. After hotfix
+    `warden-trade-gate-wiring`, `evaluate_trade` refreshes from the DB at
+    the top of every call so the in-process Warden reflects whatever the
+    Warden process wrote. Tests that previously poked `warden.alert_status`
+    in memory now have to write it to the DB too — that is what the
+    production code path reads.
+    """
+    with session_factory() as session:
+        state = session.execute(select(SystemState).limit(1)).scalar_one()
+        state.alert_status = status
+        session.commit()
 
 
 @pytest.fixture
@@ -17,6 +33,8 @@ def warden(seeded_db):
         w = Warden(db_session_factory=seeded_db)
         w.redis = MagicMock()
         w.redis.lpop.return_value = None
+        # Expose the session factory so tests can write alert_status to DB.
+        w._session_factory_for_tests = seeded_db
         return w
 
 
@@ -60,7 +78,7 @@ async def test_trade_gate_large_trade_needs_review(warden):
 @pytest.mark.asyncio
 async def test_trade_gate_yellow_alert_holds_all(warden):
     """During Yellow alert, all trades should be held."""
-    warden.alert_status = "yellow"
+    _set_alert_status_in_db(warden._session_factory_for_tests, "yellow")
     trade = {
         "agent_id": 1,
         "symbol": "BTC/USD",
@@ -76,7 +94,7 @@ async def test_trade_gate_yellow_alert_holds_all(warden):
 @pytest.mark.asyncio
 async def test_trade_gate_circuit_breaker_rejects_all(warden):
     """During circuit breaker, all trades should be rejected."""
-    warden.alert_status = "circuit_breaker"
+    _set_alert_status_in_db(warden._session_factory_for_tests, "circuit_breaker")
     trade = {
         "agent_id": 1,
         "symbol": "BTC/USD",
@@ -92,7 +110,7 @@ async def test_trade_gate_circuit_breaker_rejects_all(warden):
 @pytest.mark.asyncio
 async def test_trade_gate_red_alert_rejects_all(warden):
     """During Red alert, all trades should be rejected."""
-    warden.alert_status = "red"
+    _set_alert_status_in_db(warden._session_factory_for_tests, "red")
     trade = {
         "agent_id": 1,
         "symbol": "BTC/USD",
