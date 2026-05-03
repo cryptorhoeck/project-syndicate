@@ -2,28 +2,35 @@
 Dead Man's Switch — independent system health monitor for Project Syndicate.
 
 This script runs as its own standalone process, entirely outside any agent
-framework.  Every CHECK_INTERVAL seconds it verifies:
+framework.  Every CHECK_INTERVAL seconds it verifies external dependencies
+and, on success, advances `system_state.last_heartbeat_at` to NOW().  Other
+processes (Genesis, Warden, the meta-monitor) read this column to detect
+DMS liveness.
+
+External health checks performed each cycle:
 
     1. PostgreSQL is accessible (psycopg2 connection).
     2. Redis / Memurai is accessible (redis.Redis.ping()).
-    3. The system_state table has been updated within the last
-       HEARTBEAT_STALE_SECONDS seconds.
 
-If any single check fails MAX_CONSECUTIVE_FAILURES times in a row, the monitor:
+If either check fails MAX_CONSECUTIVE_FAILURES times in a row, the monitor:
 
     - Logs a CRITICAL-level message via structlog.
     - Flags the issue in the system_state table (when the database is
       reachable).
-    - (Placeholder) Future enhancements: email alert, exchange API kill switch.
+    - Sends an emergency email if SMTP is configured.
 
-On each fully successful check cycle the monitor updates
-system_state.last_heartbeat_at to the current UTC time.
+A separate **meta-monitor** (`src/risk/dms_meta_monitor.py`) watches THIS
+process from the outside by checking `last_heartbeat_at` freshness and
+emitting `dead_mans_switch.silent_failure` to The Agora when stale.
+The meta-monitor is what catches a dead DMS process — the DMS does not
+self-watch, since that pattern is self-defeating (a dead process cannot
+detect itself).
 
 Usage:
     python src/risk/heartbeat.py
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 import os
 import signal
@@ -49,7 +56,11 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 # ---------------------------------------------------------------------------
 CHECK_INTERVAL = 60  # seconds between check cycles
 MAX_CONSECUTIVE_FAILURES = 3  # failures before escalation
-HEARTBEAT_STALE_SECONDS = 300  # 5 minutes
+# HEARTBEAT_STALE_SECONDS is consumed by the META-MONITOR (external observer).
+# It is NOT used by the DMS to gate its own write; doing so creates a self-
+# defeating loop where a stale heartbeat blocks the only writer that can
+# refresh it. See PR notes / DEFERRED_ITEMS_TRACKER for the bug history.
+HEARTBEAT_STALE_SECONDS = 300
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -71,7 +82,6 @@ log = structlog.get_logger("heartbeat")
 consecutive_failures: dict[str, int] = {
     "postgres": 0,
     "redis": 0,
-    "stale_heartbeat": 0,
 }
 
 # Graceful-shutdown flag
@@ -117,42 +127,6 @@ def check_redis() -> bool:
         return False
 
 
-def check_heartbeat_freshness() -> bool:
-    """Return True if system_state.last_heartbeat_at is within the staleness window."""
-    if not DATABASE_URL:
-        log.error("DATABASE_URL not configured — cannot check heartbeat freshness")
-        return False
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT last_heartbeat_at FROM system_state "
-                    "ORDER BY last_heartbeat_at DESC LIMIT 1"
-                )
-                row = cur.fetchone()
-                if row is None:
-                    log.warning("no_heartbeat_record_found")
-                    return False
-                last_heartbeat = row[0]
-                if last_heartbeat is None:
-                    # First run — no heartbeat yet, allow bootstrap
-                    log.info("heartbeat_bootstrap", status="first_run")
-                    return True
-                if last_heartbeat.tzinfo is None:
-                    last_heartbeat = last_heartbeat.replace(tzinfo=timezone.utc)
-                age = (datetime.now(timezone.utc) - last_heartbeat).total_seconds()
-                if age > HEARTBEAT_STALE_SECONDS:
-                    log.warning("heartbeat_stale", age_seconds=age)
-                    return False
-                return True
-        finally:
-            conn.close()
-    except Exception as exc:
-        log.warning("heartbeat_freshness_check_failed", error=str(exc))
-        return False
-
-
 # ---------------------------------------------------------------------------
 # Escalation helpers
 # ---------------------------------------------------------------------------
@@ -168,7 +142,7 @@ def _flag_issue_in_db(check_name: str) -> None:
                 cur.execute(
                     "UPDATE system_state SET alert_status = %s "
                     "WHERE id = (SELECT id FROM system_state LIMIT 1)",
-                    (f"red",),
+                    ("red",),
                 )
             conn.commit()
         finally:
@@ -228,11 +202,17 @@ def _update_heartbeat() -> None:
 # ---------------------------------------------------------------------------
 
 def _run_checks() -> bool:
-    """Execute all health checks. Returns True if every check passed."""
+    """Execute external health checks. Returns True if every check passed.
+
+    Critical: this no longer includes a self-freshness check on
+    `last_heartbeat_at`. That check was self-defeating — a stale heartbeat
+    blocked the very writer that could refresh it (the DMS is the sole
+    writer of the column). Liveness watching is now the META-MONITOR's job
+    (`src/risk/dms_meta_monitor.py`), which runs in a different process.
+    """
     checks: dict[str, callable] = {
         "postgres": check_postgres,
         "redis": check_redis,
-        "stale_heartbeat": check_heartbeat_freshness,
     }
 
     all_passed = True
@@ -267,6 +247,14 @@ def main() -> None:
         max_failures=MAX_CONSECUTIVE_FAILURES,
         stale_seconds=HEARTBEAT_STALE_SECONDS,
     )
+
+    # Beat once on startup so external observers immediately see liveness,
+    # rather than waiting CHECK_INTERVAL for the first cycle. Postgres-fail
+    # at boot still skips the write because _update_heartbeat() catches the
+    # exception and returns; we'd hit a normal cycle on the next iteration.
+    if check_postgres():
+        _update_heartbeat()
+        log.info("heartbeat_initial_beat")
 
     try:
         while _running:

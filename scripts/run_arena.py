@@ -212,6 +212,62 @@ def _print_banner() -> None:
 _log_handles: dict[str, any] = {}
 
 
+def _verify_dead_mans_switch_alive(timeout_seconds: int = 60) -> bool:
+    """Block until system_state.last_heartbeat_at is fresher than the Arena's
+    boot stamp, OR the timeout elapses.
+
+    Returns True only if the DMS produced a beat within the window. Any other
+    outcome — DB unreachable, heartbeat never advanced, ambiguous state —
+    returns False.
+
+    Called from the post-start path in main(), AFTER `last_arena_boot_at` was
+    stamped. The DMS, on its initial cycle, runs `_update_heartbeat()` which
+    must therefore produce a `last_heartbeat_at >= last_arena_boot_at`.
+    """
+    try:
+        from sqlalchemy import create_engine, text
+        from src.common.config import config
+    except Exception as exc:
+        log.error("dms_verify_import_failed", error=str(exc))
+        return False
+
+    deadline = time.time() + timeout_seconds
+    poll_seconds = 2.0
+    saw_beat = False
+
+    while time.time() < deadline:
+        try:
+            engine = create_engine(config.database_url, pool_pre_ping=True)
+            with engine.connect() as conn:
+                row = conn.execute(text(
+                    "SELECT last_heartbeat_at, last_arena_boot_at "
+                    "FROM system_state LIMIT 1"
+                )).fetchone()
+            engine.dispose()
+        except Exception as exc:
+            log.warning("dms_verify_db_failed", error=str(exc))
+            time.sleep(poll_seconds)
+            continue
+
+        if row is None:
+            time.sleep(poll_seconds)
+            continue
+
+        heartbeat_at = row[0]
+        boot_at = row[1]
+        if heartbeat_at is not None and boot_at is not None and heartbeat_at >= boot_at:
+            log.info(
+                "dead_mans_switch_alive",
+                heartbeat_at=str(heartbeat_at),
+                boot_at=str(boot_at),
+            )
+            saw_beat = True
+            break
+        time.sleep(poll_seconds)
+
+    return saw_beat
+
+
 def start_process(name: str) -> subprocess.Popen:
     """Start a subprocess and return the Popen object."""
     proc_def = PROCESSES[name]
@@ -295,6 +351,24 @@ def main() -> None:
         _restart_times[name] = 0.0
 
     log.info("all_processes_started", pids={n: p.pid for n, p in _children.items()})
+
+    # Hard verification: the Dead Man's Switch must produce a fresh heartbeat
+    # within 60 seconds of the Arena coming up. If it doesn't, the failsafe
+    # is silently dead and the Arena MUST NOT trade. We refuse to enter the
+    # monitor loop and shut everything back down. Same risk class as the
+    # Library reflection bug — silent failures here cost real money.
+    if not _verify_dead_mans_switch_alive(timeout_seconds=60):
+        log.error(
+            "dead_mans_switch_did_not_beat",
+            message="Heartbeat did not advance within 60s of Arena boot. "
+                    "Refusing to enter monitor loop. Investigate "
+                    "src/risk/heartbeat.py and the heartbeat process logs.",
+        )
+        for name, proc in _children.items():
+            if proc.poll() is None:
+                log.info("aborting_terminate", name=name, pid=proc.pid)
+                proc.terminate()
+        sys.exit(2)
 
     # Monitor loop
     try:
