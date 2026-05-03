@@ -230,7 +230,64 @@ Per Directive 3:
 
 **The 6 sources expected to be healthy:** defillama, etherscan_transfers, fear_greed, fred, funding_rates, kraken_announcements.
 
-**Run results:** _filled in below after the run_
+**Run boundaries:**
+- Background task: `brxb2y005`
+- Started: 2026-05-03T00:16:04Z (UTC) / 2026-05-02T21:16:09 local
+- Killed:  2026-05-03T00:46:25Z after timer fired
+
+**Pre-run setup:** baseline event count snapshotted (394 events / $0.317466 prior cost). All `wire_source_health` rows reset to `unknown` so post-run state reflects only this run's behaviour.
+
+**Logging-leak verification:**
+- `logs/wire_validation_v3.log`: 1 line at end of run (a benign `wire.alerts WARNING wire.alert` — most likely the diversity breach alert firing because defillama dominated the new-items mix)
+- Leak scan: 0 hits across `api_key=`, `auth_token=`, `FRED_API_KEY`, `ETHERSCAN_API_KEY`, `CRYPTOPANIC_API_KEY`, `TRADINGECONOMICS_API_KEY`
+
+**Acceptance queries** (run after the timer fired, before scheduler kill):
+
+```
+SELECT COUNT(*) AS total, COUNT(*) - 394 AS new_this_run,
+       MIN(digested_at) FILTER (WHERE digested_at >= '2026-05-03 00:16:04+00') AS first,
+       MAX(digested_at) AS last
+FROM wire_events;
+ total | new_this_run |        first        |        last
+-------+--------------+---------------------+---------------------
+   685 |          291 | 2026-05-03 00:16:17 | 2026-05-03 00:22:26
+
+SELECT cost_category, SUM(cost_usd), COUNT(*) FROM wire_treasury_ledger
+WHERE incurred_at >= '2026-05-03 00:16:04+00' GROUP BY cost_category;
+  cost_category  | total_usd | n
+-----------------+-----------+-----
+ haiku_digestion |  0.241007 | 291
+
+SELECT digestion_status, COUNT(*) FROM wire_raw_items GROUP BY digestion_status;
+ digestion_status | count
+------------------+-------
+ digested         |   684
+```
+
+**Source health at end of clean Step B-2 run:**
+
+| Source | Enabled | Status | items_24h | fails | Notes |
+|---|---|---|---|---|---|
+| defillama | ✓ | **healthy** | 305 | 0 | Tier-A, no key |
+| etherscan_transfers | ✓ | **healthy** | 0 | 0 | All wallets responded; no transfers crossed 1000-ETH threshold |
+| fear_greed | ✓ | **healthy** | 1 | 0 | Daily index, 1 item |
+| fred | ✓ | **healthy** | 0 | 0 | Daily series; same-day observations dedup'd against earlier raw items |
+| funding_rates | ✓ | **healthy** | 0 | 0 | krakenfutures bulk fetch returned, no extreme funding |
+| kraken_announcements | ✓ | **healthy** | 0 | 0 | `/feed/` reachable via `follow_redirects=True`; 6 raw items already inserted by post-Step-B fix fetch |
+| cryptopanic | ✗ | unknown | 0 | 0 | **Disabled by migration phase_10_wire_005** |
+| trading_economics | ✓ | degraded | 0 | 1 | **Defensive self-disable** — `TRADINGECONOMICS_API_KEY` absent (intended) |
+
+**Acceptance gate:**
+
+| Criterion | Required | Actual | Pass? |
+|---|---|---|---|
+| All 6 effectively-enabled sources healthy | 6/6 | **6/6** | ✅ |
+| `wire_events` count this run | > 0 | 291 new (685 cumulative) | ✅ |
+| Treasury cost this run | > 0 | $0.241007 | ✅ |
+| Dead-letter rate | < 5% | 0% (0 of 684 digested) | ✅ |
+| URL leaks in log | 0 | 0 | ✅ |
+
+**Step B-2 result: CLEAN PASS.**
 
 ---
 
