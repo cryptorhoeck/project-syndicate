@@ -35,6 +35,7 @@ from src.genesis.regime_detector import RegimeDetector
 from src.genesis.rejection_tracker import RejectionTracker
 from src.genesis.treasury import TreasuryManager
 from src.risk.accountant import Accountant
+from src.risk.dms_meta_monitor import DmsMetaMonitor, AGORA_CHANNEL as DMS_AGORA_CHANNEL
 
 if TYPE_CHECKING:
     from src.agora.agora_service import AgoraService
@@ -91,6 +92,20 @@ class GenesisAgent(BaseAgent):
         self._last_hourly_maintenance: datetime | None = None
         # Track last daily budget reset
         self._last_budget_reset_date: date | None = None
+
+        # Dead Man's Switch meta-monitor. Genesis is the canonical "always
+        # running" process and so is the natural host for the failsafe-of-
+        # the-failsafe. The publish callable trips post_to_agora, which the
+        # meta-monitor invokes via a sync wrapper on each cycle.
+        def _dms_publish(channel, content, metadata):
+            return self.post_to_agora(
+                channel=channel,
+                content=content,
+                message_type=MessageType.ALERT,
+                metadata=metadata,
+                importance=2,  # critical
+            )
+        self.dms_meta_monitor = DmsMetaMonitor(publish=_dms_publish)
 
         self.log = logger.bind(component="genesis")
 
@@ -164,6 +179,25 @@ class GenesisAgent(BaseAgent):
             if not health["db_ok"] or not health["redis_ok"]:
                 self.log.critical("health_check_failed", **health)
                 return cycle_report
+
+            # 1b. DEAD MAN'S SWITCH META-MONITOR
+            # Watches the heartbeat from outside the DMS process so a dead
+            # DMS surfaces as `dead_mans_switch.silent_failure` in the Agora.
+            try:
+                with self.db_session_factory() as dms_session:
+                    dms_status = self.dms_meta_monitor.check(dms_session)
+                cycle_report["dms_heartbeat"] = {
+                    "is_silent": dms_status.is_silent,
+                    "age_seconds": dms_status.age_seconds,
+                    "last_heartbeat_at": (
+                        dms_status.last_heartbeat_at.isoformat()
+                        if dms_status.last_heartbeat_at
+                        else None
+                    ),
+                }
+            except Exception as exc:
+                # Monitoring code must never take down the host process.
+                self.log.warning("dms_meta_monitor_failed", error=str(exc))
 
             # 2. TREASURY UPDATE
             await self.treasury.update_peak_treasury()
