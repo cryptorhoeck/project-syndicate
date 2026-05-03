@@ -181,6 +181,15 @@ class Warden:
         `_safety_state_unknown = True`; `evaluate_trade` checks that flag
         before any other gate and rejects the trade with a reason that
         cites unknown-state, not a real RED alert.
+
+        AUTO-RECOVERY (NOT sticky): the unknown latch and the forced-red
+        override are cleared on the next successful refresh. A single
+        transient DB blip MUST NOT permanently halt the colony — that
+        would be the DMS self-defeating-loop pattern in a new costume.
+        Recovery is exercised end-to-end by
+        `test_safety_unknown_auto_clears_on_db_recovery`. If you change
+        the success path below, make sure you also keep the unconditional
+        flag-clear + alert_status overwrite. War Room iteration 3 audit.
         """
         try:
             state = self._get_system_state()

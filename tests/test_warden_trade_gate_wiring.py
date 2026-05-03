@@ -380,6 +380,130 @@ async def test_evaluate_trade_refreshes_alert_status_from_db_and_blocks(
 
 
 @pytest.mark.asyncio
+async def test_evaluate_trade_fails_closed_when_no_state_row_exists(
+    db_factory, seeded_world, production_warden,
+):
+    """Per War Room iteration-3 Finding 2-Empty-Row: the no-row branch is
+    more likely in production than the raise branch (fresh DB, missed
+    migration, deleted row, multi-tenant misconfig). Sibling test to the
+    raise-case test.
+
+    Patch `_get_system_state` to return None. Submit a small trade.
+    Assert the same fail-closed-to-red behaviour: rejection with reason
+    citing unknown-state, `_safety_state_unknown` set, alert_status
+    forced to red.
+    """
+    production_warden._safety_state_unknown = False
+    production_warden.alert_status = "green"
+
+    production_warden._get_system_state = lambda: None
+
+    result = await production_warden.evaluate_trade({
+        "agent_id": seeded_world,
+        "symbol": "BTC/USDT",
+        "side": "buy",
+        "amount": 0.05,
+        "price": 100.0,  # trade_value = $5
+    })
+
+    assert result["status"] == "rejected"
+    reason = result.get("reason", "")
+    assert (
+        "unknown" in reason.lower()
+        or "fail" in reason.lower()
+        or "read failed" in reason.lower()
+    ), (
+        f"Empty-row branch must produce same unknown-state reason as the "
+        f"raise branch. Got: {reason!r}"
+    )
+    assert production_warden._safety_state_unknown is True
+    assert production_warden.alert_status == "red"
+
+
+@pytest.mark.asyncio
+async def test_safety_unknown_auto_clears_on_db_recovery(
+    db_factory, seeded_world, production_warden,
+):
+    """Per War Room iteration-3 Finding 1-Recovery: the fail-closed latch
+    MUST auto-clear on the next successful refresh. A single transient DB
+    blip cannot permanently halt the colony.
+
+    Full cycle:
+      (a) Healthy state -> evaluate_trade approves a small trade.
+      (b) Force DB to raise on next refresh -> evaluate_trade rejects
+          with safety-unknown reason.
+      (c) Restore DB -> evaluate_trade approves again (the latch lifted).
+      (d) Assert _safety_state_unknown is False and alert_status reflects
+          the actual DB state, not the stale forced-red value.
+
+    If a future change makes the latch sticky, this test fails. That is
+    the protection against the DMS self-defeating-loop pattern recurring.
+    """
+    # ---- (a) Healthy: trade approves ----
+    production_warden._safety_state_unknown = False
+    production_warden.alert_status = "green"
+
+    result_a = await production_warden.evaluate_trade({
+        "agent_id": seeded_world,
+        "symbol": "BTC/USDT",
+        "side": "buy",
+        "amount": 0.05,
+        "price": 100.0,  # $5 — small, well under any limit
+    })
+    assert result_a["status"] == "approved", (
+        f"Step (a): healthy state should approve a $5 trade. Got: {result_a}"
+    )
+    assert production_warden._safety_state_unknown is False
+    # Refresh adopted the DB value (which is 'green' from the fixture).
+    assert production_warden.alert_status == "green"
+
+    # ---- (b) DB blip: refresh raises, trade hard-rejected ----
+    real_get_state = production_warden._get_system_state
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("simulated transient DB blip")
+    production_warden._get_system_state = _raise
+
+    result_b = await production_warden.evaluate_trade({
+        "agent_id": seeded_world,
+        "symbol": "BTC/USDT",
+        "side": "buy",
+        "amount": 0.05,
+        "price": 100.0,
+    })
+    assert result_b["status"] == "rejected", (
+        f"Step (b): blip must trigger fail-closed reject. Got: {result_b}"
+    )
+    assert "unknown" in result_b.get("reason", "").lower()
+    assert production_warden._safety_state_unknown is True
+    assert production_warden.alert_status == "red"  # forced
+
+    # ---- (c) DB restored: next refresh clears the latch ----
+    production_warden._get_system_state = real_get_state
+
+    result_c = await production_warden.evaluate_trade({
+        "agent_id": seeded_world,
+        "symbol": "BTC/USDT",
+        "side": "buy",
+        "amount": 0.05,
+        "price": 100.0,
+    })
+
+    # ---- (d) Latch lifted, state reflects actual DB ----
+    assert result_c["status"] == "approved", (
+        f"Step (c-d): after DB recovery, latch must auto-clear and trade "
+        f"must approve. Got: {result_c}. If this fails, the fail-closed "
+        f"latch became sticky — DMS self-defeating-loop pattern recurring."
+    )
+    assert production_warden._safety_state_unknown is False, (
+        "Latch did not clear after DB recovery — sticky regression."
+    )
+    # alert_status is now whatever the DB actually says, NOT the forced 'red'
+    # we wrote during the blip.
+    assert production_warden.alert_status == "green"
+
+
+@pytest.mark.asyncio
 async def test_evaluate_trade_fails_closed_to_red_when_db_read_raises(
     db_factory, seeded_world, production_warden,
 ):
