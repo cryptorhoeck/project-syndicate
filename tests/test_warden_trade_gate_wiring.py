@@ -322,6 +322,108 @@ async def test_warden_missing_branch_rejects_and_alerts(
     assert positions == []
 
 
+# ---------------------------------------------------------------------------
+# Alert-status refresh path: the actual mechanism the hotfix added.
+#
+# These tests would FAIL without the `_refresh_alert_status_from_db()` call
+# at the top of `evaluate_trade`. The previous integration test
+# (`test_warden_rejects_oversized_trade_through_production_path`) exercises
+# the position-limit branch, which doesn't depend on alert_status. These
+# two tests cover the new mechanism explicitly. Per War Room Finding 2.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_evaluate_trade_refreshes_alert_status_from_db_and_blocks(
+    db_factory, seeded_world, production_warden,
+):
+    """The mechanism: an in-process Warden constructed with default alert_status
+    = "green" must hard-block a trade if the DB has alert_status = "red".
+
+    Construct -> write red to DB -> call evaluate_trade -> assert rejected
+    with a reason that cites the alert state, NOT the position limit. If
+    the refresh mechanism breaks, this test fails: the in-process Warden
+    would return approved (green) and the trade would slip through.
+    """
+    # Sanity: the production Warden starts as green.
+    assert production_warden.alert_status == "green"
+    assert production_warden._safety_state_unknown is False
+
+    # Simulate the Warden process having flipped the colony to red.
+    with db_factory() as session:
+        state = session.execute(select(SystemState).limit(1)).scalar_one()
+        state.alert_status = "red"
+        session.commit()
+
+    # Submit a trade that would otherwise pass position limits ($10 trade
+    # against $200 capital = 5%, well under the 25% per-agent cap). The
+    # ONLY thing that should block it is the alert refresh kicking in.
+    result = await production_warden.evaluate_trade({
+        "agent_id": seeded_world,
+        "symbol": "BTC/USDT",
+        "side": "buy",
+        "amount": 0.1,
+        "price": 100.0,  # trade_value = $10
+    })
+
+    assert result["status"] == "rejected"
+    reason = result.get("reason", "")
+    # Must cite RED alert (the real state), NOT position-limit, NOT
+    # safety-state-unknown.
+    assert "RED ALERT" in reason, (
+        f"Expected reason to cite RED alert; got: {reason!r}. "
+        "If this fails, the alert refresh mechanism is not wired."
+    )
+    # The Warden's in-memory state was updated by the refresh.
+    assert production_warden.alert_status == "red"
+    assert production_warden._safety_state_unknown is False
+
+
+@pytest.mark.asyncio
+async def test_evaluate_trade_fails_closed_to_red_when_db_read_raises(
+    db_factory, seeded_world, production_warden,
+):
+    """Per War Room Finding 1: when alert_status cannot be read, the
+    Warden treats safety state as unknown and rejects. The reason text
+    must indicate UNKNOWN (not a real RED alert) so on-call readers can
+    distinguish "colony is in red" from "we don't know what state we're in".
+
+    Patch `_get_system_state` to raise. Submit a small trade. Assert
+    rejection with a safety-state-unknown reason. Confirm the
+    `_safety_state_unknown` flag is set.
+    """
+    # Pre-condition: clean state.
+    production_warden._safety_state_unknown = False
+    production_warden.alert_status = "green"
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("simulated DB unavailability")
+
+    production_warden._get_system_state = _raise
+
+    result = await production_warden.evaluate_trade({
+        "agent_id": seeded_world,
+        "symbol": "BTC/USDT",
+        "side": "buy",
+        "amount": 0.05,
+        "price": 100.0,  # trade_value = $5, well below any limit
+    })
+
+    assert result["status"] == "rejected"
+    reason = result.get("reason", "")
+    assert (
+        "unknown" in reason.lower()
+        or "fail" in reason.lower()
+        or "read failed" in reason.lower()
+    ), (
+        f"Reason must distinguish unknown-state from real RED alert. "
+        f"Got: {reason!r}"
+    )
+    # Internal flag was set, alert_status was forced to red.
+    assert production_warden._safety_state_unknown is True
+    assert production_warden.alert_status == "red"
+
+
 def test_warden_missing_branch_present_in_both_market_and_limit_paths():
     """Regression guard. Document via source inspection that the loud
     warden-missing fallback exists in BOTH execute_market_order and

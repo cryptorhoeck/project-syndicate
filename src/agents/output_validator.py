@@ -127,21 +127,23 @@ class OutputValidator:
                 retryable=False,  # hallucinated action = no retry
             )
 
-        # Step 4: Warden Pre-Check (trade actions only)
-        trade_actions = {"execute_trade", "adjust_position", "close_position", "hedge"}
-        if action_type in trade_actions and self.warden:
-            try:
-                warden_result = self.warden.pre_check_action(parsed["action"])
-                if warden_result.get("rejected"):
-                    return ValidationResult(
-                        passed=False,
-                        failure_type=ValidationFailure.WARDEN_REJECTED,
-                        failure_detail=f"Warden rejected: {warden_result.get('reason', 'unknown')}",
-                        retryable=False,
-                    )
-            except Exception as e:
-                logger.warning(f"Warden pre-check error: {e}")
-                # Don't block on Warden errors — log and continue
+        # Step 4: (REMOVED — Warden pre-check)
+        # The previous implementation called `self.warden.pre_check_action(...)`
+        # which is not a method on Warden. Every invocation AttributeError'd
+        # and was swallowed by a bare-except, so the pre-check was a silent
+        # no-op since whenever it was added. After hotfix
+        # `warden-trade-gate-wiring`, the actual mechanical safety gate
+        # runs at trade-execution time inside PaperTradingService, where
+        # `Warden.evaluate_trade` is invoked synchronously before any
+        # Order/Position is created. Adding a duplicate pre-check at
+        # validation time would either (a) require designing a new method
+        # on Warden that re-implements evaluate_trade's logic for an
+        # action-shaped dict — scope creep — or (b) leave the broken call
+        # in place — defense-in-depth that silently fails is the project's
+        # signature bug class.
+        # Decision per War Room: option (b) from the iteration directive —
+        # remove the broken call. The trade-time gate at PaperTradingService
+        # is the actual safety boundary.
 
         # Step 5: Sanity Check
         sanity_result = self._sanity_check(agent_type, parsed, agent_capital)

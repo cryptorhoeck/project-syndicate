@@ -69,8 +69,13 @@ class Warden:
         # Agora (optional — Warden POSTS but NEVER READS)
         self._agora: Optional["AgoraService"] = agora_service
 
-        # Current alert status
+        # Current alert status. Default starts as unknown — the first
+        # evaluate_trade call refreshes from the DB and either adopts the
+        # canonical value or fails closed to RED. This prevents an
+        # in-process Warden from accidentally approving trades during the
+        # window between construction and the first DB read.
         self.alert_status: str = "green"
+        self._safety_state_unknown: bool = False
 
         # 4-hour rolling treasury snapshots for drawdown calculation
         self._treasury_snapshots: list[tuple[datetime, float]] = []
@@ -169,18 +174,37 @@ class Warden:
         evaluation can fire) MUST refresh from the DB or they'll evaluate
         every trade as "green" forever. This is the wiring fix from
         WIRING_AUDIT_REPORT.md subsystems K/L/M.
+
+        FAIL-CLOSED-TO-RED: when the read fails OR the row is absent, we
+        cannot determine the colony's safety state. A safety system that
+        cannot determine state must assume worst-case. We set
+        `_safety_state_unknown = True`; `evaluate_trade` checks that flag
+        before any other gate and rejects the trade with a reason that
+        cites unknown-state, not a real RED alert.
         """
         try:
             state = self._get_system_state()
-            if state is not None and state.alert_status:
-                self.alert_status = state.alert_status
         except Exception as exc:
-            # Read failure is loud but non-fatal — fall back to whatever the
-            # in-memory value is. Do NOT silently flip to green.
-            self.log.warning(
-                "warden_alert_refresh_failed", error=str(exc),
-                fallback_status=self.alert_status,
+            self._safety_state_unknown = True
+            self.alert_status = "red"
+            self.log.error(
+                "warden_alert_refresh_failed_failing_closed",
+                error=str(exc),
             )
+            return
+
+        if state is None or not state.alert_status:
+            self._safety_state_unknown = True
+            self.alert_status = "red"
+            self.log.error(
+                "warden_alert_refresh_no_state_row",
+                state_present=state is not None,
+            )
+            return
+
+        # Successful read clears the unknown flag and adopts the DB value.
+        self._safety_state_unknown = False
+        self.alert_status = state.alert_status
 
     async def evaluate_trade(self, trade_request: dict) -> dict:
         """Evaluate a trade request through the gate.
@@ -188,6 +212,7 @@ class Warden:
         Returns: {status: 'approved'/'rejected'/'held', reason: str, request_id: str}
         """
         # Sync alert_status with the canonical DB value before judging.
+        # Fail-closed-to-red on read failure — see _refresh_alert_status_from_db.
         self._refresh_alert_status_from_db()
 
         request_id = trade_request.get("request_id", str(uuid.uuid4())[:12])
@@ -197,6 +222,18 @@ class Warden:
         trade_value = amount * price if price else amount
 
         result = {"request_id": request_id, "agent_id": agent_id}
+
+        # 0. Safety state unknown (DB unreadable) — fail closed.
+        # MUST come before all other gates: if we can't read state, we
+        # cannot trust any subsequent check that depends on it.
+        if getattr(self, "_safety_state_unknown", False):
+            result["status"] = "rejected"
+            result["reason"] = (
+                "Safety state unknown (alert_status DB read failed) — "
+                "failing closed to RED. No trades until canonical state is readable."
+            )
+            self.log.warning("trade_rejected_safety_state_unknown", **result)
+            return result
 
         # 1. Circuit breaker — reject all
         if self.alert_status == "circuit_breaker":
