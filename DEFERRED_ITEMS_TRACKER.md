@@ -147,12 +147,12 @@
   - Watch-list condition: if a future Arena run shows a sustained increase in evaluate_trade latency (e.g. due to DB load from many concurrent agents, or PG running on different hardware), revisit and add a 1-5s TTL in-process cache that invalidates whenever the Warden process publishes an alert_status change.
   - Action when picked up: instrument `Warden.evaluate_trade` to record per-call latency to a Redis counter; add a dashboard read; gate on observed p99.
 
-- [ ] **Warden alert-refresh consecutive-failure counter (observability)**
-  - Surfaced during: War Room iteration 3 on `hotfix/warden-trade-gate-wiring` (Finding 1-Recovery)
-  - The directive said a consecutive-failure counter is "appropriate" but not "must add." We shipped iteration 3 with auto-recovery semantics + a regression-class test (`test_safety_unknown_auto_clears_on_db_recovery`) but no counter — that's a separate observability layer.
-  - Risk class: low. The fail-closed-to-red mechanism already prevents trades during DB unavailability; a counter would only help on-call see "this is happening more than usual" earlier than the existing ERROR log spam would.
-  - Action when picked up: add `self._consecutive_refresh_failures: int` to `Warden.__init__`. Increment in both fail-closed branches of `_refresh_alert_status_from_db`; reset to 0 on success. If the counter crosses a threshold (e.g. 5), emit a system-alerts message via Agora (separate from the per-failure ERROR log). The counter must NOT itself become a sticky latch — the success path resets it, period.
-  - Test when picked up: `test_consecutive_refresh_failure_counter_resets_on_recovery` — drive 3 failures (counter = 3), then one success (counter must = 0).
+- [ ] **Warden DB-refresh failure counter / observability**
+  - Surfaced during: hotfix/warden-trade-gate-wiring iteration 3 review
+  - Current state: fail-closed-to-red works correctly with auto-clear on recovery; no counter or alert on consecutive failures
+  - Risk: low until a real DB-flap event occurs; at that point we will want to know flap frequency
+  - Action when picked up: instrument `_refresh_alert_status_from_db` with a consecutive-failure counter, log structured event when count crosses threshold (suggest 3 consecutive failures), surface in dashboard. Do NOT make the counter itself a sticky latch.
+  - Trigger to pick up: first real DB-anomaly event in production, OR any future audit recommending observability hardening.
 
 ---
 

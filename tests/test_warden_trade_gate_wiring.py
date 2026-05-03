@@ -420,6 +420,10 @@ async def test_evaluate_trade_fails_closed_when_no_state_row_exists(
     assert production_warden.alert_status == "red"
 
 
+# LOAD-BEARING TEST: this test guards the non-stickiness contract of
+# _safety_state_unknown / forced-red auto-clear. If _refresh_alert_status_from_db
+# is refactored, this test is the thing that catches a regression to the
+# DMS-class self-defeating-loop pattern. Do not delete or weaken without War Room review.
 @pytest.mark.asyncio
 async def test_safety_unknown_auto_clears_on_db_recovery(
     db_factory, seeded_world, production_warden,
