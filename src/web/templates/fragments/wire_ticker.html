@@ -1,0 +1,54 @@
+{# Wire ticker tape — last 20 severity-3+ canonical events. Loaded via HTMX from /api/wire/ticker #}
+<div id="wire-ticker" class="font-mono text-xs">
+    <div class="flex items-center justify-between px-4 py-2 border-b border-slate-700">
+        <span class="text-slate-400 uppercase tracking-wider">The Wire — Ticker</span>
+        <span class="text-slate-500" data-wire-count></span>
+    </div>
+    <div class="divide-y divide-slate-800 max-h-96 overflow-y-auto" data-wire-events>
+        {# Populated client-side. Each event row shows severity badge, coin, summary, time. #}
+    </div>
+</div>
+
+<script>
+    (function () {
+        const root = document.getElementById('wire-ticker');
+        const list = root.querySelector('[data-wire-events]');
+        const counter = root.querySelector('[data-wire-count]');
+
+        const sevColor = (s) => ({
+            3: 'bg-yellow-700/40 text-yellow-300',
+            4: 'bg-orange-700/50 text-orange-200',
+            5: 'bg-rose-700/60 text-rose-200',
+        }[s] || 'bg-slate-700 text-slate-300');
+
+        function render(events) {
+            list.innerHTML = '';
+            counter.textContent = events.length + ' events';
+            for (const e of events) {
+                const row = document.createElement('div');
+                row.className = 'flex items-start gap-3 px-4 py-2 hover:bg-slate-800/40';
+                row.innerHTML = `
+                    <span class="px-1.5 py-0.5 rounded ${sevColor(e.severity)}">S${e.severity}</span>
+                    <span class="text-slate-300 w-12 truncate">${e.coin || '—'}</span>
+                    <span class="text-slate-400 flex-1">${e.summary || ''}</span>
+                    <span class="text-slate-600 whitespace-nowrap">${e.event_type}</span>
+                `;
+                list.appendChild(row);
+            }
+        }
+
+        async function refresh() {
+            try {
+                const resp = await fetch('/api/wire/ticker?limit=20', { cache: 'no-store' });
+                if (!resp.ok) return;
+                const data = await resp.json();
+                render(data.events || []);
+            } catch (err) {
+                console.warn('wire ticker refresh failed', err);
+            }
+        }
+
+        refresh();
+        setInterval(refresh, 15000);
+    })();
+</script>

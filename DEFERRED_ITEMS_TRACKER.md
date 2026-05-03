@@ -1,5 +1,5 @@
 ## PROJECT SYNDICATE — DEFERRED ITEMS TRACKER
-## Last updated: 2026-04-13 (Directory Cleanup Session)
+## Last updated: 2026-05-02 (Phase 10 pre-flight)
 ## ================================================================
 ## 
 ## This document tracks design decisions, requirements, and features
@@ -134,6 +134,40 @@
 - [ ] **CLI SIP review menu**: Add option [7] to syndicate_cli.py for owner to approve/reject/defer SIPs. *(Identified: Phase 9A implementation)*
 
 - [ ] **Genesis governance seeding**: `seed_governance_prompt()` method for nascent/developing colonies — Genesis suggests areas for SIP investigation. *(Identified: Phase 9A design, deferred to runtime)*
+
+---
+
+## PHASE 10 PRE-FLIGHT (Identified 2026-05-02)
+
+- [ ] **Crypto news aggregator replacement (Phase 10.5)**
+  - Surfaced during: Phase 10 validation
+  - Original plan: CryptoPanic free tier as general crypto news aggregator
+  - Reality: CryptoPanic free tier discontinued in 2024-2025, paid only ($25/mo+)
+  - Decision: dropped from Phase 10. Build a free RSS-based replacement in Phase 10.5.
+  - Recommended sources (all free, no auth): CoinTelegraph RSS, CoinDesk RSS, Decrypt RSS, The Block RSS, Reddit r/CryptoCurrency JSON
+  - These are factual news (Phase 1 of The Wire), not sentiment (Phase 2). Same digestion pipeline applies.
+  - Action when picked up: implement as 4-5 new WireSource subclasses sharing a common RSSWireSource base class. Existing dedup will collapse the same story across feeds — that's the design intent.
+
+- [ ] **Wire URL/secret leak via httpx INFO logging**
+  - Surfaced during: Phase 10 live validation Step B
+  - Symptom: httpx logs full URLs at INFO including query string API keys; FRED and Etherscan keys written to disk in logs/wire_validation.log
+  - Mitigation applied immediately: log file deleted; keys rotated by Andrew (pending)
+  - Permanent fix needed: configure httpx logger to WARNING level globally, OR scrub query strings from URL logs, OR move all source auth from query-string keys to headers where the API supports it
+  - Risk class: high — secrets-in-logs is a recurring class of bug; needs a structural fix, not just a one-off cleanup
+  - Action when picked up: Add a logging config module that downgrades httpx + urllib3 + asyncio loggers to WARNING by default. Add a pre-commit / CI check that scans logs/ for secret patterns. Audit every WireSource for whether keys go in query strings (rotate to headers if API allows).
+
+- [ ] **test_code_sandbox.py ordering dependency**
+  - Surfaced during: Phase 10 build pre-flight
+  - Symptom: Two tests in test_code_sandbox.py fail in full suite run, pass in isolation
+  - Current hypothesis (UNVERIFIED): test-ordering flakes unrelated to Phase 10
+  - Risk class: Same shape as the Library reflection injection bug — passes in isolation, misbehaves in real conditions. Do not dismiss as "flaky."
+  - Action when picked up: Identify the shared state causing ordering dependency. Shared test state is a bug, not a quirk. Confirm whether Phase 10 (scheduler, background workers, new tables) actually contributes or is incidental.
+
+- [ ] **Postgres logfile config drift**
+  - Surfaced during: Phase 10 pre-flight
+  - Symptom: Postgres expected logfile path was a regular file, not a directory; required redirect to `logs/postgres_phase10.log` to start
+  - Current state: Working but non-standard
+  - Action when picked up: Normalize Postgres startup logging configuration. Confirm `logs/` directory state. Document the canonical logfile path in CLAUDE.md or operational runbook.
 
 ---
 

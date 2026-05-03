@@ -73,6 +73,7 @@ def create_app() -> FastAPI:
     from src.web.routes.api_dynasty import router as api_dynasty_router
     from src.web.routes.api_sse import router as api_sse_router
     from src.web.routes.api_governance import router as api_governance_router
+    from src.web.routes.api_wire import router as api_wire_router
 
     app.include_router(pages_router)
     app.include_router(api_agora_router, prefix="/api/agora")
@@ -84,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(api_dynasty_router, prefix="/api/dynasties")
     app.include_router(api_sse_router, prefix="/api/events")
     app.include_router(api_governance_router)
+    app.include_router(api_wire_router)
 
     # Admin catch-all redirect (Phase 6 adds auth)
     @app.get("/admin/{path:path}")

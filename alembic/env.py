@@ -15,6 +15,9 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 from src.common.models import Base
+# Import Wire models so their tables are registered on Base.metadata
+# (autogen + offline migrations need this).
+import src.wire.models  # noqa: F401
 
 target_metadata = Base.metadata
 

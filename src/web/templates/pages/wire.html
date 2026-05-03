@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}The Wire — Project Syndicate{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-mono font-bold">The Wire</h1>
+    <span class="text-xs text-slate-400 font-mono">External intelligence pipeline · auto-refresh 15s</span>
+</div>
+
+<!-- Stats row -->
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+    <div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
+        <div class="text-xs text-slate-400 uppercase tracking-wider">Total events</div>
+        <div class="text-3xl font-mono font-bold mt-1" data-wire-stat="total_events">—</div>
+    </div>
+    <div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
+        <div class="text-xs text-slate-400 uppercase tracking-wider">Pending raw items</div>
+        <div class="text-3xl font-mono font-bold mt-1" data-wire-stat="pending_raw_items">—</div>
+    </div>
+    <div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
+        <div class="text-xs text-slate-400 uppercase tracking-wider">Treasury spend (24h)</div>
+        <div class="text-3xl font-mono font-bold mt-1" data-wire-stat="treasury_24h">—</div>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- Ticker -->
+    <div class="lg:col-span-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
+        {% include "fragments/wire_ticker.html" %}
+    </div>
+
+    <!-- Source health grid -->
+    <div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
+        <div class="font-mono text-xs uppercase text-slate-400 tracking-wider mb-3">Source health</div>
+        <div data-wire-health class="font-mono text-xs space-y-2"></div>
+    </div>
+</div>
+
+<script>
+    (function () {
+        const stats = {
+            total: document.querySelector('[data-wire-stat="total_events"]'),
+            pending: document.querySelector('[data-wire-stat="pending_raw_items"]'),
+            treasury: document.querySelector('[data-wire-stat="treasury_24h"]'),
+        };
+        const healthDiv = document.querySelector('[data-wire-health]');
+
+        const statusColor = (s) => ({
+            healthy: 'text-emerald-400',
+            degraded: 'text-yellow-400',
+            failing: 'text-orange-400',
+            disabled: 'text-rose-400',
+        }[s] || 'text-slate-400');
+
+        async function refresh() {
+            try {
+                const [s, t, h] = await Promise.all([
+                    fetch('/api/wire/stats').then(r => r.json()),
+                    fetch('/api/wire/treasury?lookback_hours=24').then(r => r.json()),
+                    fetch('/api/wire/health').then(r => r.json()),
+                ]);
+                stats.total.textContent = s.total_events;
+                stats.pending.textContent = s.pending_raw_items;
+                stats.treasury.textContent = '$' + (t.total_cost_usd || 0).toFixed(4);
+                healthDiv.innerHTML = '';
+                for (const src of (h.sources || [])) {
+                    const row = document.createElement('div');
+                    row.className = 'flex items-center justify-between';
+                    row.innerHTML = `
+                        <span class="text-slate-300">${src.name}</span>
+                        <span class="${statusColor(src.status)}">${src.status} · ${src.items_last_24h}</span>
+                    `;
+                    healthDiv.appendChild(row);
+                }
+            } catch (err) {
+                console.warn('wire dashboard refresh failed', err);
+            }
+        }
+        refresh();
+        setInterval(refresh, 15000);
+    })();
+</script>
+{% endblock %}

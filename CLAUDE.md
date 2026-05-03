@@ -180,6 +180,33 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **Adaptive Cycle Frequency** — regime-based multipliers (volatile=faster, crab=slower). 30-second floor
 - **Context Window Diet** — Haiku gets 70% token budget, old Agora messages truncated
 
+### Phase 10: The Wire (External Intelligence Pipeline)
+The colony's external data layer. Pulls from 8 free crypto + macro sources, digests raw items into structured events via Haiku, and exposes them to agents via two channels:
+
+- **Ticker (push):** Severity ≥3 events broadcast to The Agora as `wire.ticker` events. Free for agents to consume in OODA context.
+- **Archive (pull):** Queryable history via `WireArchive.query(...)`. Token-costed against agent thinking budget (50 base + 10 per result + 20 lookback penalty for >24h).
+
+**Key modules:** `src/wire/sources/`, `src/wire/digest/`, `src/wire/publishing/`, `src/wire/integration/`, `src/wire/health/`.
+
+**Sources (8):** Tier A — Kraken announcements, CryptoPanic free, DefiLlama, Etherscan transfers, Kraken funding rates. Tier B — FRED macro series, TradingEconomics calendar, Fear & Greed.
+
+**Severity 5** events auto-trigger Genesis regime review and (for `exchange_outage`/`withdrawal_halt`/`chain_halt`) Operator halt for the affected coin scope. Severity 5 cannot be assigned by Haiku — only by deterministic rules in source code (e.g., Kraken announcement matching `withdrawal halt`).
+
+**Treasury accounting:** Wire's Haiku digestion costs are billed to Genesis treasury (`wire_treasury_ledger`), not to individual agents. System infrastructure overhead.
+
+**Failure guards (non-negotiable):** per-source heartbeats with auto-disable at 20 consecutive failures, 6h volume floor (`wire.volume_floor_breach`), 24h source diversity check (>70% from one source = `wire.diversity_breach`), strict JSON schema on Haiku output with dead-letter on second parse fail. These exist because of the Library reflection injection bug — silent failures are the primary risk class.
+
+**Agent integration:**
+- Scouts: free `recent_signals` block (last 5 ticker events) injected into OODA context by `ContextAssembler._build_wire_recent_signals`.
+- Strategists: `build_strategist_archive_helper(session, agent_id)` returns a closure that runs Archive queries and charges tokens.
+- Critics: `build_critic_archive_helper(session, agent_id, free_budget=3)` grants 3 free queries per critique cycle, charges thereafter.
+
+**CLI:** `python -m src.wire.cli {fetch <name> | health [--verbose] | digest-pending | run-scheduler | list-sources}`.
+
+**Dashboard:** `/api/wire/{ticker,health,treasury,stats}` JSON endpoints; `templates/fragments/wire_ticker.html` widget.
+
+**Deferred:** sentiment data sources → Phase 11; paid premium sources → Phase 10.5; Wire-derived auto-signals — never (agents discover); agent write access to Wire — future SIP.
+
 ## Dev Environment
 
 - **OS:** Windows 11
@@ -333,6 +360,8 @@ At the beginning of every script or module, include (or call) standard boilerpla
 | 8C | Code Sandbox & Strategy Genome | **COMPLETE** |
 | 9 | Production Readiness Testing (hardening, integration, stress) | **COMPLETE** |
 | 9A | SIP Voting & Colony Maturity (democratic governance) | **COMPLETE** |
+| 10 | The Wire (external intelligence pipeline) | **COMPLETE** |
+| 11 | Wire sentiment layer (Twitter/Reddit) | Pending |
 | 4 | The Arena (full paper trading — 21-day run) | **NEXT** |
 | 5 | Social Presence + Solana | Pending |
 | 6B | Owner Console + Auth | Pending |
