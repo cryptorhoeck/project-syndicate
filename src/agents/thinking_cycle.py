@@ -64,6 +64,7 @@ class ThinkingCycle:
         agora_service=None,
         warden=None,
         config=None,
+        trading_service=None,
     ):
         self.db = db_session
         self.claude = claude_client
@@ -77,7 +78,15 @@ class ThinkingCycle:
             token_budget=getattr(config, "context_token_budget_normal", 3000),
         )
         self.output_validator = OutputValidator(warden=warden)
-        self.action_executor = ActionExecutor(db_session, agora_service, warden)
+        # The trading_service kwarg is the wiring fix from
+        # ARENA_TRADING_SERVICE_DIAGNOSIS.md. Without it, ActionExecutor
+        # falls back to [NO SERVICE] on every Operator trade attempt.
+        self.action_executor = ActionExecutor(
+            db_session,
+            agora_service,
+            warden,
+            trading_service=trading_service,
+        )
         self.cycle_recorder = CycleRecorder(db_session, redis_client, agora_service)
         self.memory_manager = MemoryManager(db_session, redis_client)
         self.model_router = ModelRouter()
