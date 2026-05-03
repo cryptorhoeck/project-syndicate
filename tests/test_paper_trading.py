@@ -90,12 +90,27 @@ def mock_redis():
 
 
 @pytest.fixture
-def service(db_factory, mock_price_cache, mock_slippage, mock_redis):
+def approving_warden():
+    """Warden mock that always approves. Required after hotfix
+    `warden-trade-gate-wiring`: PaperTradingService now hard-rejects when
+    `self.warden is None` (defense in depth). Tests that exercise the
+    happy-path execution must inject a Warden — production wiring does
+    too. The dedicated test for the soft-pass branch lives in
+    `tests/test_warden_trade_gate_wiring.py`.
+    """
+    w = MagicMock()
+    w.evaluate_trade = AsyncMock(return_value={"status": "approved", "reason": "test", "request_id": "test"})
+    return w
+
+
+@pytest.fixture
+def service(db_factory, mock_price_cache, mock_slippage, mock_redis, approving_warden):
     return PaperTradingService(
         db_session_factory=db_factory,
         price_cache=mock_price_cache,
         slippage_model=mock_slippage,
         fee_schedule=FeeSchedule(),
+        warden=approving_warden,
         redis_client=mock_redis,
     )
 

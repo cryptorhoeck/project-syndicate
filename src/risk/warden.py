@@ -160,11 +160,36 @@ class Warden:
     # Trade Gate
     # ------------------------------------------------------------------
 
+    def _refresh_alert_status_from_db(self) -> None:
+        """Read system_state.alert_status from the canonical DB row.
+
+        The Warden process owns alert_status and writes it via
+        `_update_alert_status` on its 30-second cycle. In-process Warden
+        instances constructed inside the agent runtime (so trade-time
+        evaluation can fire) MUST refresh from the DB or they'll evaluate
+        every trade as "green" forever. This is the wiring fix from
+        WIRING_AUDIT_REPORT.md subsystems K/L/M.
+        """
+        try:
+            state = self._get_system_state()
+            if state is not None and state.alert_status:
+                self.alert_status = state.alert_status
+        except Exception as exc:
+            # Read failure is loud but non-fatal — fall back to whatever the
+            # in-memory value is. Do NOT silently flip to green.
+            self.log.warning(
+                "warden_alert_refresh_failed", error=str(exc),
+                fallback_status=self.alert_status,
+            )
+
     async def evaluate_trade(self, trade_request: dict) -> dict:
         """Evaluate a trade request through the gate.
 
         Returns: {status: 'approved'/'rejected'/'held', reason: str, request_id: str}
         """
+        # Sync alert_status with the canonical DB value before judging.
+        self._refresh_alert_status_from_db()
+
         request_id = trade_request.get("request_id", str(uuid.uuid4())[:12])
         agent_id = trade_request["agent_id"]
         amount = trade_request.get("amount", 0)

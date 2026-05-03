@@ -79,11 +79,20 @@ def service(db_factory, mock_price_cache):
     redis.set.return_value = True
     redis.delete.return_value = True
 
+    # After hotfix `warden-trade-gate-wiring`, PaperTradingService hard-rejects
+    # when warden is None. Inject an approving Warden mock — production
+    # wiring also injects a real Warden.
+    approving_warden = MagicMock()
+    approving_warden.evaluate_trade = AsyncMock(
+        return_value={"status": "approved", "reason": "test", "request_id": "test"}
+    )
+
     return PaperTradingService(
         db_session_factory=db_factory,
         price_cache=mock_price_cache,
         slippage_model=slippage,
         fee_schedule=FeeSchedule(),
+        warden=approving_warden,
         redis_client=redis,
     )
 

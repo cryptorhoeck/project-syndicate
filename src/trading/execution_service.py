@@ -168,22 +168,35 @@ class PaperTradingService(TradeExecutionService):
             if not agent:
                 return OrderResult(success=False, error=f"Agent {agent_id} not found")
 
-            # 1. Check Warden
-            if self.warden:
-                warden_result = await self.warden.evaluate_trade({
-                    "agent_id": agent_id,
-                    "amount": size_usd,
-                    "price": 1.0,
-                    "symbol": symbol,
-                    "side": side,
-                })
-                if warden_result.get("status") != "approved":
-                    return self._create_rejected_order(
-                        session, agent, symbol, side, size_usd, "market",
-                        warden_result.get("reason", "Warden rejected"),
-                        source_plan_id, source_cycle_id,
-                        warden_result.get("request_id"),
-                    )
+            # 1. Check Warden — production wiring guarantees self.warden is
+            # not None (build_trading_service refuses to construct without
+            # one). The branch below is defense-in-depth: if we ever land
+            # here with self.warden is None the colony's mechanical safety
+            # gate is missing and the trade MUST be rejected, not soft-passed.
+            if self.warden is None:
+                await self._raise_warden_missing_alert(
+                    agent_id=agent_id, symbol=symbol, side=side,
+                    size_usd=size_usd, order_type="market",
+                )
+                return self._create_rejected_order(
+                    session, agent, symbol, side, size_usd, "market",
+                    "Warden missing — trade rejected (defense in depth)",
+                    source_plan_id, source_cycle_id,
+                )
+            warden_result = await self.warden.evaluate_trade({
+                "agent_id": agent_id,
+                "amount": size_usd,
+                "price": 1.0,
+                "symbol": symbol,
+                "side": side,
+            })
+            if warden_result.get("status") != "approved":
+                return self._create_rejected_order(
+                    session, agent, symbol, side, size_usd, "market",
+                    warden_result.get("reason", "Warden rejected"),
+                    source_plan_id, source_cycle_id,
+                    warden_result.get("request_id"),
+                )
 
             # 2. Check buying power
             available = agent.cash_balance - agent.reserved_cash
@@ -349,22 +362,33 @@ class PaperTradingService(TradeExecutionService):
             if not agent:
                 return OrderResult(success=False, error=f"Agent {agent_id} not found")
 
-            # Check Warden
-            if self.warden:
-                warden_result = await self.warden.evaluate_trade({
-                    "agent_id": agent_id,
-                    "amount": size_usd,
-                    "price": price,
-                    "symbol": symbol,
-                    "side": side,
-                })
-                if warden_result.get("status") != "approved":
-                    return self._create_rejected_order(
-                        session, agent, symbol, side, size_usd, "limit",
-                        warden_result.get("reason", "Warden rejected"),
-                        source_plan_id, source_cycle_id,
-                        warden_result.get("request_id"),
-                    )
+            # Check Warden — see execute_market_order for the defense-in-depth
+            # rationale. Limit-order initiation is also a trade-initiation
+            # point per WIRING_AUDIT_REPORT.md subsystem N.
+            if self.warden is None:
+                await self._raise_warden_missing_alert(
+                    agent_id=agent_id, symbol=symbol, side=side,
+                    size_usd=size_usd, order_type="limit",
+                )
+                return self._create_rejected_order(
+                    session, agent, symbol, side, size_usd, "limit",
+                    "Warden missing — trade rejected (defense in depth)",
+                    source_plan_id, source_cycle_id,
+                )
+            warden_result = await self.warden.evaluate_trade({
+                "agent_id": agent_id,
+                "amount": size_usd,
+                "price": price,
+                "symbol": symbol,
+                "side": side,
+            })
+            if warden_result.get("status") != "approved":
+                return self._create_rejected_order(
+                    session, agent, symbol, side, size_usd, "limit",
+                    warden_result.get("reason", "Warden rejected"),
+                    source_plan_id, source_cycle_id,
+                    warden_result.get("request_id"),
+                )
 
             # Calculate reservation: size + estimated fee
             est_fee, _ = (0.0, 0.0)
@@ -606,6 +630,51 @@ class PaperTradingService(TradeExecutionService):
                 unrealized_pnl=agent.unrealized_pnl,
                 position_count=agent.position_count,
             )
+
+    async def _raise_warden_missing_alert(
+        self, *, agent_id: int, symbol: str, side: str,
+        size_usd: float, order_type: str,
+    ) -> None:
+        """Loud alert path for the defense-in-depth `self.warden is None`
+        branch in `execute_market_order` / `execute_limit_order`. Production
+        wiring guarantees a Warden via `build_trading_service` and
+        `run_agents.py:build_warden`. If we still hit this branch, the
+        colony's mechanical safety gate is missing and the operator MUST
+        be alerted, not silently soft-passed.
+        """
+        import logging
+        log = logging.getLogger(__name__)
+        log.critical(
+            "trade_warden_missing",
+            extra={
+                "agent_id": agent_id, "symbol": symbol, "side": side,
+                "size_usd": size_usd, "order_type": order_type,
+            },
+        )
+        if self.agora is None:
+            return
+        try:
+            from src.agora.schemas import AgoraMessage, MessageType
+            await self.agora.post_message(AgoraMessage(
+                agent_id=int(agent_id),
+                agent_name="PaperTradingService",
+                channel="system-alerts",
+                content=(
+                    f"[WARDEN MISSING] Trade rejected — Warden was None at "
+                    f"trade-initiation point. agent_id={agent_id} symbol={symbol} "
+                    f"{side} {order_type} ${size_usd:.2f}. This indicates a "
+                    f"runtime wiring break; safety gate is absent."
+                ),
+                message_type=MessageType.ALERT,
+                importance=2,
+                metadata={
+                    "event_class": "warden.missing_at_trade_gate",
+                    "agent_id": agent_id, "symbol": symbol, "side": side,
+                    "size_usd": size_usd, "order_type": order_type,
+                },
+            ))
+        except Exception:
+            log.exception("warden_missing_agora_post_failed")
 
     def _create_rejected_order(
         self, session: Session, agent: Agent, symbol: str, side: str,
