@@ -340,10 +340,28 @@ class ActionExecutor:
     ) -> ActionResult:
         """Handle trade execution via TradeExecutionService."""
         if not self.trading:
-            # Fallback: log-only mode when no trading service configured
-            logger.info("trade_no_service", extra={"agent_id": agent.id, "action": action_type})
+            # Defense-in-depth fallback. Production wiring lives in
+            # ARENA_TRADING_SERVICE_DIAGNOSIS.md / hotfix
+            # operator-trading-service-wiring; if we ever hit this path
+            # again it means the wiring broke and the colony is silently
+            # NOT trading. Escalate loud:
+            #   - CRITICAL log (was INFO — buried in noise)
+            #   - mirror to system-alerts channel (was trade-signals only,
+            #     where the prior Arena's Critic only noticed it on day 2)
+            logger.critical(
+                "trade_no_service",
+                extra={"agent_id": agent.id, "action": action_type},
+            )
             summary = self._summarize_action(action_type, params)
-            await self._post_to_agora(agent, "trade-signals", f"[NO SERVICE] {summary}", action_type, params)
+            await self._post_to_agora(
+                agent, "trade-signals", f"[NO SERVICE] {summary}", action_type, params,
+            )
+            await self._post_to_agora(
+                agent, "system-alerts",
+                f"[NO SERVICE] Operator trade attempt blocked — trading_service is None. "
+                f"This indicates a runtime wiring break. Action: {summary}",
+                action_type, params, importance=2,
+            )
             return ActionResult(success=False, action_type=action_type, details="No trading service configured")
 
         symbol = params.get("market", params.get("symbol", ""))

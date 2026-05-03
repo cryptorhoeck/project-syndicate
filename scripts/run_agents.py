@@ -36,6 +36,10 @@ from src.agents.claude_client import ClaudeClient
 from src.agents.cycle_scheduler import CycleScheduler
 from src.agents.thinking_cycle import ThinkingCycle
 from src.common.config import config
+from src.common.price_cache import PriceCache
+from src.trading.execution_service import get_trading_service
+from src.trading.fee_schedule import FeeSchedule
+from src.trading.slippage_model import SlippageModel
 
 # Logging
 structlog.configure(
@@ -58,6 +62,26 @@ def _handle_signal(signum: int, _frame) -> None:
     global _running
     log.info("shutdown_signal_received", signal=signum)
     _running = False
+
+
+def build_trading_service(db_factory, redis_client, agora_service=None):
+    """Construct the colony's TradeExecutionService for the configured mode.
+
+    Extracted to a module-level function so
+    `tests/test_action_executor_wiring.py` can call the SAME constructor
+    the production runner calls — that is what closes the wiring gap
+    permanently. If a future change in this function silently returns
+    None or skips an argument, the wiring test will catch it.
+    """
+    price_cache = PriceCache(redis_client=redis_client)
+    return get_trading_service(
+        db_session_factory=db_factory,
+        price_cache=price_cache,
+        slippage_model=SlippageModel(),
+        fee_schedule=FeeSchedule(),
+        redis_client=redis_client,
+        agora_service=agora_service,
+    )
 
 
 async def main() -> None:
@@ -91,6 +115,21 @@ async def main() -> None:
     except Exception as e:
         log.warning("agora_unavailable", error=str(e))
 
+    # Trading service. This is the wiring that closes the gap exposed in
+    # ARENA_TRADING_SERVICE_DIAGNOSIS.md. The factory returns the right
+    # concrete TradeExecutionService for the configured mode (paper today).
+    # If this raises or returns None, we surface and abort: every Operator
+    # trade would otherwise fall into the [NO SERVICE] fallback again.
+    trading_service = build_trading_service(db_factory, redis_client, agora_service=agora)
+    if trading_service is None:
+        log.error("trading_service_unavailable",
+                  trading_mode=config.trading_mode,
+                  message="Refusing to start agents — Operator would silently no-op every trade.")
+        sys.exit(2)
+    log.info("trading_service_wired",
+             impl=type(trading_service).__name__,
+             trading_mode=config.trading_mode)
+
     log.info("agent_runner_started", poll_interval=POLL_INTERVAL)
 
     try:
@@ -120,6 +159,7 @@ async def main() -> None:
                                 redis_client=redis_client,
                                 agora_service=agora,
                                 config=config,
+                                trading_service=trading_service,
                             )
 
                             result = await thinking_cycle.run(agent_id)

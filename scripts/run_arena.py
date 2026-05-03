@@ -142,6 +142,29 @@ def _preflight_checks() -> bool:
     else:
         log.info("preflight_trading_mode", status="OK", mode="paper")
 
+    # Trading service factory wiring. Same risk shape as the DMS preflight:
+    # if the factory returns None or raises, every Operator trade attempt
+    # would fall through to the [NO SERVICE] log path and produce zero P&L.
+    # Refuse Arena entry rather than spend another 3 days like 2026-04-14.
+    try:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from src.trading.execution_service import get_trading_service
+        engine = create_engine(config.database_url, pool_pre_ping=True)
+        db_factory = sessionmaker(bind=engine)
+        trading_service = get_trading_service(db_session_factory=db_factory)
+        engine.dispose()
+        if trading_service is None:
+            log.error("preflight_trading_service", status="FAIL",
+                      error="get_trading_service returned None")
+            checks_passed = False
+        else:
+            log.info("preflight_trading_service", status="OK",
+                     impl=type(trading_service).__name__)
+    except Exception as e:
+        log.error("preflight_trading_service", status="FAIL", error=str(e))
+        checks_passed = False
+
     # Phase 9A: Governance tables + parameter registry
     try:
         from sqlalchemy import create_engine, text
