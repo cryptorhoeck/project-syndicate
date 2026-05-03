@@ -157,5 +157,6 @@ class TestRunEnabledSources:
             runner_module.SOURCE_REGISTRY.update(original)
 
         names = {r.source_name for r in results}
-        # Only enabled sources should run; others stay skipped.
-        assert names == {"kraken_announcements", "cryptopanic", "defillama"}
+        # Only enabled sources should run; cryptopanic is disabled in seed
+        # (mirrors migration phase_10_wire_005), the other two stay enabled.
+        assert names == {"kraken_announcements", "defillama"}

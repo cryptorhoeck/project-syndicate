@@ -214,6 +214,26 @@ Per Directive 3:
 
 ---
 
+## Step B-2 — Clean 30-min run (post-cryptopanic-drop)
+
+**Decision:** CryptoPanic free tier discontinued in 2024-2025; per Andrew, dropped from Phase 10 launch set. Source code and `wire_sources` row preserved for re-enable. Migration `phase_10_wire_005_disable_cryptopanic.py` flips `enabled = FALSE`. Replacement plan tracked in `DEFERRED_ITEMS_TRACKER.md` ("Crypto news aggregator replacement (Phase 10.5)").
+
+**Adjusted acceptance criteria for Step B-2:**
+
+| Criterion | Required |
+|---|---|
+| Sources `healthy` | All 6 effectively-enabled (cryptopanic disabled at DB level; trading_economics will fail defensively without `TRADINGECONOMICS_API_KEY` — both intentionally not in scope) |
+| `wire_events` count | > 0 |
+| Treasury cost | > 0 |
+| Dead-letter rate | < 5% |
+| URL leaks in log | 0 |
+
+**The 6 sources expected to be healthy:** defillama, etherscan_transfers, fear_greed, fred, funding_rates, kraken_announcements.
+
+**Run results:** _filled in below after the run_
+
+---
+
 **Final state of phase-10-the-wire branch:**
 
 ```

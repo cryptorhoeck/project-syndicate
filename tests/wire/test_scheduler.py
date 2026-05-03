@@ -66,7 +66,9 @@ class TestTick:
         try:
             sched = IngestorScheduler(session_factory=wire_session_factory)
             summary = sched.tick()
-            assert len(summary["runs"]) == 3  # 3 enabled
+            # 2 Tier-1 enabled (kraken_announcements, defillama).
+            # cryptopanic disabled per migration phase_10_wire_005.
+            assert len(summary["runs"]) == 2
             assert all(r.success for r in summary["runs"])
         finally:
             restore()
@@ -101,7 +103,7 @@ class TestTick:
             # Jump 2 hours.
             clock["now"] = clock["now"] + timedelta(hours=2)
             summary = sched.tick()
-            assert len(summary["runs"]) == 3
+            assert len(summary["runs"]) == 2
             assert counter.calls > initial_calls
         finally:
             restore()

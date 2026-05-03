@@ -26,7 +26,10 @@ def _seed_sources(session: Session) -> dict[str, WireSource]:
     seeds = [
         ("kraken_announcements", "Kraken Announcements", "A", 300, True, False, None,
          "https://blog.kraken.com/feed/", {"severity_floor": 3}),
-        ("cryptopanic", "CryptoPanic", "A", 600, True, True, "CRYPTOPANIC_API_KEY",
+        # Disabled in production via migration phase_10_wire_005 — free tier
+        # discontinued. Tests still seed the row so source-registry/runner
+        # tests have a target to point at.
+        ("cryptopanic", "CryptoPanic", "A", 600, False, True, "CRYPTOPANIC_API_KEY",
          "https://cryptopanic.com/api/v1/posts/", {"public": True}),
         ("defillama", "DefiLlama", "A", 1800, True, False, None,
          "https://api.llama.fi", {"tvl_delta_threshold": 0.05}),

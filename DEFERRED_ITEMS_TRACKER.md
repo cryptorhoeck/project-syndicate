@@ -139,6 +139,15 @@
 
 ## PHASE 10 PRE-FLIGHT (Identified 2026-05-02)
 
+- [ ] **Crypto news aggregator replacement (Phase 10.5)**
+  - Surfaced during: Phase 10 validation
+  - Original plan: CryptoPanic free tier as general crypto news aggregator
+  - Reality: CryptoPanic free tier discontinued in 2024-2025, paid only ($25/mo+)
+  - Decision: dropped from Phase 10. Build a free RSS-based replacement in Phase 10.5.
+  - Recommended sources (all free, no auth): CoinTelegraph RSS, CoinDesk RSS, Decrypt RSS, The Block RSS, Reddit r/CryptoCurrency JSON
+  - These are factual news (Phase 1 of The Wire), not sentiment (Phase 2). Same digestion pipeline applies.
+  - Action when picked up: implement as 4-5 new WireSource subclasses sharing a common RSSWireSource base class. Existing dedup will collapse the same story across feeds — that's the design intent.
+
 - [ ] **Wire URL/secret leak via httpx INFO logging**
   - Surfaced during: Phase 10 live validation Step B
   - Symptom: httpx logs full URLs at INFO including query string API keys; FRED and Etherscan keys written to disk in logs/wire_validation.log
