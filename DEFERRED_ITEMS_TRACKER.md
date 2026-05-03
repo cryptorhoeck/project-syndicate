@@ -137,6 +137,28 @@
 
 ---
 
+## DMS HOTFIX TEST SUITE (Identified 2026-05-03)
+
+- [ ] **Un-awaited coroutines in evaluation_engine.py — POSSIBLE SILENT FAILURE**
+  - Surfaced during: post-DMS-hotfix test suite run
+  - Symptom: RuntimeWarnings "coroutine 'Accountant.track_api_call' was never awaited" and "coroutine 'GenomeManager.update_fitness' was never awaited" in `src/genesis/evaluation_engine.py` at lines 364, 560, 694, 750
+  - Risk: HIGH — if these coroutines are firing in production without await, then API cost tracking and genome fitness updates are silently failing during evaluations. Same risk class as the Library reflection bug and DMS self-defeating loop.
+  - Action when picked up BEFORE NEXT ARENA RUN:
+    1. Inspect each line. Determine whether the surrounding code is intentionally fire-and-forget (in which case use `asyncio.create_task`) or a missing await (in which case add `await`).
+    2. Add a test that asserts `Accountant.track_api_call` IS called during evaluation, with positive cost recorded.
+    3. Add a test that asserts `GenomeManager.update_fitness` IS called and persists.
+    4. Both tests should fail before fix and pass after.
+  - Treat as Library-class regression candidate.
+
+- [ ] **SQLAlchemy 1.x → 2.0 Query.get() migration**
+  - Surfaced during: post-DMS-hotfix test suite run
+  - Symptom: ~30 LegacyAPIWarnings on `db_session.query(Model).get(id)` calls in tests
+  - Risk: low — works fine today, will break on SQLAlchemy 3.0
+  - Action when picked up: codemod tests and any source files to use `Session.get(Model, id)` form
+  - Chore-class, not safety-class
+
+---
+
 ## PHASE 10 PRE-FLIGHT (Identified 2026-05-02)
 
 - [ ] **Crypto news aggregator replacement (Phase 10.5)**
