@@ -12,6 +12,7 @@ and prestige milestone checks.
 
 __version__ = "1.2.0"
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ import anthropic
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
+from src.common.async_bridge import run_async_safely
 from src.common.config import config
 from src.common.models import (
     Agent, Evaluation, Order, Position, PostMortem, SystemState, Transaction,
@@ -46,6 +48,28 @@ PRESTIGE_MILESTONES = {
     15: "Master",
     20: "Grandmaster",
 }
+
+
+# Subsystem P fix (WIRING_AUDIT_REPORT.md): consecutive-failure cap
+# for async-bridge calls. After this many consecutive failures of a
+# given call type, the engine emits CRITICAL + a system-alert post.
+# Counter resets on the first success of that call type.
+#
+# Derivation: 3 consecutive failures = 3 evaluation cycles where the
+# same call type (track_api_call OR update_fitness) failed end-to-end.
+# Long enough to absorb transient DB blips and event-loop contention;
+# short enough that a structural break (schema drift, cross-thread
+# session corruption, etc.) escalates within a single Genesis 5-min
+# cycle's evaluation batch instead of going unnoticed for hours.
+#
+# CONTRACT: consecutive-only. Same shape as
+# `REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD`. An intermittent
+# pattern (fail, success, fail, fail) does NOT escalate — see the
+# negative test in test_eval_engine_failure_escalation. A
+# cumulative-window detector is tracked in DEFERRED_ITEMS_TRACKER.md
+# under "Regime review escalation: cumulative-window failure
+# detection" — when that lands, the eval engine adopts it too.
+ASYNC_FAILURE_ESCALATION_THRESHOLD = 3
 
 
 @dataclass
@@ -80,6 +104,118 @@ class EvaluationEngine:
         self.dynasty_manager = DynastyManager()
         self.lineage_manager = LineageManager()
         self.memorial_manager = MemorialManager()
+
+        # Subsystem P fix: per-call-type async-bridge failure counters.
+        # Tracked separately because the two call types have different
+        # root causes — track_api_call talks to the Accountant
+        # (transactions table writes), update_fitness talks to the
+        # GenomeManager (genome record + flush on the calling
+        # thread's session). A failure in one shouldn't reset the
+        # other's escalation counter. See `_record_async_outcome`.
+        self._track_api_call_failure_count: int = 0
+        self._update_fitness_failure_count: int = 0
+
+    # ------------------------------------------------------------------
+    # Async-bridge failure tracking (subsystem P fix)
+    # ------------------------------------------------------------------
+
+    def _record_async_outcome(
+        self, call_type: str, success: bool, exc: Optional[Exception],
+    ) -> None:
+        """Update the per-call-type counter and escalate if the
+        consecutive-failure threshold is reached.
+
+        `call_type` must be one of "track_api_call" or
+        "update_fitness". Unknown values are ignored (defensive).
+
+        Resets the counter to 0 on success. On failure, increments
+        the counter and (if at/over threshold) calls
+        `_emit_async_failure_alert`.
+        """
+        if call_type == "track_api_call":
+            counter_attr = "_track_api_call_failure_count"
+        elif call_type == "update_fitness":
+            counter_attr = "_update_fitness_failure_count"
+        else:
+            return
+
+        if success:
+            setattr(self, counter_attr, 0)
+            return
+
+        new_count = getattr(self, counter_attr) + 1
+        setattr(self, counter_attr, new_count)
+
+        if new_count >= ASYNC_FAILURE_ESCALATION_THRESHOLD:
+            self._emit_async_failure_alert(call_type, exc, new_count)
+
+    def _emit_async_failure_alert(
+        self, call_type: str, exc: Optional[Exception], count: int,
+    ) -> None:
+        """Emit CRITICAL log + best-effort Agora system-alert when a
+        per-call-type counter hits the consecutive-failure threshold.
+
+        The Agora post is best-effort: if the running event loop
+        accepts a fire-and-forget task we use that, otherwise we
+        attempt asyncio.run, otherwise we silently skip the post and
+        let the CRITICAL log carry the alert. The CRITICAL log is the
+        load-bearing signal — Agora is the cross-process mirror.
+        """
+        exc_type_name = type(exc).__name__ if exc is not None else "Unknown"
+        exc_str = str(exc) if exc is not None else ""
+        logger.critical(
+            "eval_engine_async_failure_escalated",
+            extra={
+                "call_type": call_type,
+                "consecutive_failures": count,
+                "threshold": ASYNC_FAILURE_ESCALATION_THRESHOLD,
+                "exception_type": exc_type_name,
+                "exception_str": exc_str,
+            },
+        )
+
+        if self.agora is None:
+            return
+
+        async def _post_alert() -> None:
+            from src.agora.schemas import AgoraMessage, MessageType
+            await self.agora.post_message(AgoraMessage(
+                agent_id=0,
+                agent_name="EvaluationEngine",
+                channel="system-alerts",
+                content=(
+                    f"[EVAL ENGINE] {call_type} has failed {count} "
+                    f"consecutive evaluations (threshold "
+                    f"{ASYNC_FAILURE_ESCALATION_THRESHOLD}). "
+                    f"Last error: {exc_type_name}: {exc_str}"
+                ),
+                message_type=MessageType.ALERT,
+                importance=2,
+                metadata={
+                    "event_class": "eval_engine.async_failure_escalated",
+                    "call_type": call_type,
+                    "consecutive_failures": count,
+                    "threshold": ASYNC_FAILURE_ESCALATION_THRESHOLD,
+                    "exception_type": exc_type_name,
+                    "exception_str": exc_str,
+                },
+            ))
+
+        try:
+            try:
+                loop = asyncio.get_running_loop()
+                # Fire-and-forget: schedule on the running loop. Will
+                # execute when control returns to the loop after the
+                # current sync frame completes.
+                loop.create_task(_post_alert())
+                return
+            except RuntimeError:
+                pass
+            # No running loop — fall back to a fresh asyncio.run.
+            asyncio.run(_post_alert())
+        except Exception:
+            # Best-effort. The CRITICAL log already fired.
+            logger.exception("eval_engine_async_alert_post_failed")
 
     async def evaluate_batch(
         self, session: Session, agents: list[Agent],
@@ -350,18 +486,27 @@ The warning will be shown to the agent if they survive."""
                 messages=[{"role": "user", "content": prompt}],
             )
 
-            # Track cost through Accountant
-            try:
-                from src.risk.accountant import Accountant
-                acct = Accountant(db_session_factory=self.db_factory)
-                import asyncio
-                asyncio.get_event_loop().run_until_complete(acct.track_api_call(
+            # Track cost through Accountant. track_api_call is async
+            # because Accountant.track_api_call writes to the
+            # transactions table inside its own session; failure here
+            # means the cost is not recorded but the evaluation flow
+            # proceeds (treasury lags by one Sonnet call until next
+            # success). Subsystem P fix: was a fragile
+            # `run_until_complete + bare except`; now wrapped in
+            # `run_async_safely` so failures are observable via
+            # WARNING + per-call-type counter and escalate to
+            # CRITICAL + system-alert after 3 consecutive misses.
+            from src.risk.accountant import Accountant
+            acct = Accountant(db_session_factory=self.db_factory)
+            success, exc = run_async_safely(
+                acct.track_api_call(
                     agent_id=0, model=config.model_sonnet,
                     input_tokens=response.usage.input_tokens,
                     output_tokens=response.usage.output_tokens,
-                ))
-            except Exception:
-                pass
+                ),
+                logger=logger,
+            )
+            self._record_async_outcome("track_api_call", success, exc)
 
             text = response.content[0].text
             # Extract JSON from response
@@ -546,18 +691,20 @@ The warning will be shown to the agent if they survive."""
                 )
                 words = last_words_response.content[0].text
                 agent.last_words = str(words)[:500] if words else None
-                # Track cost
-                try:
-                    from src.risk.accountant import Accountant
-                    acct = Accountant(db_session_factory=self.db_factory)
-                    import asyncio
-                    asyncio.get_event_loop().run_until_complete(acct.track_api_call(
+                # Track cost. Same async-bridge pattern as site 1.
+                # Subsystem P fix: was `run_until_complete + bare
+                # except`; now `run_async_safely` + counter.
+                from src.risk.accountant import Accountant
+                acct = Accountant(db_session_factory=self.db_factory)
+                lw_success, lw_exc = run_async_safely(
+                    acct.track_api_call(
                         agent_id=agent.id, model=config.death_last_words_model,
                         input_tokens=last_words_response.usage.input_tokens,
                         output_tokens=last_words_response.usage.output_tokens,
-                    ))
-                except Exception:
-                    pass
+                    ),
+                    logger=logger,
+                )
+                self._record_async_outcome("track_api_call", lw_success, lw_exc)
             except Exception as e:
                 logger.debug(f"Last words generation failed for {agent.name}: {e}")
 
@@ -682,16 +829,47 @@ The warning will be shown to the agent if they survive."""
 
         agent.composite_score = evaluation.composite_score or 0.0
 
-        # Phase 8C: Update genome fitness after evaluation
-        try:
-            from src.genome.genome_manager import GenomeManager
-            genome_mgr = GenomeManager()
-            import asyncio
-            asyncio.get_event_loop().run_until_complete(
-                genome_mgr.update_fitness(agent.id, agent.composite_score, session)
-            )
-        except Exception:
-            pass
+        # Phase 8C: Update genome fitness after evaluation. THE LOAD-
+        # BEARING SELECTION-PRESSURE SITE — silent drops here corrupt
+        # the colony's Darwinian mechanism.
+        #
+        # update_fitness is async (GenomeManager.update_fitness awaits
+        # an internal get_genome_record). _apply_survival is SYNC but
+        # called from the async _execute_decision -> running event
+        # loop on this thread. The previous fragile pattern
+        # (`run_until_complete + bare except`) raised on the running
+        # loop and silently dropped the fitness write.
+        #
+        # Subsystem P fix: route through `run_async_safely`. When a
+        # loop is running, the helper offloads to a worker thread on
+        # a fresh event loop. SQLAlchemy sessions are NOT thread-safe,
+        # so we MUST NOT pass the calling-thread `session` into the
+        # worker. Wrap update_fitness in a closure that creates a
+        # fresh session via `self.db_factory()` and commits inside
+        # the worker thread. The fresh transaction writes the
+        # genome_records row independently of the caller's session,
+        # which is correct: genome_records are independent of the
+        # agent record updates the caller will commit.
+        from src.genome.genome_manager import GenomeManager
+        genome_mgr = GenomeManager()
+        agent_id_for_fitness = agent.id
+        composite_score_for_fitness = agent.composite_score
+        db_factory = self.db_factory
+
+        async def _update_fitness_with_fresh_session() -> None:
+            with db_factory() as fresh_session:
+                await genome_mgr.update_fitness(
+                    agent_id_for_fitness,
+                    composite_score_for_fitness,
+                    fresh_session,
+                )
+                fresh_session.commit()
+
+        uf_success, uf_exc = run_async_safely(
+            _update_fitness_with_fresh_session(),
+            logger=logger,
+        )
+        self._record_async_outcome("update_fitness", uf_success, uf_exc)
 
     def _check_prestige(self, agent: Agent, evaluation: Evaluation):
         """Check if agent has reached a prestige milestone."""
@@ -736,18 +914,20 @@ Respond with JSON:
                 messages=[{"role": "user", "content": prompt}],
             )
 
-            # Track cost
-            try:
-                from src.risk.accountant import Accountant
-                acct = Accountant(db_session_factory=self.db_factory)
-                import asyncio
-                asyncio.get_event_loop().run_until_complete(acct.track_api_call(
+            # Track cost. Same async-bridge pattern as sites 1 and 2.
+            # Subsystem P fix: was `run_until_complete + bare except`;
+            # now `run_async_safely` + counter.
+            from src.risk.accountant import Accountant
+            acct = Accountant(db_session_factory=self.db_factory)
+            pm_success, pm_exc = run_async_safely(
+                acct.track_api_call(
                     agent_id=0, model=config.model_default,
                     input_tokens=response.usage.input_tokens,
                     output_tokens=response.usage.output_tokens,
-                ))
-            except Exception:
-                pass
+                ),
+                logger=logger,
+            )
+            self._record_async_outcome("track_api_call", pm_success, pm_exc)
 
             text = response.content[0].text
             import re

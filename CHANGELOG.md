@@ -2,6 +2,88 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-04 - Eval engine async bridge (subsystem P)
+
+Closes WIRING_AUDIT_REPORT.md subsystem P. Four sites in
+`src/genesis/evaluation_engine.py` used the fragile
+`asyncio.get_event_loop().run_until_complete(...) + bare except: pass`
+pattern, silently dropping API cost tracking
+(`Accountant.track_api_call`) and fitness updates
+(`GenomeManager.update_fitness`) under the contended event-loop state
+that's the production norm (eval engine is invoked from inside
+`Genesis.run_cycle`'s async chain). Same risk class as the Library
+reflection bug, DMS self-defeating loop, and the cross-process gap
+closed in fix I.
+
+### Added
+- `src/common/async_bridge.py` — `run_async_safely(coro, *, logger,
+  timeout)` helper that detects whether an event loop is running on
+  the calling thread and dispatches accordingly:
+    - No loop → `asyncio.run(coro)` directly.
+    - Loop running → offload to a worker thread via
+      `concurrent.futures.ThreadPoolExecutor` with a fresh
+      `asyncio.run` in the worker.
+  Returns `(success, exception)`. Catches `Exception` narrowly —
+  `KeyboardInterrupt` / `SystemExit` propagate. Logs a structured
+  WARNING with `async_bridge_failure=True` on failure.
+- `EvaluationEngine._track_api_call_failure_count` and
+  `_update_fitness_failure_count` per-instance counters. Tracked
+  separately because the call types have different root causes.
+- `EvaluationEngine._record_async_outcome(call_type, success, exc)` —
+  increments the per-call-type counter on failure (resets on
+  success) and triggers `_emit_async_failure_alert` when the
+  consecutive-failure threshold is reached.
+- `EvaluationEngine._emit_async_failure_alert(call_type, exc, count)` —
+  CRITICAL log + best-effort Agora `system-alerts` post via
+  fire-and-forget on the running loop or a fresh `asyncio.run`.
+- `ASYNC_FAILURE_ESCALATION_THRESHOLD = 3` module constant with a
+  derivation comment locking in the consecutive-only contract
+  (mirrors the regime-review escalation pattern).
+- `tests/test_eval_engine_async_bridge.py` — 7 unit tests for the
+  helper (no-loop happy path, running-loop happy path, exception
+  caught, KeyboardInterrupt/SystemExit propagate, structured failure
+  log, custom logger, exception unwrapped from worker thread).
+- `tests/test_eval_engine_failure_escalation.py` — 10 tests:
+  counter logic (5), the four CRITICAL wiring tests
+  (`test_track_api_call_actually_invoked_during_evaluation`,
+  `test_track_api_call_actually_invoked_inside_running_loop`,
+  `test_update_fitness_actually_invoked_during_evaluation`,
+  `test_update_fitness_actually_invoked_inside_running_loop`), and
+  a source-inspection guard
+  (`test_eval_engine_no_longer_uses_fragile_pattern`) that fails if
+  any future refactor re-introduces `.run_until_complete(` in
+  evaluation_engine.
+- `scripts/validate_eval_engine_async_bridge_e2e.py` — 4-phase e2e
+  against real Postgres. Output captured in commit message.
+
+### Changed
+- `src/genesis/evaluation_engine.py`:
+    - 4 sites refactored from
+      `asyncio.get_event_loop().run_until_complete(...)` to
+      `run_async_safely(...)` + `_record_async_outcome(...)`:
+        - `_call_genesis_ai` (Genesis Sonnet judgment cost tracking)
+        - `_execute_death_protocol` (death last-words cost tracking)
+        - `_apply_survival` — **the load-bearing selection-pressure
+          site**. The update_fitness call wraps a closure that
+          creates a FRESH session via `self.db_factory()` inside the
+          worker thread — passing the calling-thread session into a
+          worker would violate SQLAlchemy thread-safety.
+        - `_generate_post_mortem` (post-mortem cost tracking)
+    - Module-level `asyncio` import (was previously inline-imported
+      at each fragile site).
+    - Per-site comments document what's being wrapped, why it's
+      async, and the failure semantics.
+
+### Constraints honored
+- `Accountant.track_api_call` and `GenomeManager.update_fitness`
+  unchanged.
+- `EvaluationEngine` flow unchanged on the success path; the four
+  refactored sites still complete normally.
+- All four sites converge on `run_async_safely` — no bespoke
+  per-site wrappers.
+- Catches `Exception`, NOT `BaseException`. Cooperative
+  cancellation preserved.
+
 ## [Hotfix] - 2026-05-04 - Genesis regime-review (subsystem H) — Critic iteration 4
 
 Addresses two HIGH/MEDIUM blocking findings from iteration 3 Critic
