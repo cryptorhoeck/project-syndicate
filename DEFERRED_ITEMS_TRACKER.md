@@ -155,6 +155,13 @@
   - Action when picked up: in `src/wire/digest/haiku_digester.py`, when calling `publish_halt_for_event`, populate `exchange` based on the source's known venue. Kraken-source events → exchange="kraken". DefiLlama / Etherscan / FRED → exchange=None (cross-venue or chain-level). The Haiku digestion prompt may also be extended to include exchange in the classification schema.
   - Trigger to pick up: when the colony runs on more than one exchange (today only Kraken) and per-exchange scope becomes operationally meaningful.
 
+- [ ] **Halt event durability across Memurai outages**
+  - Surfaced during: hotfix/operator-halt-consumer-wiring iteration 6 Critic review
+  - Current state: haiku digester catches OperatorHaltPublishError and continues; consumer-side fail-closed handles safety during the outage. After Memurai recovery, halt re-publishes only if the upstream sev-5 event re-fires. One-shot sev-5 events that fire during a Memurai outage are lost.
+  - Risk: low for current scope (sev-5 events typically re-fire on persistent conditions); becomes higher if/when we ever require a "no halt event ever lost" guarantee.
+  - Action when picked up: design a halt-event durability layer if needed. Options include: (a) write halt events to Postgres before publishing to Redis, with a recovery sweeper after Memurai reconnect; (b) accept the trade-off explicitly and document it in operational runbook; (c) revisit when Phase 11 (Wire sentiment + reliability hardening) is being designed.
+  - Trigger to pick up: when a real Memurai outage event surfaces in production, or when designing live trading hardening before the Arena → Live transition.
+
 ---
 
 ## TOOLING — CRITIC (Identified 2026-05-03)
