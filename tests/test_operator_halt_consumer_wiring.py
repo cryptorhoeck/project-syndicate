@@ -21,6 +21,7 @@ import json
 import os
 import subprocess
 import sys
+import textwrap
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -39,8 +40,10 @@ from src.trading.fee_schedule import FeeSchedule
 from src.wire.constants import SEVERITY_CRITICAL
 from src.wire.integration.halt_store import RedisHaltStore, make_halt_record
 from src.wire.integration.operator_halt import (
+    OperatorHaltPublishError,
     publish_halt_for_event,
     reset_registry,
+    set_alert_publisher,
     set_halt_store,
 )
 
@@ -91,12 +94,15 @@ def halt_store(redis_client, unique_key_prefix):
 def _clean_in_memory_active():
     """The module-level _ACTIVE list is defense-in-depth only, but it's
     process-global state — reset between tests so signals from one test
-    don't bleed into another."""
+    don't bleed into another. Also reset the alert publisher so a test
+    that registered a capturing one doesn't leak into the next test."""
     reset_registry()
     set_halt_store(None)
+    set_alert_publisher(None)
     yield
     reset_registry()
     set_halt_store(None)
+    set_alert_publisher(None)
 
 
 @pytest.fixture
@@ -583,40 +589,66 @@ async def test_halt_store_missing_branch_rejects_and_alerts(
 # regression cannot recur. Do not delete or weaken without War Room
 # review.
 def test_halt_visible_across_process_boundary(redis_client, unique_key_prefix):
-    """Spawns two real Python subprocesses:
-      A: imports halt_store, publishes a halt for BTC/Kraken via
-         RedisHaltStore.publish(), exits.
-      B: imports halt_store, queries is_halted("BTC", "Kraken"),
-         prints the result.
+    """Spawns two real Python subprocesses against real Memurai:
+      A: PRODUCER. Calls the production factory
+         `src.wire.cli._initialize_producer_halt_store(...)` then
+         `publish_halt_for_event(...)` — the same call sequence the
+         real wire_scheduler subprocess runs at startup.
+      B: CONSUMER. Calls the production factory
+         `scripts.run_agents.build_halt_store(redis_client, ...)`
+         then `halt_store.is_halted(...)` — the same chain
+         PaperTradingService runs in the agents subprocess.
 
-    Asserts subprocess B sees the halt subprocess A wrote. Uses a
-    unique per-test Redis key prefix and cleans up on teardown.
+    Both axes from Critic Finding 2 (iteration 5) are explicit:
+      (a) Real Memurai, no mocks — `redis.Redis.from_url(REDIS_URL)`.
+      (b) Production factories — _initialize_producer_halt_store and
+          build_halt_store. If a refactor moves the wiring out of
+          those factories, this test fails.
+
+    Each test run uses a unique key_prefix from the fixture, so the
+    namespace doesn't collide with the production `wire:halt`
+    namespace or with concurrent test runs. The production factories
+    accept the prefix override via kwargs so production callers stay
+    unchanged (they pass nothing).
     """
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    publisher_script = (
-        "import sys, os; "
-        f"sys.path.insert(0, {project_root!r}); "
-        "import redis; "
-        "from src.wire.integration.halt_store import RedisHaltStore; "
-        "r = redis.Redis.from_url(os.environ['REDIS_URL'], decode_responses=True); "
-        f"s = RedisHaltStore(redis_client=r, key_prefix={unique_key_prefix!r}); "
-        "s.publish(coin='BTC', exchange='Kraken', "
-        "halt_record={'trigger_event_id': 1234, 'coin': 'BTC', "
-        "'exchange': 'Kraken', 'event_type': 'exchange_outage'}, "
-        "ttl_seconds=600); "
-        "print('PUBLISHED_OK')"
-    )
-    queryer_script = (
-        "import sys, os, json; "
-        f"sys.path.insert(0, {project_root!r}); "
-        "import redis; "
-        "from src.wire.integration.halt_store import RedisHaltStore; "
-        "r = redis.Redis.from_url(os.environ['REDIS_URL'], decode_responses=True); "
-        f"s = RedisHaltStore(redis_client=r, key_prefix={unique_key_prefix!r}); "
-        "halted, payload = s.is_halted(coin='BTC', exchange='Kraken'); "
-        "print(json.dumps({'halted': halted, 'payload': payload}))"
-    )
+    # PRODUCER: runs the production wire scheduler bootstrap factory,
+    # then issues a halt via publish_halt_for_event (the production
+    # call site in haiku_digester._dispatch_post_digest_hooks).
+    publisher_script = textwrap.dedent(f"""
+        import sys, os
+        sys.path.insert(0, {project_root!r})
+        from src.wire.cli import _initialize_producer_halt_store
+        from src.wire.integration.operator_halt import publish_halt_for_event
+        store = _initialize_producer_halt_store(
+            redis_url=os.environ['REDIS_URL'],
+            key_prefix={unique_key_prefix!r},
+        )
+        publish_halt_for_event(
+            event_id=1234,
+            coin='BTC',
+            event_type='exchange_outage',
+            severity=5,
+            summary='cross-process boundary test (production-factory path)',
+            exchange='Kraken',
+        )
+        print('PUBLISHED_OK')
+    """).strip()
+
+    # CONSUMER: runs the production agents-subprocess bootstrap factory,
+    # then queries via halt_store.is_halted (the call inside
+    # PaperTradingService._check_operator_halt).
+    queryer_script = textwrap.dedent(f"""
+        import sys, os, json
+        sys.path.insert(0, {project_root!r})
+        import redis
+        from scripts.run_agents import build_halt_store
+        r = redis.Redis.from_url(os.environ['REDIS_URL'], decode_responses=True)
+        s = build_halt_store(r, key_prefix={unique_key_prefix!r})
+        halted, payload = s.is_halted(coin='BTC', exchange='Kraken')
+        print(json.dumps({{'halted': halted, 'payload': payload}}))
+    """).strip()
 
     env = os.environ.copy()
     env["REDIS_URL"] = config.redis_url
@@ -654,9 +686,19 @@ def test_halt_visible_across_process_boundary(redis_client, unique_key_prefix):
             f"the persistence layer. Result: {result!r}"
         )
         assert result["payload"] is not None
+        # The producer used publish_halt_for_event -> make_halt_record,
+        # so the canonical schema must be present (Finding 4 alignment).
+        for required in ("trigger_event_id", "event_type", "issued_at",
+                         "expires_at", "severity"):
+            assert required in result["payload"], (
+                f"Cross-process payload missing canonical field {required!r}: "
+                f"{result['payload']!r}"
+            )
         assert result["payload"]["trigger_event_id"] == 1234
         assert result["payload"]["coin"] == "BTC"
         assert result["payload"]["exchange"] == "Kraken"
+        assert result["payload"]["event_type"] == "exchange_outage"
+        assert int(result["payload"]["severity"]) == 5
     finally:
         cursor = 0
         while True:
@@ -693,3 +735,284 @@ def test_halt_consumer_present_in_both_market_and_limit_paths():
     assert "is_halted" in helper_src
     assert "_halt_state_unknown" in helper_src
     assert "_defense_in_depth_in_memory_lookup" in helper_src
+
+
+# ---------------------------------------------------------------------------
+# Critic Finding 1 (HIGH, iteration 5):
+# Producer-side fail-closed semantics. publish_halt_for_event must NOT
+# silently fall back to the producer-side _ACTIVE list when a configured
+# Redis store fails — that re-creates the cross-process gap one layer
+# deeper. Required behavior: log CRITICAL, mirror to system-alerts via
+# the alert publisher, raise OperatorHaltPublishError. The trade-side
+# consumer in another subprocess can then observe the failure even if
+# the digester crashes.
+# ---------------------------------------------------------------------------
+
+
+def test_producer_halt_publish_fails_closed_when_redis_raises(unique_key_prefix):
+    """Producer side: when a configured RedisHaltStore.publish raises,
+    publish_halt_for_event must:
+      - NOT silently append to producer-side _ACTIVE (invisible cross-process)
+      - call the registered alert_publisher (cross-process observable)
+      - raise OperatorHaltPublishError
+    """
+    from src.wire.integration import operator_halt as halt_mod
+
+    # Simulated broken Redis client that raises on .set, mimicking a
+    # Memurai outage during digestion. We construct a real RedisHaltStore
+    # so the failure happens inside the production publish() path.
+    raising_redis = MagicMock()
+    raising_redis.set = MagicMock(
+        side_effect=ConnectionError("simulated Memurai down during digest"),
+    )
+    store = RedisHaltStore(redis_client=raising_redis, key_prefix=unique_key_prefix)
+    set_halt_store(store)
+
+    captured_alerts = []
+    set_alert_publisher(
+        lambda event_class, payload: captured_alerts.append((event_class, payload))
+    )
+
+    with pytest.raises(OperatorHaltPublishError) as excinfo:
+        publish_halt_for_event(
+            event_id=999, coin="BTC", event_type="exchange_outage",
+            severity=SEVERITY_CRITICAL, summary="SYNTHETIC: producer Redis down",
+        )
+
+    assert excinfo.value.trigger_event_id == 999
+    assert excinfo.value.coin == "BTC"
+    assert excinfo.value.event_type == "exchange_outage"
+    assert isinstance(excinfo.value.underlying, ConnectionError)
+
+    assert halt_mod._ACTIVE == [], (
+        "Producer-side _ACTIVE was silently populated on Redis-write failure. "
+        "This re-creates the cross-process visibility gap at a new layer — "
+        "consumers in different subprocesses cannot see _ACTIVE."
+    )
+
+    assert len(captured_alerts) == 1, (
+        f"Expected exactly one alert on Redis-write failure, got "
+        f"{len(captured_alerts)}: {captured_alerts!r}"
+    )
+    event_class, payload = captured_alerts[0]
+    assert event_class == "wire.operator_halt.publish_failed"
+    assert payload["trigger_event_id"] == 999
+    assert payload["coin"] == "BTC"
+    assert payload["event_type"] == "exchange_outage"
+    assert "summary" in payload
+
+
+def test_producer_halt_publish_fails_closed_even_without_alert_publisher(
+    unique_key_prefix,
+):
+    """The CRITICAL log + raise are the load-bearing loud signal. Even
+    when no alert publisher is registered, the failure must NOT degrade
+    to silent _ACTIVE fallback."""
+    from src.wire.integration import operator_halt as halt_mod
+
+    raising_redis = MagicMock()
+    raising_redis.set = MagicMock(side_effect=ConnectionError("Redis down"))
+    store = RedisHaltStore(redis_client=raising_redis, key_prefix=unique_key_prefix)
+    set_halt_store(store)
+    set_alert_publisher(None)  # explicit — verify no-publisher path
+
+    with pytest.raises(OperatorHaltPublishError):
+        publish_halt_for_event(
+            event_id=1000, coin="ETH", event_type="withdrawal_halt",
+            severity=SEVERITY_CRITICAL, summary="SYNTHETIC",
+        )
+    assert halt_mod._ACTIVE == []
+
+
+def test_producer_halt_publish_succeeds_with_redis_writes_to_redis_only(
+    halt_store, unique_key_prefix,
+):
+    """Sanity counter-test for the fail-closed path: when Redis IS
+    healthy and a store is configured, the halt lands in Redis and
+    NOT in producer-side _ACTIVE. _ACTIVE writes are reserved for the
+    no-store-configured path only."""
+    from src.wire.integration import operator_halt as halt_mod
+
+    set_halt_store(halt_store)
+
+    publish_halt_for_event(
+        event_id=2000, coin="BTC", event_type="chain_halt",
+        severity=SEVERITY_CRITICAL, summary="SYNTHETIC: healthy Redis",
+    )
+    halted, payload = halt_store.is_halted(coin="BTC", exchange=None)
+    assert halted is True
+    assert payload["trigger_event_id"] == 2000
+    assert halt_mod._ACTIVE == [], (
+        "Healthy-Redis publish path must not touch producer-side _ACTIVE."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Critic Finding 3 (HIGH, iteration 5):
+# Post-construction verification. set_halt_store success doesn't prove
+# the module-level reference took. Bootstrap code must re-read via
+# get_halt_store() and fail fast on mismatch.
+# ---------------------------------------------------------------------------
+
+
+def test_post_construction_get_halt_store_reflects_set_halt_store():
+    """Round-trip verification: after set_halt_store(store),
+    get_halt_store() returns the exact same instance. Without this,
+    a future bug where the setter no-ops or import paths skew would
+    silently leave the module-level reference None while bootstrap
+    declared success."""
+    from src.wire.integration.operator_halt import get_halt_store
+
+    fake_redis = MagicMock(); fake_redis.set = MagicMock()
+    store = RedisHaltStore(redis_client=fake_redis, key_prefix="postctor")
+    set_halt_store(store)
+    assert get_halt_store() is store, (
+        "set_halt_store / get_halt_store round-trip failed — "
+        "module-level reference did not match the registered instance."
+    )
+
+    # And the unset path returns None.
+    set_halt_store(None)
+    assert get_halt_store() is None
+
+
+def test_run_agents_bootstrap_fails_fast_on_assignment_mismatch():
+    """Source-inspection guard: scripts/run_agents.py main() must
+    re-read get_producer_halt_store() and sys.exit(2) if the assignment
+    didn't take. This is the load-bearing line that turns a silent
+    bootstrap regression into a loud crash."""
+    import inspect
+    import importlib
+    run_agents = importlib.import_module("scripts.run_agents")
+    main_src = inspect.getsource(run_agents.main)
+    assert "get_producer_halt_store" in main_src, (
+        "run_agents.main no longer re-reads the registered halt_store. "
+        "Post-construction verification (Critic Finding 3) was removed."
+    )
+    assert "halt_store_assignment_lost" in main_src or "halt_store_assignment_mismatch" in main_src
+    assert "sys.exit(2)" in main_src
+
+
+def test_wire_cli_bootstrap_fails_fast_on_assignment_mismatch():
+    """Source-inspection guard for the producer-side bootstrap in
+    src/wire/cli.py:_initialize_producer_halt_store. Same contract as
+    run_agents."""
+    import inspect
+    import importlib
+    cli = importlib.import_module("src.wire.cli")
+    init_src = inspect.getsource(cli._initialize_producer_halt_store)
+    assert "get_producer_halt_store" in init_src, (
+        "wire/cli._initialize_producer_halt_store no longer verifies the "
+        "module-level assignment took (Critic Finding 3)."
+    )
+    assert "sys.exit(2)" in init_src
+
+
+# ---------------------------------------------------------------------------
+# Critic Finding 4 (MEDIUM, iteration 5):
+# A halt_record returned with halted=True but missing required fields is
+# itself a failure mode. Treat like Redis read failure: flip
+# _halt_state_unknown, alert, reject. Auto-clear on next valid record.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_operator_halt_fails_closed_on_malformed_record(
+    db_factory, seeded_world, fake_redis_client_for_pricecache, production_warden,
+):
+    """Write a malformed record (missing trigger_event_id, expires_at, etc.)
+    via a stub store and verify the consumer rejects with halt-state-unknown
+    AND the alert was emitted, NOT a normal "Operator halt active" rejection
+    that would lie about the schema."""
+    malformed_store = MagicMock()
+    # halted=True but the record is missing every required field
+    malformed_store.is_halted = MagicMock(return_value=(True, {"coin": "BTC"}))
+
+    svc = _build_svc(
+        db_factory=db_factory,
+        fake_redis_client_for_pricecache=fake_redis_client_for_pricecache,
+        warden=production_warden, halt_store=malformed_store,
+    )
+    result = await svc.execute_market_order(
+        agent_id=seeded_world, symbol="BTC/USDT", side="buy", size_usd=10.0,
+    )
+    assert result.success is False
+    err = (result.error or "").lower()
+    assert "unknown" in err and "fail-closed" in err, (
+        f"Expected fail-closed-unknown rejection on malformed record, got: {err!r}"
+    )
+    assert "malformed" in err
+    assert svc._halt_state_unknown is True
+
+
+@pytest.mark.asyncio
+async def test_malformed_record_unknown_state_auto_clears_on_valid_record(
+    db_factory, seeded_world, fake_redis_client_for_pricecache, production_warden,
+):
+    """Malformed record sets _halt_state_unknown; the next call that
+    returns (False, None) clears it (DMS-anti-pattern guard, same as
+    Redis-recovery semantics)."""
+    state = {"mode": "malformed"}
+
+    def _toggle(coin=None, exchange=None):
+        if state["mode"] == "malformed":
+            return (True, {"coin": "BTC"})  # missing required fields
+        return (False, None)
+
+    toggling_store = MagicMock()
+    toggling_store.is_halted = MagicMock(side_effect=_toggle)
+
+    svc = _build_svc(
+        db_factory=db_factory,
+        fake_redis_client_for_pricecache=fake_redis_client_for_pricecache,
+        warden=production_warden, halt_store=toggling_store,
+    )
+    bad = await svc.execute_market_order(
+        agent_id=seeded_world, symbol="BTC/USDT", side="buy", size_usd=5.0,
+    )
+    assert bad.success is False
+    assert svc._halt_state_unknown is True
+
+    state["mode"] = "valid"
+    good = await svc.execute_market_order(
+        agent_id=seeded_world, symbol="BTC/USDT", side="buy", size_usd=5.0,
+    )
+    assert good.success is True
+    assert svc._halt_state_unknown is False
+
+
+@pytest.mark.asyncio
+async def test_well_formed_halt_record_uses_canonical_fields_in_reason(
+    db_factory, seeded_world, fake_redis_client_for_pricecache, production_warden,
+    halt_store,
+):
+    """Counter-test: when the record IS well-formed, the rejection
+    reason uses real values (no '?' placeholders). If this regresses,
+    the fail-closed branch is being skipped or the validation is too
+    strict."""
+    halt_store.publish(
+        coin="BTC", exchange=None,
+        halt_record=make_halt_record(
+            event_id=12345, coin="BTC", exchange=None,
+            event_type="exchange_outage", severity=5,
+            summary="Well-formed halt for canonical-fields test",
+            issued_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+        ),
+        ttl_seconds=1800,
+    )
+    svc = _build_svc(
+        db_factory=db_factory,
+        fake_redis_client_for_pricecache=fake_redis_client_for_pricecache,
+        warden=production_warden, halt_store=halt_store,
+    )
+    result = await svc.execute_market_order(
+        agent_id=seeded_world, symbol="BTC/USDT", side="buy", size_usd=5.0,
+    )
+    assert result.success is False
+    err = result.error or ""
+    assert "trigger_event_id=12345" in err
+    assert "exchange_outage" in err
+    assert "?" not in err.split("expires=")[0], (
+        f"Reason contains '?' placeholders despite a well-formed record: {err!r}"
+    )

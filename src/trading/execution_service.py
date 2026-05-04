@@ -23,6 +23,32 @@ from src.common.models import Agent, AgentCycle, Order, Position, Transaction
 logger = logging.getLogger(__name__)
 
 
+# Required fields on a halt_record returned by RedisHaltStore.is_halted
+# when halted=True. Mirrors the canonical schema produced by
+# `src.wire.integration.halt_store.make_halt_record`. Kept in sync there.
+# A halted=True response missing any of these is treated as a fail-closed
+# unknown state by `_check_operator_halt` (Critic Finding 4, iteration 5).
+_REQUIRED_HALT_RECORD_FIELDS = (
+    "trigger_event_id",
+    "event_type",
+    "issued_at",
+    "expires_at",
+    "severity",
+)
+
+
+def _missing_halt_record_fields(record) -> list[str]:
+    """Return the names of required fields missing or null in a halt
+    record. Empty list means the record is well-formed."""
+    if not isinstance(record, dict):
+        return list(_REQUIRED_HALT_RECORD_FIELDS)
+    missing = []
+    for field_name in _REQUIRED_HALT_RECORD_FIELDS:
+        if field_name not in record or record[field_name] in (None, ""):
+            missing.append(field_name)
+    return missing
+
+
 # ---------------------------------------------------------------------------
 # Result dataclasses
 # ---------------------------------------------------------------------------
@@ -788,6 +814,45 @@ class PaperTradingService(TradeExecutionService):
 
         halted, halt_record = response
 
+        # If a halt is asserted, the record must carry the canonical
+        # fields. A malformed record is itself a failure mode (Critic
+        # Finding 4): we cannot meaningfully gate the trade on a
+        # broken schema. Treat it like a Redis read failure — flip
+        # _halt_state_unknown, alert, and reject. Auto-clears on the
+        # next valid record (anti-DMS-self-defeat).
+        if halted:
+            missing = _missing_halt_record_fields(halt_record)
+            if missing:
+                self._halt_state_unknown = True
+                in_memory_match = self._defense_in_depth_in_memory_lookup(
+                    trade_coin, self.exchange,
+                )
+                await self._raise_halt_state_unknown_alert(
+                    agent_id=int(agent.id), symbol=symbol, side=side,
+                    size_usd=size_usd, order_type=order_type,
+                    exc=ValueError(
+                        f"halt_store returned halted=True but record is "
+                        f"missing required fields {missing!r}; "
+                        f"record={halt_record!r}"
+                    ),
+                    kind="malformed_record",
+                    in_memory_match=in_memory_match,
+                )
+                reason = (
+                    f"Halt state unknown (malformed halt record — missing "
+                    f"fields {missing!r}) — trade rejected (fail-closed)"
+                )
+                if in_memory_match is not None:
+                    reason += (
+                        f". In-memory fallback also indicates halt: "
+                        f"trigger_event_id={in_memory_match.trigger_event_id} "
+                        f"event_type={in_memory_match.event_type}"
+                    )
+                return self._create_rejected_order(
+                    session, agent, symbol, side, size_usd, order_type,
+                    reason, source_plan_id, source_cycle_id,
+                )
+
         # Successful, well-formed call — clear the unknown latch.
         # MUST run unconditionally so a single transient blip cannot
         # permanently halt the colony (DMS-class anti-pattern).
@@ -796,16 +861,17 @@ class PaperTradingService(TradeExecutionService):
         if not halted:
             return None
 
-        # Halt is active. Reject with details from the halt record.
-        record = halt_record or {}
+        # Halt is active and well-formed. Reject with details from the
+        # halt record.
+        record = halt_record  # validated above
         reason = (
             f"Operator halt active: "
-            f"trigger_event_id={record.get('trigger_event_id', '?')} "
-            f"event_type={record.get('event_type', '?')} "
+            f"trigger_event_id={record['trigger_event_id']} "
+            f"event_type={record['event_type']} "
             f"coin={record.get('coin') or '*'} "
             f"exchange={record.get('exchange') or '*'} "
-            f"issued={record.get('issued_at', '?')} "
-            f"expires={record.get('expires_at', '?')}"
+            f"issued={record['issued_at']} "
+            f"expires={record['expires_at']}"
         )
         await self._raise_halt_block_alert(
             agent_id=int(agent.id), symbol=symbol, side=side,
@@ -896,9 +962,11 @@ class PaperTradingService(TradeExecutionService):
     ) -> None:
         """Loud alert path for the FAIL-CLOSED-TO-HALT-EVERYTHING branch
         in `_check_operator_halt`. Fires when the halt store raises
-        (kind == 'raise') OR returns malformed data (kind == 'garbage').
-        Mirrors the Warden's safety-state-unknown alert. Auto-recovery
-        on next successful is_halted call is verified by
+        (kind == 'raise'), returns a malformed envelope
+        (kind == 'garbage'), or returns halted=True with a halt_record
+        missing required fields (kind == 'malformed_record', Critic
+        Finding 4). Mirrors the Warden's safety-state-unknown alert.
+        Auto-recovery on next successful is_halted call is verified by
         `test_halt_state_unknown_auto_clears_on_redis_recovery`.
 
         `in_memory_match` (when supplied) is the OperatorHaltSignal the

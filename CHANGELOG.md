@@ -2,6 +2,74 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-03 - Operator halt persistence — Critic iteration-5 fixes
+
+Addresses six blocking findings from the iteration-5 Critic review of
+the Redis-backed persistence layer. NOT-APPROVED -> APPROVED-pending-merge
+contingent on War Room sign-off after this submission.
+
+### Added
+- `OperatorHaltPublishError` (`src/wire/integration/operator_halt.py`).
+  Producer side now raises on Redis-write failure instead of silently
+  appending to in-process `_ACTIVE` (which is invisible cross-process).
+  CRITICAL log + Agora system-alerts mirror + raise — all three. Mirrors
+  consumer-side fail-closed contract.
+- `set_alert_publisher(callable)` injection point. Wire scheduler bootstrap
+  registers a sync Redis-PUBLISH publisher that posts producer-side
+  failures to `agora:system-alerts` cross-process.
+- `_missing_halt_record_fields(record)` (`src/trading/execution_service.py`).
+  When `is_halted` returns `(True, halt_record)` and the record is missing
+  any of the canonical fields (`trigger_event_id`, `event_type`, `severity`,
+  `issued_at`, `expires_at`), the consumer treats this as a failure mode
+  (Critic Finding 4): `_halt_state_unknown=True`, alert + reject. Latch
+  auto-clears on the next valid record.
+- Post-construction verification (Critic Finding 3) in
+  `scripts/run_agents.py:main` and `src/wire/cli.py:_initialize_producer_halt_store`.
+  Both bootstraps re-read `get_halt_store()` after `set_halt_store(store)` and
+  `sys.exit(2)` if the assignment was lost or the registered instance differs.
+- `scripts/validate_halt_persistence_e2e.py` — production-runtime validation
+  runner (Critic Finding 6). Three scenarios against real Memurai with
+  production factories: (1) healthy boot + cross-subprocess publish,
+  (2) Memurai down mid-run -> consumer fail-closed, (3) recovery + auto-clear.
+  Run before merge; output captured in commit message.
+- 9 new tests in `test_operator_halt_consumer_wiring.py`:
+  - `test_producer_halt_publish_fails_closed_when_redis_raises` (F1)
+  - `test_producer_halt_publish_fails_closed_even_without_alert_publisher` (F1)
+  - `test_producer_halt_publish_succeeds_with_redis_writes_to_redis_only` (F1)
+  - `test_post_construction_get_halt_store_reflects_set_halt_store` (F3)
+  - `test_run_agents_bootstrap_fails_fast_on_assignment_mismatch` (F3)
+  - `test_wire_cli_bootstrap_fails_fast_on_assignment_mismatch` (F3)
+  - `test_check_operator_halt_fails_closed_on_malformed_record` (F4)
+  - `test_malformed_record_unknown_state_auto_clears_on_valid_record` (F4)
+  - `test_well_formed_halt_record_uses_canonical_fields_in_reason` (F4)
+
+### Changed
+- `test_halt_visible_across_process_boundary` (Critic Finding 2). Both
+  subprocesses now construct via the production factories
+  (`src.wire.cli._initialize_producer_halt_store` for the producer,
+  `scripts.run_agents.build_halt_store` for the consumer) instead of
+  hand-rolling RedisHaltStore inside the subprocess. If a future
+  refactor moves wiring out of those factories, the test fails. Both
+  factories accept an optional `key_prefix` override for test isolation
+  while production callers stay unchanged.
+- Halt store module docstring (Critic Finding 5) explicitly states the
+  expiry mechanism: native Redis TTL via `SET ... EX ttl_seconds`. No
+  filter-on-read, no background sweeper.
+- Producer-side write path: when `_halt_store` is set and the Redis
+  write fails, no fallback to `_ACTIVE` (re-creates the cross-process
+  gap). When `_halt_store is None` (test fixtures, pre-bootstrap),
+  `_ACTIVE` write preserved.
+- `haiku_digester._dispatch_post_digest_hooks` catches
+  `OperatorHaltPublishError` and logs CRITICAL — does NOT dead-letter
+  the raw item over a Redis-write blip (the failure has already been
+  broadcast cross-process via the alert publisher).
+
+### Acknowledged
+- LOW Finding 7 (wider-than-intended halt scope when exchange=None) —
+  accepted as design trade-off. Source-side exchange classification
+  remains the existing deferred entry that will narrow scope when
+  implemented.
+
 ## [Hotfix] - 2026-05-01 - Operator halt cross-process persistence (Redis-backed)
 
 ### Added

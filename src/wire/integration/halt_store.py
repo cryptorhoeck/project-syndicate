@@ -30,6 +30,17 @@ on every exchange" when the producer leaves exchange unset.
 Test isolation: tests can pass a unique `key_prefix` (default
 ``wire:halt``) so concurrent test runs don't collide on the production
 namespace.
+
+EXPIRY MECHANISM (Critic Finding 5, iteration 5):
+Native Redis TTL. `publish()` calls `SET key value EX ttl_seconds`,
+which atomically writes the record and arms Redis's own TTL clock.
+Redis auto-deletes the key when the TTL elapses, so `is_halted()`
+naturally returns False past `expires_at` without any filter-on-read
+logic. No background sweeper, no manual expiry walk — Redis is the
+clock. The auto-lift test
+`tests/test_operator_halt_consumer_wiring.py::
+test_halt_store_publish_with_ttl_expires_via_redis` exercises this
+exact path with a 1-second TTL.
 """
 
 from __future__ import annotations

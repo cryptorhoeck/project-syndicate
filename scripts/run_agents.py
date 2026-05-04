@@ -43,6 +43,7 @@ from src.trading.fee_schedule import FeeSchedule
 from src.trading.slippage_model import SlippageModel
 from src.wire.integration.halt_store import RedisHaltStore
 from src.wire.integration.operator_halt import (
+    get_halt_store as get_producer_halt_store,
     list_active as wire_list_active_halts,
     set_halt_store as set_producer_halt_store,
 )
@@ -91,7 +92,7 @@ def build_warden(db_factory, agora_service=None):
     )
 
 
-def build_halt_store(redis_client) -> RedisHaltStore:
+def build_halt_store(redis_client, *, key_prefix: str | None = None) -> RedisHaltStore:
     """Construct the colony's RedisHaltStore from the live Redis client.
 
     Closes the cross-process gap surfaced in iteration 4 of the operator
@@ -102,8 +103,17 @@ def build_halt_store(redis_client) -> RedisHaltStore:
     Wiring contract: redis_client must be non-None. RedisHaltStore's
     constructor sys.exit(2)s on None to enforce the same pattern as
     Warden / TradeExecutionService.
+
+    `key_prefix` is an optional override for tests (Critic Finding 2,
+    iteration 5). Production callers pass nothing — the default
+    `wire:halt` namespace is used and producer/consumer agree by
+    construction. The cross-process boundary test passes a unique
+    per-run prefix so concurrent test runs don't collide on the
+    production keyspace.
     """
-    return RedisHaltStore(redis_client=redis_client)
+    if key_prefix is None:
+        return RedisHaltStore(redis_client=redis_client)
+    return RedisHaltStore(redis_client=redis_client, key_prefix=key_prefix)
 
 
 def build_trading_service(
@@ -201,6 +211,24 @@ async def main() -> None:
     # Redis. The wire_scheduler subprocess has its own initialization
     # in src/wire/cli.py.
     set_producer_halt_store(halt_store)
+    # Post-construction verification (Critic Finding 3, iteration 5):
+    # set_halt_store() success doesn't prove the module-level reference
+    # took. Re-read it via get_halt_store() and fail fast if the assignment
+    # was lost or import-path skewed.
+    registered = get_producer_halt_store()
+    if registered is None:
+        log.error(
+            "halt_store_assignment_lost",
+            message="set_producer_halt_store completed but get_producer_halt_store returned None.",
+        )
+        sys.exit(2)
+    if registered is not halt_store:
+        log.error(
+            "halt_store_assignment_mismatch",
+            expected=id(halt_store), registered=id(registered),
+            message="Module-level halt_store reference is not the instance we just registered.",
+        )
+        sys.exit(2)
 
     # Trading service. Closes ARENA_TRADING_SERVICE_DIAGNOSIS.md (Phase 3C
     # was never wired) + WIRING_AUDIT_REPORT.md subsystems N (Warden) and
