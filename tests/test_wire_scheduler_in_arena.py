@@ -103,13 +103,17 @@ def test_wire_scheduler_in_shutdown_order():
     three things, since each in isolation can be spoofed:
       (1) the SHUTDOWN_ORDER module-level constant exists,
       (2) wire_scheduler is in it (runtime — a code comment cannot satisfy),
-      (3) main() actually consumes SHUTDOWN_ORDER (otherwise a future
-          refactor that hardcodes a different list inside main() would
-          leave wire_scheduler in the constant but never get terminated).
+      (3) main() actually iterates over SHUTDOWN_ORDER as the iter of a
+          `for` loop. AST-level inspection — a comment containing the
+          identifier cannot satisfy this; an unused `loop_var = SHUTDOWN_ORDER`
+          assignment cannot satisfy this; only a real `for ... in
+          SHUTDOWN_ORDER:` statement passes.
 
-    Without (3), a future refactor could pass (1) and (2) while quietly
-    breaking the wiring — the MEDIUM Critic flagged in iteration review.
+    Each layer closes a spoof window the previous layer left open. (3)
+    is the one Critic re-flagged on iteration 2 — source-grep was still
+    satisfiable by a comment. AST node walk closes that.
     """
+    import ast
     import inspect
     run_arena = _import_run_arena()
 
@@ -123,15 +127,22 @@ def test_wire_scheduler_in_shutdown_order():
         f"wire_scheduler missing from SHUTDOWN_ORDER ({run_arena.SHUTDOWN_ORDER}). "
         "The scheduler subprocess would be orphaned at Arena exit."
     )
-    # (3) main() actually iterates over SHUTDOWN_ORDER
+    # (3) main() iterates `for ... in SHUTDOWN_ORDER:` — AST level
     main_src = inspect.getsource(run_arena.main)
-    assert "SHUTDOWN_ORDER" in main_src, (
-        "main() does not reference SHUTDOWN_ORDER. The module-level "
-        "constant is in place but unused — wire_scheduler (and every "
-        "other name in the list) would orphan at Arena exit. If main()'s "
-        "shutdown loop was refactored to a different identifier, update "
-        "this test to match — but make sure the new identifier is exactly "
-        "what main() iterates over for graceful termination."
+    tree = ast.parse(main_src)
+    iterates_over_constant = any(
+        isinstance(node, ast.For)
+        and isinstance(node.iter, ast.Name)
+        and node.iter.id == "SHUTDOWN_ORDER"
+        for node in ast.walk(tree)
+    )
+    assert iterates_over_constant, (
+        "main() does not contain `for ... in SHUTDOWN_ORDER:`. The constant "
+        "exists and is correctly populated, but no loop consumes it — "
+        "wire_scheduler (and every other name) would orphan at Arena exit. "
+        "If main()'s shutdown loop was refactored, update this AST check to "
+        "match the new iteration target — but only if you've verified that "
+        "target is what's actually iterated to terminate child processes."
     )
 
 
