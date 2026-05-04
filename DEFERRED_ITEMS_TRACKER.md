@@ -137,6 +137,17 @@
 
 ---
 
+## TOOLING — CRITIC (Identified 2026-05-03)
+
+- [ ] **critic.py: tag reviews with reviewed SHA**
+  - Surfaced during: chore/wire-scheduler-test-tightening review (false alarm caused by acting on stale Critic output)
+  - Current state: critic.py saves reviews with branch + timestamp only
+  - Risk: War Room can act on Critic findings against a different commit than what was reviewed, leading to spurious directives
+  - Action when picked up: capture HEAD SHA at review time, include in filename and review content header. Optionally add a verify mode that warns if the branch has moved since review.
+  - Trigger to pick up: next critic.py improvement session, or when this confusion happens again.
+
+---
+
 ## WARDEN HOTFIX (Identified 2026-05-03)
 
 - [ ] **Warden alert-refresh DB read perf — measured, not currently a problem**
