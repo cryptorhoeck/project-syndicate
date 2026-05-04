@@ -2,6 +2,23 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-01 - Operator halt cross-process persistence (Redis-backed)
+
+### Added
+- `src/wire/integration/halt_store.py` — `RedisHaltStore` class. Cross-process halt registry backed by Memurai. Key pattern `wire:halt:{coin}:{exchange}` with native Redis TTL. Wildcard exchange `*` matches every venue.
+- `make_halt_record()` helper centralizes the canonical halt-record dict shape so producer and consumer don't drift.
+- `scripts/run_agents.py:build_halt_store` — production wiring helper (mirrors `build_warden` / `build_trading_service`). `sys.exit(2)` on construction failure or None redis client.
+- `src/wire/cli.py:_initialize_producer_halt_store` — producer-side wiring at scheduler startup.
+- 9 new tests in `tests/test_operator_halt_consumer_wiring.py`, including the load-bearing **`test_halt_visible_across_process_boundary`** that spawns two real `subprocess.run` Python processes against a shared Memurai with unique key prefixes and asserts cross-process halt visibility.
+
+### Changed
+- `src/wire/integration/operator_halt.py` now write-throughs to `RedisHaltStore` as the primary persistence path. Module-level `_ACTIVE` becomes defense-in-depth: populated only when Redis writes fail, consulted by the consumer only when `_halt_state_unknown` is set.
+- `src/trading/execution_service.py:PaperTradingService` accepts `halt_store=` (renamed from `halt_checker`). `_check_operator_halt` now calls `halt_store.is_halted(coin, exchange)`. Fail-closed-to-halt-everything when Redis raises or returns malformed data; latch auto-clears on next successful call (anti-DMS pattern, mirrors Warden `_safety_state_unknown`).
+- `get_trading_service` factory threads `halt_store` through.
+
+### Resolved
+- DEFERRED_ITEMS_TRACKER.md "Wire halt cross-process visibility (PRODUCTION GAP)" — closes Critic Finding 3 from hotfix iteration 4. Producer (`wire_scheduler` subprocess) and consumer (`agents` subprocess) now share state via the same Memurai instance.
+
 ## [Phase 10] - 2026-05-01 - The Wire (External Intelligence Pipeline)
 
 ### Added

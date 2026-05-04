@@ -104,18 +104,20 @@ def approving_warden():
 
 
 @pytest.fixture
-def empty_halt_checker():
-    """No-active-halts halt_checker. Required after hotfix
-    `operator-halt-consumer-wiring`: PaperTradingService now hard-rejects
-    when `self.halt_checker is None`. Tests exercising happy-path
-    execution must inject one; the soft-pass branch is gone.
-    """
-    return lambda **kw: []
+def empty_halt_store():
+    """No-active-halts halt_store. Required after hotfix
+    `operator-halt-consumer-wiring` (Redis-persistence iteration):
+    PaperTradingService now hard-rejects when `self.halt_store is None`.
+    Mock matches the production `is_halted(coin, exchange) ->
+    (bool, dict|None)` contract."""
+    s = MagicMock()
+    s.is_halted = MagicMock(return_value=(False, None))
+    return s
 
 
 @pytest.fixture
 def service(db_factory, mock_price_cache, mock_slippage, mock_redis,
-            approving_warden, empty_halt_checker):
+            approving_warden, empty_halt_store):
     return PaperTradingService(
         db_session_factory=db_factory,
         price_cache=mock_price_cache,
@@ -123,7 +125,7 @@ def service(db_factory, mock_price_cache, mock_slippage, mock_redis,
         fee_schedule=FeeSchedule(),
         warden=approving_warden,
         redis_client=mock_redis,
-        halt_checker=empty_halt_checker,
+        halt_store=empty_halt_store,
     )
 
 
@@ -254,7 +256,7 @@ async def test_warden_rejection(db_factory, mock_price_cache, mock_slippage, moc
         fee_schedule=FeeSchedule(),
         warden=mock_warden,
         redis_client=mock_redis,
-        halt_checker=lambda **kw: [],  # no active halts (Warden is the gate under test)
+        halt_store=MagicMock(is_halted=MagicMock(return_value=(False, None))),  # no active halts (Warden is the gate under test)
     )
     result = await svc.execute_market_order(
         agent_id=1, symbol="BTC/USDT", side="buy", size_usd=10.0,

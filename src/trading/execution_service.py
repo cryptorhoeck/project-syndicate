@@ -145,7 +145,7 @@ class PaperTradingService(TradeExecutionService):
         warden=None,
         redis_client=None,
         agora_service=None,
-        halt_checker=None,
+        halt_store=None,
     ):
         self.db_factory = db_session_factory
         self.price_cache = price_cache
@@ -155,19 +155,20 @@ class PaperTradingService(TradeExecutionService):
         self.redis = redis_client
         self.agora = agora_service
         self.exchange = config.default_exchange
-        # Wire severity-5 halt consumer. Production wiring guarantees a
-        # callable here (run_agents.py passes
-        # `src.wire.integration.operator_halt.list_active`). Tests may
-        # construct without one to exercise the defense-in-depth fallback,
-        # which logs CRITICAL and rejects rather than silent-passing.
-        # See WIRING_AUDIT_REPORT.md subsystem I.
-        self.halt_checker = halt_checker
+        # Wire severity-5 halt consumer. Production wiring (run_agents.py)
+        # constructs a `RedisHaltStore` from the existing redis client and
+        # passes it here. Tests may construct without one to exercise the
+        # defense-in-depth fallback, which logs CRITICAL and rejects
+        # rather than silent-passing. See WIRING_AUDIT_REPORT.md
+        # subsystem I and the persistence-layer iteration that closed
+        # the cross-process gap.
+        self.halt_store = halt_store
         # Fail-closed-to-halt-everything state, mirrors the Warden's
-        # _safety_state_unknown flag. When `halt_checker` raises or returns
-        # malformed data we cannot determine whether trades are safe; the
-        # only correct policy is to refuse trades. Auto-clears on the next
-        # successful halt_checker call — see _check_operator_halt. This is
-        # NOT sticky-by-default; a single transient Wire glitch must not
+        # _safety_state_unknown flag. When the halt store raises or
+        # returns malformed data we cannot determine whether trades are
+        # safe; the only correct policy is to refuse trades. Auto-clears
+        # on the next successful halt_store call — see _check_operator_halt.
+        # NOT sticky-by-default; a single transient Redis glitch must not
         # permanently halt the colony (DMS-class anti-pattern).
         self._halt_state_unknown: bool = False
 
@@ -686,22 +687,35 @@ class PaperTradingService(TradeExecutionService):
         coin AND the configured exchange (`self.exchange`), so a Kraken-
         scoped halt does not block trades on a different exchange.
 
-        Fail-closed-to-halt-everything (iteration 4 / Critic Finding 1):
-        if `halt_checker` raises OR returns non-list garbage, we cannot
-        determine whether trades are safe. Set `_halt_state_unknown` and
-        REJECT the trade. Mirrors the Warden's fail-closed-to-red.
-        Auto-clears on next successful call.
+        Source of truth: Redis (RedisHaltStore). The producer
+        (wire_scheduler subprocess) and consumer (this — agents
+        subprocess) point at the same Memurai instance, closing the
+        cross-process gap from Critic iteration-4 Finding 3.
+
+        Fail-closed-to-halt-everything: if Redis raises OR
+        is_halted returns the wrong shape, we cannot determine state →
+        set `_halt_state_unknown` and REJECT the trade. Mirrors the
+        Warden's fail-closed-to-red. Auto-clears on the next successful
+        is_halted call.
+
+        Defense-in-depth: when `_halt_state_unknown` is set (Redis is
+        the cause), we ALSO check the in-memory `_ACTIVE` list as
+        secondary information — populated by the producer when its own
+        Redis writes failed. The in-memory list is NEVER used as a
+        silent primary path. The trade is rejected either way; the
+        in-memory match just enriches the rejection reason so on-call
+        can see the halt details on the way down.
         """
-        # Defense-in-depth: production wiring guarantees a halt_checker.
+        # Defense-in-depth: production wiring guarantees a halt_store.
         # If a future bug lands here with None, REJECT — not soft-pass.
-        if self.halt_checker is None:
+        if self.halt_store is None:
             await self._raise_halt_checker_missing_alert(
                 agent_id=int(agent.id), symbol=symbol, side=side,
                 size_usd=size_usd, order_type=order_type,
             )
             return self._create_rejected_order(
                 session, agent, symbol, side, size_usd, order_type,
-                "Operator halt-checker missing — trade rejected (defense in depth)",
+                "Operator halt-store missing — trade rejected (defense in depth)",
                 source_plan_id, source_cycle_id,
             )
 
@@ -709,84 +723,128 @@ class PaperTradingService(TradeExecutionService):
         # Falls back to the full symbol if the slash isn't present.
         trade_coin = symbol.split("/", 1)[0] if "/" in symbol else symbol
 
-        # Call halt_checker. Tolerate older signature without `exchange`
-        # kwarg as a graceful-degradation step (the Wire integration on
-        # this branch always supports it; defensive against future drift).
+        # Primary path: Redis-backed RedisHaltStore.is_halted().
         try:
-            try:
-                active = self.halt_checker(coin=trade_coin, exchange=self.exchange)
-            except TypeError:
-                # Signature mismatch — try the older one.
-                active = self.halt_checker(coin=trade_coin)
+            response = self.halt_store.is_halted(
+                coin=trade_coin, exchange=self.exchange,
+            )
         except Exception as exc:
             # FAIL-CLOSED-TO-HALT-EVERYTHING: cannot determine state.
             self._halt_state_unknown = True
+            in_memory_match = self._defense_in_depth_in_memory_lookup(
+                trade_coin, self.exchange,
+            )
             await self._raise_halt_state_unknown_alert(
                 agent_id=int(agent.id), symbol=symbol, side=side,
                 size_usd=size_usd, order_type=order_type,
                 exc=exc, kind="raise",
+                in_memory_match=in_memory_match,
             )
+            reason = (
+                f"Halt state unknown ({type(exc).__name__}: {exc}) — "
+                f"trade rejected (fail-closed)"
+            )
+            if in_memory_match is not None:
+                reason += (
+                    f". In-memory fallback also indicates halt: "
+                    f"trigger_event_id={in_memory_match.trigger_event_id} "
+                    f"event_type={in_memory_match.event_type}"
+                )
             return self._create_rejected_order(
                 session, agent, symbol, side, size_usd, order_type,
-                f"Halt state unknown ({type(exc).__name__}: {exc}) — "
-                f"trade rejected (fail-closed)",
-                source_plan_id, source_cycle_id,
+                reason, source_plan_id, source_cycle_id,
             )
 
-        # Validate the response shape. Anything that isn't a list of
-        # halt-signal-like objects is treated as unknown state.
-        if not isinstance(active, list):
+        # Validate the response shape. Anything that isn't a
+        # (bool, dict-or-None) tuple is treated as unknown state.
+        if (
+            not isinstance(response, tuple)
+            or len(response) != 2
+            or not isinstance(response[0], bool)
+        ):
             self._halt_state_unknown = True
+            in_memory_match = self._defense_in_depth_in_memory_lookup(
+                trade_coin, self.exchange,
+            )
             await self._raise_halt_state_unknown_alert(
                 agent_id=int(agent.id), symbol=symbol, side=side,
                 size_usd=size_usd, order_type=order_type,
-                exc=TypeError(f"halt_checker returned {type(active).__name__}, expected list"),
+                exc=TypeError(
+                    f"halt_store.is_halted returned {type(response).__name__}, "
+                    f"expected (bool, dict|None) tuple"
+                ),
                 kind="garbage",
+                in_memory_match=in_memory_match,
+            )
+            reason = (
+                f"Halt state unknown (halt_store returned "
+                f"{type(response).__name__}, expected (bool, dict|None) tuple) "
+                f"— trade rejected (fail-closed)"
             )
             return self._create_rejected_order(
                 session, agent, symbol, side, size_usd, order_type,
-                f"Halt state unknown (halt_checker returned "
-                f"{type(active).__name__}, expected list) — trade rejected "
-                f"(fail-closed)",
-                source_plan_id, source_cycle_id,
+                reason, source_plan_id, source_cycle_id,
             )
+
+        halted, halt_record = response
 
         # Successful, well-formed call — clear the unknown latch.
         # MUST run unconditionally so a single transient blip cannot
         # permanently halt the colony (DMS-class anti-pattern).
         self._halt_state_unknown = False
 
-        if not active:
+        if not halted:
             return None
 
-        # Active halt(s) match this trade. Reject with details from the
-        # most-specific (newest) signal. Loud log + Agora system-alerts.
-        signal = active[-1]
+        # Halt is active. Reject with details from the halt record.
+        record = halt_record or {}
         reason = (
-            f"Operator halt active: trigger_event_id={signal.trigger_event_id} "
-            f"event_type={signal.event_type} coin={signal.coin or '*'} "
-            f"exchange={signal.exchange or '*'} "
-            f"issued={signal.issued_at.isoformat(timespec='seconds')} "
-            f"expires={signal.expires_at.isoformat(timespec='seconds')}"
+            f"Operator halt active: "
+            f"trigger_event_id={record.get('trigger_event_id', '?')} "
+            f"event_type={record.get('event_type', '?')} "
+            f"coin={record.get('coin') or '*'} "
+            f"exchange={record.get('exchange') or '*'} "
+            f"issued={record.get('issued_at', '?')} "
+            f"expires={record.get('expires_at', '?')}"
         )
         await self._raise_halt_block_alert(
             agent_id=int(agent.id), symbol=symbol, side=side,
-            size_usd=size_usd, order_type=order_type, signal=signal,
+            size_usd=size_usd, order_type=order_type, halt_record=record,
         )
         return self._create_rejected_order(
             session, agent, symbol, side, size_usd, order_type,
             reason, source_plan_id, source_cycle_id,
         )
 
+    @staticmethod
+    def _defense_in_depth_in_memory_lookup(coin: str, exchange):
+        """When Redis is unreachable, peek at the producer-side
+        in-memory _ACTIVE fallback for additional info to surface in
+        the rejection reason. Returns the first matching signal or None.
+        Never used as a primary gate — the trade is rejected either way
+        when this is consulted (because _halt_state_unknown is set).
+        See operator_halt module docstring for the contract."""
+        try:
+            from src.wire.integration import operator_halt as _hm
+            for signal in list(_hm._ACTIVE):
+                if not signal.is_active():
+                    continue
+                if signal.coin not in (None, coin):
+                    continue
+                if signal.exchange not in (None, exchange):
+                    continue
+                return signal
+        except Exception:
+            pass
+        return None
+
     async def _raise_halt_block_alert(
         self, *, agent_id: int, symbol: str, side: str,
-        size_usd: float, order_type: str, signal,
+        size_usd: float, order_type: str, halt_record: dict,
     ) -> None:
         """Log CRITICAL + post to system-alerts when a trade is blocked by
-        an active halt. Per the directive, every halt-blocked trade emits
-        an alert; if this proves too noisy under a long outage, dedup is a
-        downstream concern (deferred), not this hotfix's responsibility.
-        """
+        an active halt. Receives the dict `halt_record` deserialized from
+        Redis (RedisHaltStore.is_halted's second return value)."""
         import logging
         log = logging.getLogger(__name__)
         log.critical(
@@ -794,9 +852,10 @@ class PaperTradingService(TradeExecutionService):
             extra={
                 "agent_id": agent_id, "symbol": symbol, "side": side,
                 "size_usd": size_usd, "order_type": order_type,
-                "trigger_event_id": signal.trigger_event_id,
-                "halt_event_type": signal.event_type,
-                "halt_coin": signal.coin, "halt_exchange": signal.exchange,
+                "trigger_event_id": halt_record.get("trigger_event_id"),
+                "halt_event_type": halt_record.get("event_type"),
+                "halt_coin": halt_record.get("coin"),
+                "halt_exchange": halt_record.get("exchange"),
             },
         )
         if self.agora is None:
@@ -810,9 +869,10 @@ class PaperTradingService(TradeExecutionService):
                 content=(
                     f"[HALT BLOCK] Operator trade blocked. "
                     f"agent_id={agent_id} {side} {symbol} {order_type} ${size_usd:.2f}. "
-                    f"Halt: trigger_event_id={signal.trigger_event_id} "
-                    f"event_type={signal.event_type} coin={signal.coin or '*'} "
-                    f"exchange={signal.exchange or '*'}."
+                    f"Halt: trigger_event_id={halt_record.get('trigger_event_id')} "
+                    f"event_type={halt_record.get('event_type')} "
+                    f"coin={halt_record.get('coin') or '*'} "
+                    f"exchange={halt_record.get('exchange') or '*'}."
                 ),
                 message_type=MessageType.ALERT,
                 importance=2,
@@ -820,9 +880,10 @@ class PaperTradingService(TradeExecutionService):
                     "event_class": "operator_halt.trade_blocked",
                     "agent_id": agent_id, "symbol": symbol, "side": side,
                     "size_usd": size_usd, "order_type": order_type,
-                    "trigger_event_id": signal.trigger_event_id,
-                    "halt_event_type": signal.event_type,
-                    "halt_coin": signal.coin, "halt_exchange": signal.exchange,
+                    **{k: halt_record.get(k) for k in (
+                        "trigger_event_id", "event_type", "coin", "exchange",
+                        "expires_at", "issued_at",
+                    )},
                 },
             ))
         except Exception:
@@ -831,13 +892,18 @@ class PaperTradingService(TradeExecutionService):
     async def _raise_halt_state_unknown_alert(
         self, *, agent_id: int, symbol: str, side: str,
         size_usd: float, order_type: str, exc: Exception, kind: str,
+        in_memory_match=None,
     ) -> None:
         """Loud alert path for the FAIL-CLOSED-TO-HALT-EVERYTHING branch
-        in `_check_operator_halt`. Fires when `halt_checker` raises (kind
-        == 'raise') OR returns malformed data (kind == 'garbage').
-        Mirrors the Warden's safety-state-unknown alert. Per Critic
-        Finding 1 (iteration 4) — auto-recovery on next successful call
-        is verified by `test_halt_unknown_auto_clears_on_recovery`."""
+        in `_check_operator_halt`. Fires when the halt store raises
+        (kind == 'raise') OR returns malformed data (kind == 'garbage').
+        Mirrors the Warden's safety-state-unknown alert. Auto-recovery
+        on next successful is_halted call is verified by
+        `test_halt_state_unknown_auto_clears_on_redis_recovery`.
+
+        `in_memory_match` (when supplied) is the OperatorHaltSignal the
+        defense-in-depth fallback found while Redis was unreachable. It
+        is logged for diagnosability; the trade is rejected either way."""
         import logging
         log = logging.getLogger(__name__)
         log.critical(
@@ -1006,17 +1072,17 @@ def get_trading_service(
     warden=None,
     redis_client=None,
     agora_service=None,
-    halt_checker=None,
+    halt_store=None,
 ) -> TradeExecutionService:
     """Factory function returning the appropriate trading service.
 
     Returns PaperTradingService when TRADING_MODE=paper (default),
     or raises NotImplementedError for live mode (Phase 4+).
 
-    `halt_checker` is the Wire severity-5 consumer (typically
-    `src.wire.integration.operator_halt.list_active`). Production wiring
-    in `scripts/run_agents.py:build_trading_service` passes it; tests
-    that don't may exercise the defense-in-depth fallback.
+    `halt_store` is the Wire severity-5 consumer (a `RedisHaltStore`).
+    Production wiring in `scripts/run_agents.py:build_trading_service`
+    passes it; tests that don't may exercise the defense-in-depth
+    `halt_store=None` fallback (which hard-rejects every trade).
     """
     if config.trading_mode == "paper":
         return PaperTradingService(
@@ -1027,7 +1093,7 @@ def get_trading_service(
             warden=warden,
             redis_client=redis_client,
             agora_service=agora_service,
-            halt_checker=halt_checker,
+            halt_store=halt_store,
         )
     else:
         raise NotImplementedError(

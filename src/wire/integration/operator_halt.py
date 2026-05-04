@@ -3,18 +3,31 @@ Operator halt hook.
 
 Severity-5 events with event_type in OPERATOR_HALT_EVENT_TYPES (exchange
 outage, withdrawal halt, chain halt) raise an OperatorHaltSignal.
-The Operator process polls for active signals at the start of each cycle
-and skips trade execution for the affected coin/exchange while the signal
-is in effect.
+The Operator process queries the active halt list before executing any
+trade and rejects trades whose (coin, exchange) is currently halted.
 
 The halt is intentionally narrow:
-  - per-coin (event.coin), not colony-wide
-  - auto-expires after `auto_expire_minutes`
-  - explicit Genesis re-enable also clears it
+  - per-coin-per-exchange, not colony-wide
+  - auto-expires after `auto_expire_minutes` (Redis TTL)
+  - explicit Genesis re-enable / operator override also clears it
 
-This module's surface is small: publish, list_active, expire_stale.
-The actual Operator integration lives in the trading layer; this is the
-publishing seam.
+PERSISTENCE (Redis is the source of truth):
+  Producer (`publish_halt_for_event`) writes through `RedisHaltStore`
+  when the module-level `_halt_store` has been initialized via
+  `set_halt_store(store)`. Wire scheduler bootstrap (`src/wire/cli.py`)
+  initializes it; agent runtime bootstrap (`scripts/run_agents.py`)
+  initializes it on the consumer side. Both subprocesses thus point at
+  the same Memurai instance and SEE THE SAME HALTS.
+
+  The module-level `_ACTIVE` Python list is now defense-in-depth ONLY:
+    - It receives writes when Redis writes fail (so a transient Redis
+      blip doesn't lose the halt entirely on the producer side).
+    - It is consulted by the consumer ONLY when `_halt_state_unknown`
+      is set on the trading service AND Redis is the cause.
+    - It is NEVER used as a silent primary path. See
+      `tests/test_operator_halt_consumer_wiring.py::
+      test_in_memory_fallback_used_only_when_state_unknown` for the
+      contract guard.
 """
 
 from __future__ import annotations
@@ -28,6 +41,7 @@ from src.wire.constants import (
     OPERATOR_HALT_EVENT_TYPES,
     SEVERITY_CRITICAL,
 )
+from src.wire.integration.halt_store import RedisHaltStore, make_halt_record
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +118,32 @@ class OperatorHaltSignal:
 _ACTIVE: list[OperatorHaltSignal] = []
 
 
+# Optional Redis-backed halt store. Producer-side bootstrap (the wire
+# scheduler at src/wire/cli.py) calls `set_halt_store(store)` at startup;
+# from then on `publish_halt_for_event` writes-through to Redis.
+# The consumer side (PaperTradingService) reads from its own
+# RedisHaltStore reference passed in at construction; it does NOT rely
+# on the module-level `_halt_store` here. Two distinct instances point
+# at the same Memurai keyspace.
+_halt_store: Optional[RedisHaltStore] = None
+
+
+def set_halt_store(store: Optional[RedisHaltStore]) -> None:
+    """Producer-side initialization. Pass the same RedisHaltStore the
+    consumer side will read from (same Memurai instance + key prefix)."""
+    global _halt_store
+    _halt_store = store
+
+
+def get_halt_store() -> Optional[RedisHaltStore]:
+    """Test/runtime introspection."""
+    return _halt_store
+
+
 def reset_registry() -> None:
-    """Test seam — empties the in-process registry."""
+    """Test seam — empties the in-process registry. Does NOT touch Redis;
+    tests that need a clean Redis namespace should pass a unique
+    `key_prefix` to RedisHaltStore."""
     _ACTIVE.clear()
 
 
@@ -146,7 +184,51 @@ def publish_halt_for_event(
         summary=summary,
         exchange=exchange,
     )
-    _ACTIVE.append(signal)
+
+    # PRIMARY PATH: write through to Redis when the producer has been
+    # initialized via set_halt_store(). This is what the consumer reads
+    # in production. _ACTIVE only acts as a fallback when Redis writes
+    # fail — see DEFENSE-IN-DEPTH below.
+    redis_write_failed = False
+    if _halt_store is not None:
+        try:
+            ttl_seconds = max(1, int((signal.expires_at - issued).total_seconds()))
+            _halt_store.publish(
+                coin=coin if coin is not None else "*",
+                exchange=exchange,
+                halt_record=make_halt_record(
+                    event_id=event_id,
+                    coin=coin,
+                    exchange=exchange,
+                    event_type=event_type,
+                    severity=int(severity),
+                    summary=summary,
+                    issued_at=issued,
+                    expires_at=signal.expires_at,
+                ),
+                ttl_seconds=ttl_seconds,
+            )
+        except Exception as exc:
+            redis_write_failed = True
+            logger.critical(
+                "wire.operator_halt.redis_write_failed",
+                extra={
+                    "trigger_event_id": signal.trigger_event_id,
+                    "coin": signal.coin,
+                    "exchange": signal.exchange,
+                    "event_type": signal.event_type,
+                    "error": str(exc),
+                },
+            )
+
+    # DEFENSE-IN-DEPTH: the in-memory _ACTIVE list is populated when
+    # there is no Redis store OR the Redis write failed. The consumer
+    # consults it ONLY when its own _halt_state_unknown flag is set
+    # (i.e., its own Redis read has also failed). This ensures the
+    # in-memory list is never silently used as a primary path.
+    if _halt_store is None or redis_write_failed:
+        _ACTIVE.append(signal)
+
     logger.warning(
         "wire.operator_halt.issued",
         extra={
@@ -155,6 +237,8 @@ def publish_halt_for_event(
             "exchange": signal.exchange,
             "event_type": signal.event_type,
             "expires_at": signal.expires_at.isoformat(),
+            "redis_path": _halt_store is not None and not redis_write_failed,
+            "in_memory_fallback": _halt_store is None or redis_write_failed,
         },
     )
     return signal

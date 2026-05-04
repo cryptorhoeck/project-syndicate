@@ -23,12 +23,34 @@ from src.wire.digest.haiku_digester import HaikuDigester, make_default_haiku_cli
 from src.wire.health.monitor import HealthMonitor
 from src.wire.ingestors.runner import SourceRunner
 from src.wire.ingestors.scheduler import IngestorScheduler
+from src.wire.integration.halt_store import RedisHaltStore
+from src.wire.integration.operator_halt import set_halt_store as set_producer_halt_store
 from src.wire.models import WireSource
 
 
 def _build_session_factory():
     engine = create_engine(config.database_url, pool_pre_ping=True)
     return sessionmaker(bind=engine)
+
+
+def _initialize_producer_halt_store() -> RedisHaltStore:
+    """Construct + register the producer-side RedisHaltStore.
+
+    Wire scheduler subprocess calls this at startup so subsequent
+    `publish_halt_for_event` calls write through to the same Memurai
+    keyspace the agents subprocess (consumer) reads from. Same
+    fail-fast wiring contract as Warden / TradeExecutionService.
+    """
+    import redis as _redis_lib
+    redis_client = _redis_lib.Redis.from_url(
+        config.redis_url, decode_responses=True,
+        socket_timeout=10, socket_connect_timeout=5, retry_on_timeout=True,
+    )
+    # ping to fail fast if Memurai is down
+    redis_client.ping()
+    store = RedisHaltStore(redis_client=redis_client)
+    set_producer_halt_store(store)
+    return store
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +108,20 @@ def cmd_digest_pending(args: argparse.Namespace) -> int:
 def cmd_run_scheduler(args: argparse.Namespace) -> int:
     factory = _build_session_factory()
     haiku_client = make_default_haiku_client() if args.with_digest else None
+    # Initialize producer-side halt store so severity-5 events from this
+    # subprocess are visible cross-process (to PaperTradingService running
+    # in the agents subprocess). Fail-fast on Redis unavailability —
+    # without this, severity-5 halts would be invisible to consumers and
+    # the trading layer would silently keep trading affected coins.
+    try:
+        _initialize_producer_halt_store()
+    except SystemExit:
+        raise
+    except Exception as exc:
+        logging.getLogger(__name__).critical(
+            "wire_scheduler_halt_store_init_failed", extra={"error": str(exc)},
+        )
+        sys.exit(2)
     scheduler = IngestorScheduler(session_factory=factory, haiku_client=haiku_client)
     scheduler.run_forever(max_ticks=args.max_ticks)
     return 0
