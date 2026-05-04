@@ -126,9 +126,12 @@ def test_track_api_call_three_consecutive_failures_escalates(
 ):
     """Three consecutive failures trip the escalation: CRITICAL log
     emitted on the third failure with `call_type=track_api_call`
-    in the structured fields."""
-    assert ASYNC_FAILURE_ESCALATION_THRESHOLD == 3
-
+    in the structured fields. The bare-constant guard
+    (`ASYNC_FAILURE_ESCALATION_THRESHOLD == 3`) was replaced in
+    iteration 4 by the behavioral
+    `test_threshold_is_load_bearing_in_behavior` below — which
+    fails correctly if the threshold value moves without other
+    behavior updates."""
     eng = EvaluationEngine(db_session_factory=db_factory, agora_service=None)
 
     # Capture the CRITICAL log via the standard logging tree (this
@@ -161,6 +164,94 @@ def test_track_api_call_three_consecutive_failures_escalates(
     # The structured extras carry the call_type.
     assert getattr(escalations[0], "call_type", None) == "track_api_call"
     assert getattr(escalations[0], "consecutive_failures", None) == 3
+
+
+def test_threshold_is_load_bearing_in_behavior(db_factory):
+    """Behavioral guard for the threshold value (replaces the
+    iteration-1 bare-constant `ASYNC_FAILURE_ESCALATION_THRESHOLD == 3`
+    assert).
+
+    Drives ``THRESHOLD - 1`` consecutive failures and asserts that
+    NO escalation fires (no CRITICAL log, no Agora.post_message
+    call). Then drives ONE more failure (total = THRESHOLD) and
+    asserts that the escalation DOES fire. If the threshold value
+    moves without other behavior updates, this test will fail at
+    one or both checkpoints.
+
+    Uses a real mock Agora so the post-path is actually exercised
+    (Critic iteration 3 Finding 1 lesson — agora_service=None
+    short-circuits the very behavior under test).
+    """
+    import logging as _logging
+
+    agora = MagicMock()
+    agora.post_message = AsyncMock(return_value=None)
+    eng = EvaluationEngine(
+        db_session_factory=db_factory, agora_service=agora,
+    )
+
+    log_records: list[_logging.LogRecord] = []
+
+    class _Capture(_logging.Handler):
+        def emit(self, record):
+            log_records.append(record)
+
+    handler = _Capture(level=_logging.CRITICAL)
+    eval_logger = _logging.getLogger("src.genesis.evaluation_engine")
+    eval_logger.addHandler(handler)
+    try:
+        # PHASE A: THRESHOLD - 1 failures → must NOT escalate.
+        for i in range(ASYNC_FAILURE_ESCALATION_THRESHOLD - 1):
+            eng._record_async_outcome(
+                "track_api_call", False, RuntimeError(f"phase-a-{i}"),
+            )
+
+        critical_below = [
+            r for r in log_records
+            if r.levelname == "CRITICAL"
+            and "eval_engine_async_failure_escalated" in r.getMessage()
+        ]
+        assert critical_below == [], (
+            f"Escalation fired at {ASYNC_FAILURE_ESCALATION_THRESHOLD - 1} "
+            f"failures (one below the threshold). Threshold value is "
+            f"not load-bearing — escalation triggered too early. "
+            f"records: "
+            f"{[(r.levelname, r.getMessage()) for r in critical_below]!r}"
+        )
+        assert agora.post_message.call_count == 0, (
+            f"Agora.post_message was called {agora.post_message.call_count} "
+            f"times below the threshold; expected 0."
+        )
+        assert (
+            eng._track_api_call_failure_count
+            == ASYNC_FAILURE_ESCALATION_THRESHOLD - 1
+        )
+
+        # PHASE B: one more failure (total = THRESHOLD) → MUST escalate.
+        eng._record_async_outcome(
+            "track_api_call", False, RuntimeError("phase-b-trigger"),
+        )
+
+        critical_at = [
+            r for r in log_records
+            if r.levelname == "CRITICAL"
+            and "eval_engine_async_failure_escalated" in r.getMessage()
+        ]
+        assert len(critical_at) == 1, (
+            f"At threshold ({ASYNC_FAILURE_ESCALATION_THRESHOLD} failures), "
+            f"expected exactly 1 CRITICAL escalation log; got "
+            f"{len(critical_at)}. records: "
+            f"{[(r.levelname, r.getMessage()) for r in log_records]!r}"
+        )
+        assert getattr(critical_at[0], "consecutive_failures", None) == (
+            ASYNC_FAILURE_ESCALATION_THRESHOLD
+        )
+        assert agora.post_message.call_count == 1, (
+            f"At threshold, expected exactly 1 Agora.post_message call; "
+            f"got {agora.post_message.call_count}."
+        )
+    finally:
+        eval_logger.removeHandler(handler)
 
 
 def test_track_api_call_counter_resets_on_first_success(db_factory):
