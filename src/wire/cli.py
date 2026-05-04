@@ -14,7 +14,6 @@ import argparse
 import logging
 import sys
 from typing import Optional
-from typing import Optional
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
