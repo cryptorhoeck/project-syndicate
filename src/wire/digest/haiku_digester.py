@@ -34,6 +34,7 @@ from src.wire.constants import (
     DIGESTION_STATUS_PENDING,
     DIRECTIONS_SET,
     EVENT_TYPES_SET,
+    SEVERITY_CRITICAL,
     SEVERITY_TRIVIAL,
 )
 from src.wire.digest.deduper import canonical_hash, find_duplicate
@@ -302,6 +303,17 @@ class HaikuDigester:
         # if one exists within DEDUP_WINDOW_HOURS of the upstream event.
         existing = find_duplicate(self.session, canonical, now=occurred_at)
 
+        # Mark severity-5 events as 'pending' for Genesis regime-review
+        # consumption (subsystem H, Option C). Genesis.run_cycle() picks
+        # these up at top-of-cycle, then marks 'reviewed' at end-of-cycle.
+        # Duplicate severity-5 events do NOT requeue (Genesis already
+        # reviewed the original); they remain 'skipped'. Non-sev-5
+        # events default to 'skipped' via server_default.
+        is_sev5_for_review = (
+            sev_result.severity >= SEVERITY_CRITICAL and existing is None
+        )
+        regime_review_status = "pending" if is_sev5_for_review else "skipped"
+
         # Persist event.
         event = WireEvent(
             raw_item_id=raw.id,
@@ -316,6 +328,7 @@ class HaikuDigester:
             occurred_at=occurred_at,
             haiku_cost_usd=total_cost,
             duplicate_of=existing.id if existing is not None else None,
+            regime_review_status=regime_review_status,
         )
         self.session.add(event)
 

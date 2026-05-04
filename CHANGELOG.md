@@ -2,6 +2,62 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-04 - Genesis regime-review consumption (subsystem H)
+
+Closes WIRING_AUDIT_REPORT.md subsystem H. Severity-5 wire events were
+firing but no listener invoked Genesis regime review in production —
+the digester had a hook reference but no consumer was ever wired. Per
+War Room iteration 1 directive on hotfix/genesis-regime-review-hook
+(Option C): Postgres-as-queue, no Redis pub/sub, no new GenesisAgent
+public method.
+
+### Verification stop before build (no code yet)
+The original directive locked in `Genesis.review_regime()` as "the
+existing function. Do NOT modify its internals." Verified via
+`git log --all -S "review_regime"` that the method had never been
+implemented — only referenced in docstrings/kickoff docs. Reported
+back to War Room rather than build wiring around a non-existent
+function. War Room confirmed Option C (no new method, queue
+consumption inline in `run_cycle`).
+
+### Added
+- `alembic/versions/phase_10_wire_006_regime_review_status.py`:
+  adds `wire_events.regime_review_status` VARCHAR(16) NOT NULL DEFAULT
+  'skipped' with check constraint `IN ('pending','reviewed','skipped')`.
+  Backfills existing severity-5 rows to 'pending' for catch-up. Adds
+  `ix_wire_events_regime_review_status` on (regime_review_status,
+  severity) for the consumption query.
+- `WireEvent.regime_review_status` ORM column + matching CheckConstraint
+  / Index in `src/wire/models.py`.
+- `GenesisAgent._consume_pending_regime_reviews()` and
+  `_mark_regime_reviews_reviewed(event_ids)` private helpers.
+  Bounded at `REGIME_REVIEW_BATCH_LIMIT = 50` per cycle.
+- New step 2c (consume) and step 12 (mark) inserted into
+  `GenesisAgent.run_cycle()`. At-least-once: an exception in steps
+  3–11 leaves rows 'pending' for the next cycle (mark-reviewed UPDATE
+  is the last statement in the try block).
+- `tests/test_genesis_regime_review_consumption.py` — 9 tests
+  including `test_severity_5_event_consumed_by_genesis_in_production_path`
+  which goes end-to-end through the real HaikuDigester and the real
+  GenesisAgent constructor (production code paths).
+- `scripts/validate_regime_review_consumption_e2e.py` — single-phase
+  e2e validation runner (Postgres-as-queue has well-understood
+  semantics; no Memurai-down dance needed).
+
+### Changed
+- `src/wire/digest/haiku_digester.py`: sev-5 events get
+  `regime_review_status='pending'` at INSERT time. Duplicate sev-5
+  events stay 'skipped' (the original was already reviewed). Imports
+  `SEVERITY_CRITICAL` from `src.wire.constants`.
+
+### Constraints honored
+- `detect_regime()` logic NOT modified — it runs after the new
+  consumption step in the same position it always has.
+- `run_cycle` flow preserved — one step added at top (2c), one at end
+  (12). No restructuring.
+- No new public methods on `GenesisAgent`.
+- No Redis pub/sub.
+
 ## [Hotfix] - 2026-05-03 - Operator halt persistence — Critic iteration-5 fixes
 
 Addresses six blocking findings from the iteration-5 Critic review of

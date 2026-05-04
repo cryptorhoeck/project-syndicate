@@ -128,10 +128,15 @@ class WireEvent(Base):
             "direction IN ('bullish','bearish','neutral')",
             name="ck_wire_events_direction",
         ),
+        CheckConstraint(
+            "regime_review_status IN ('pending','reviewed','skipped')",
+            name="ck_wire_events_regime_review_status",
+        ),
         Index("ix_wire_events_coin_severity", "coin", "severity", "occurred_at"),
         Index("ix_wire_events_severity_recent", "severity", "occurred_at"),
         Index("ix_wire_events_canonical", "canonical_hash"),
         Index("ix_wire_events_macro", "is_macro", "occurred_at"),
+        Index("ix_wire_events_regime_review_status", "regime_review_status", "severity"),
     )
 
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
@@ -160,6 +165,13 @@ class WireEvent(Base):
     )
     published_to_ticker: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
+    )
+    # Genesis regime-review queue marker (subsystem H, Option C). Sev-5
+    # events get 'pending' at INSERT; Genesis.run_cycle() consumes them
+    # at top-of-cycle and flips to 'reviewed' at end-of-cycle. Non-sev-5
+    # events default to 'skipped' and are never re-touched.
+    regime_review_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="skipped", server_default="skipped"
     )
 
     raw_item: Mapped[WireRawItem | None] = relationship(back_populates="events")

@@ -36,6 +36,13 @@ from src.genesis.rejection_tracker import RejectionTracker
 from src.genesis.treasury import TreasuryManager
 from src.risk.accountant import Accountant
 from src.risk.dms_meta_monitor import DmsMetaMonitor, AGORA_CHANNEL as DMS_AGORA_CHANNEL
+from src.wire.models import WireEvent
+
+# Bound the regime-review queue work per cycle. Sev-5 events are rare;
+# a backlog this large means the colony was offline for hours. Cap so
+# one cycle never monopolises Genesis on queue catch-up. Excess rows
+# stay 'pending' for the next cycle.
+REGIME_REVIEW_BATCH_LIMIT = 50
 
 if TYPE_CHECKING:
     from src.agora.agora_service import AgoraService
@@ -167,6 +174,13 @@ class GenesisAgent(BaseAgent):
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
+        # Consumed regime-review event IDs for this cycle. Populated at
+        # top-of-cycle in step 2c, marked 'reviewed' at end-of-cycle in
+        # step 12. If run_cycle raises mid-execution, the mark step does
+        # NOT run and these rows stay 'pending' for the next cycle —
+        # at-least-once semantics per WIRING_AUDIT subsystem H directive.
+        consumed_regime_review_ids: list[int] = []
+
         try:
             # 0. BOOT SEQUENCE CHECK (auto-trigger on zero agents)
             boot_result = await self._maybe_run_boot_sequence()
@@ -204,6 +218,29 @@ class GenesisAgent(BaseAgent):
             await self.treasury.close_inherited_positions()
             treasury = await self.treasury.get_treasury_balance()
             cycle_report["treasury"] = treasury
+
+            # 2c. CONSUME PENDING REGIME REVIEWS (subsystem H, Option C).
+            # Sev-5 wire events queued by the digester are acknowledged
+            # here. The ENRICHment is the structured log per consumed
+            # row + the regime detection step below running with all
+            # current data; the existing detect_regime() inputs are NOT
+            # modified by this fix. Rows are flipped 'reviewed' at
+            # end-of-cycle (step 12) so an exception in any later step
+            # leaves them 'pending' for next cycle — at-least-once.
+            try:
+                consumed_regime_review_ids = self._consume_pending_regime_reviews()
+                if consumed_regime_review_ids:
+                    cycle_report["regime_reviews_consumed"] = len(
+                        consumed_regime_review_ids
+                    )
+            except Exception as exc:
+                # Consumption failure must NOT prevent the cycle from
+                # running. Log + continue with empty list (nothing to
+                # mark at end-of-cycle). Notification class.
+                self.log.warning(
+                    "regime_review_consumption_failed", error=str(exc)
+                )
+                consumed_regime_review_ids = []
 
             # 3. MARKET REGIME CHECK
             try:
@@ -352,11 +389,79 @@ class GenesisAgent(BaseAgent):
                 metadata={"cycle_report_keys": list(cycle_report.keys())},
             )
 
+            # 12. MARK CONSUMED REGIME REVIEWS (subsystem H, Option C).
+            # Single UPDATE, runs only if every prior step in this try
+            # block succeeded. Any exception in steps 3-11 leaves the
+            # rows 'pending' for next cycle — by design.
+            if consumed_regime_review_ids:
+                self._mark_regime_reviews_reviewed(consumed_regime_review_ids)
+
         except Exception as exc:
             self.log.error("genesis_cycle_error", error=str(exc))
             cycle_report["error"] = str(exc)
 
         return cycle_report
+
+    # ------------------------------------------------------------------
+    # Regime-review queue (subsystem H, Option C)
+    # ------------------------------------------------------------------
+
+    def _consume_pending_regime_reviews(self) -> list[int]:
+        """Read up to REGIME_REVIEW_BATCH_LIMIT pending sev-5 wire events.
+
+        Logs `genesis_consuming_regime_review` for each consumed row
+        with event_id, severity, coin, event_type. Returns the list of
+        event IDs so end-of-cycle can mark them 'reviewed' atomically.
+
+        Read-only at this stage — the rows stay 'pending' until step 12
+        actually runs. If anything in steps 3-11 raises, the next cycle
+        re-reads them (at-least-once). Idempotent: marking 'reviewed'
+        is a one-way transition, so a duplicate read in the next cycle
+        only re-emits the structured log; nothing downstream is
+        re-fired (regime detection is a fresh state read every cycle).
+        """
+        with self.db_session_factory() as session:
+            rows = (
+                session.execute(
+                    select(WireEvent)
+                    .where(WireEvent.regime_review_status == "pending")
+                    .order_by(WireEvent.severity.desc(), WireEvent.occurred_at)
+                    .limit(REGIME_REVIEW_BATCH_LIMIT)
+                )
+                .scalars()
+                .all()
+            )
+            event_ids: list[int] = []
+            for row in rows:
+                self.log.info(
+                    "genesis_consuming_regime_review",
+                    event_id=row.id,
+                    severity=row.severity,
+                    coin=row.coin,
+                    event_type=row.event_type,
+                )
+                event_ids.append(row.id)
+        return event_ids
+
+    def _mark_regime_reviews_reviewed(self, event_ids: list[int]) -> None:
+        """Atomically flip 'pending' -> 'reviewed' for the given IDs.
+
+        Single UPDATE inside one session. Always called with a
+        non-empty list (caller guards). The WHERE clause includes
+        regime_review_status='pending' so a concurrent override
+        (e.g., a manual SQL flip) is not stomped — only rows still
+        pending get reviewed.
+        """
+        if not event_ids:
+            return
+        with self.db_session_factory() as session:
+            session.execute(
+                WireEvent.__table__.update()
+                .where(WireEvent.id.in_(event_ids))
+                .where(WireEvent.regime_review_status == "pending")
+                .values(regime_review_status="reviewed")
+            )
+            session.commit()
 
     # ------------------------------------------------------------------
     # Health Check
