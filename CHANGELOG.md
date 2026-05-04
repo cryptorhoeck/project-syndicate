@@ -2,6 +2,168 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-04 - Eval engine async bridge (subsystem P) — Critic iteration 3
+
+One MEDIUM blocking finding from iteration 2 review.
+
+### Finding 1 — Agora-post path coverage gap
+Iteration 2 added the CRITICAL-first ordering and `run_async_safely`
+routing for the Agora system-alerts post, but every existing test
+passed `agora_service=None`, which short-circuits the Agora-post
+branch via the early-return at the top of
+`_emit_async_failure_alert`. The contract behavior was correct on
+inspection but uncovered at runtime.
+
+Two test additions:
+  - `test_emit_async_failure_alert_posts_to_agora_when_service_present`
+    (NEW, happy path) — exercises the live Agora-post path with a
+    capturing mock. Asserts: CRITICAL log emitted with structured
+    fields; `Agora.post_message` invoked exactly once with the
+    expected channel (`system-alerts`), importance=2, content,
+    and `event_class`/`call_type`/`consecutive_failures`/`threshold`
+    metadata; CRITICAL fired BEFORE the post (wall-clock timestamp
+    comparison via monotonic offset); no exception propagates;
+    counters unchanged (no recursion).
+  - `test_emit_async_failure_alert_critical_log_fires_even_if_agora_post_raises_with_real_service`
+    (renamed from iteration 2's
+    `..._critical_log_fires_even_if_agora_post_raises` — the new
+    name makes it explicit that this is the failure-path test
+    against a present mock Agora, not the `agora_service=None`
+    short-circuit). Body unchanged; this was the iteration-2
+    addition that already exercised the live failure path.
+
+### Finding 2 (LOW) — Closed by War Room verification
+War Room verified `test_eval_engine_no_longer_uses_fragile_pattern`
+exists at `tests/test_eval_engine_failure_escalation.py`. Script
+Critic was reading a truncated diff. No code change required.
+
+## [Hotfix] - 2026-05-04 - Eval engine async bridge (subsystem P) — Critic iteration 2
+
+Two MEDIUM blocking findings from iteration 1 Critic review.
+
+### Finding 1 — Alert-emit path no longer uses the anti-pattern P fixes
+`_emit_async_failure_alert` previously routed the Agora system-alerts
+post via `loop.create_task(...)` — fire-and-forget, the same anti-
+pattern subsystem P removes elsewhere. Refactored to:
+  - CRITICAL log fires FIRST (load-bearing alert-emission contract).
+  - Agora post routed through `run_async_safely(_post_alert())` —
+    NOT fire-and-forget, outcome is observable.
+  - On Agora-post failure: log a single WARNING tagged
+    `agora_alert_emit_failed=True` with structured fields
+    (`call_type`, `underlying_failure_count`, `agora_exception_type`,
+    `agora_exception_str`). Does NOT propagate. Does NOT increment
+    any counter. Does NOT recursively re-escalate (alert-about-
+    alert-about-alert is a maintenance trap).
+  - Docstring documents the contract: "CRITICAL log is the alert-
+    emission contract. Agora system-alerts post is a best-effort
+    secondary channel that may fail silently if Agora itself is
+    unavailable."
+
+Tests:
+  - `test_emit_async_failure_alert_critical_log_fires_even_if_agora_post_raises`
+    — Agora.post_message mocked to raise; asserts CRITICAL fires,
+    WARNING with `agora_alert_emit_failed=True` fires, no exception
+    propagates, counters unchanged.
+  - `test_emit_async_failure_alert_critical_fires_before_agora_attempt`
+    — pathological Agora that raises on attribute access; asserts
+    CRITICAL still fires (ordering guard).
+
+### Finding 2 — Honest threshold derivation
+The iteration-1 derivation comment fabricated a "3 cycles = 15 min"
+operational basis. That's wrong for the eval engine: `EvaluationEngine`
+is instantiated FRESH each Genesis evaluation pass (`genesis.py:858`),
+so the counter starts at 0 each cycle and 3 consecutive failures means
+"3 same-call-type failures in a row WITHIN ONE evaluation batch", not
+"3 cycles". Replaced with Option B (honest pattern-match):
+  - Threshold of 3 matches regime review's K=3 for consistency
+    across async-bridge users.
+  - Operational meaning depends on batch size and per-agent call
+    shape; fabricating a time-window derivation would be dishonest.
+  - Tunable; the contract is consecutive-only failures; threshold
+    value can move without changing the contract.
+
+## [Hotfix] - 2026-05-04 - Eval engine async bridge (subsystem P)
+
+Closes WIRING_AUDIT_REPORT.md subsystem P. Four sites in
+`src/genesis/evaluation_engine.py` used the fragile
+`asyncio.get_event_loop().run_until_complete(...) + bare except: pass`
+pattern, silently dropping API cost tracking
+(`Accountant.track_api_call`) and fitness updates
+(`GenomeManager.update_fitness`) under the contended event-loop state
+that's the production norm (eval engine is invoked from inside
+`Genesis.run_cycle`'s async chain). Same risk class as the Library
+reflection bug, DMS self-defeating loop, and the cross-process gap
+closed in fix I.
+
+### Added
+- `src/common/async_bridge.py` — `run_async_safely(coro, *, logger,
+  timeout)` helper that detects whether an event loop is running on
+  the calling thread and dispatches accordingly:
+    - No loop → `asyncio.run(coro)` directly.
+    - Loop running → offload to a worker thread via
+      `concurrent.futures.ThreadPoolExecutor` with a fresh
+      `asyncio.run` in the worker.
+  Returns `(success, exception)`. Catches `Exception` narrowly —
+  `KeyboardInterrupt` / `SystemExit` propagate. Logs a structured
+  WARNING with `async_bridge_failure=True` on failure.
+- `EvaluationEngine._track_api_call_failure_count` and
+  `_update_fitness_failure_count` per-instance counters. Tracked
+  separately because the call types have different root causes.
+- `EvaluationEngine._record_async_outcome(call_type, success, exc)` —
+  increments the per-call-type counter on failure (resets on
+  success) and triggers `_emit_async_failure_alert` when the
+  consecutive-failure threshold is reached.
+- `EvaluationEngine._emit_async_failure_alert(call_type, exc, count)` —
+  CRITICAL log + best-effort Agora `system-alerts` post via
+  fire-and-forget on the running loop or a fresh `asyncio.run`.
+- `ASYNC_FAILURE_ESCALATION_THRESHOLD = 3` module constant with a
+  derivation comment locking in the consecutive-only contract
+  (mirrors the regime-review escalation pattern).
+- `tests/test_eval_engine_async_bridge.py` — 7 unit tests for the
+  helper (no-loop happy path, running-loop happy path, exception
+  caught, KeyboardInterrupt/SystemExit propagate, structured failure
+  log, custom logger, exception unwrapped from worker thread).
+- `tests/test_eval_engine_failure_escalation.py` — 10 tests:
+  counter logic (5), the four CRITICAL wiring tests
+  (`test_track_api_call_actually_invoked_during_evaluation`,
+  `test_track_api_call_actually_invoked_inside_running_loop`,
+  `test_update_fitness_actually_invoked_during_evaluation`,
+  `test_update_fitness_actually_invoked_inside_running_loop`), and
+  a source-inspection guard
+  (`test_eval_engine_no_longer_uses_fragile_pattern`) that fails if
+  any future refactor re-introduces `.run_until_complete(` in
+  evaluation_engine.
+- `scripts/validate_eval_engine_async_bridge_e2e.py` — 4-phase e2e
+  against real Postgres. Output captured in commit message.
+
+### Changed
+- `src/genesis/evaluation_engine.py`:
+    - 4 sites refactored from
+      `asyncio.get_event_loop().run_until_complete(...)` to
+      `run_async_safely(...)` + `_record_async_outcome(...)`:
+        - `_call_genesis_ai` (Genesis Sonnet judgment cost tracking)
+        - `_execute_death_protocol` (death last-words cost tracking)
+        - `_apply_survival` — **the load-bearing selection-pressure
+          site**. The update_fitness call wraps a closure that
+          creates a FRESH session via `self.db_factory()` inside the
+          worker thread — passing the calling-thread session into a
+          worker would violate SQLAlchemy thread-safety.
+        - `_generate_post_mortem` (post-mortem cost tracking)
+    - Module-level `asyncio` import (was previously inline-imported
+      at each fragile site).
+    - Per-site comments document what's being wrapped, why it's
+      async, and the failure semantics.
+
+### Constraints honored
+- `Accountant.track_api_call` and `GenomeManager.update_fitness`
+  unchanged.
+- `EvaluationEngine` flow unchanged on the success path; the four
+  refactored sites still complete normally.
+- All four sites converge on `run_async_safely` — no bespoke
+  per-site wrappers.
+- Catches `Exception`, NOT `BaseException`. Cooperative
+  cancellation preserved.
+
 ## [Hotfix] - 2026-05-04 - Genesis regime-review (subsystem H) — Critic iteration 4
 
 Addresses two HIGH/MEDIUM blocking findings from iteration 3 Critic

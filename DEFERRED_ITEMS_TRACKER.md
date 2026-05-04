@@ -162,6 +162,13 @@
   - Action when picked up: design a halt-event durability layer if needed. Options include: (a) write halt events to Postgres before publishing to Redis, with a recovery sweeper after Memurai reconnect; (b) accept the trade-off explicitly and document it in operational runbook; (c) revisit when Phase 11 (Wire sentiment + reliability hardening) is being designed.
   - Trigger to pick up: when a real Memurai outage event surfaces in production, or when designing live trading hardening before the Arena → Live transition.
 
+- [ ] **Production logging config: ensure CRITICAL logs route to durable destination**
+  - Surfaced during: hotfix/eval-engine-coroutine-fix iteration 3 Critic review
+  - Current state: CRITICAL log lines (in eval engine async-bridge escalation, Warden alerts, regime review escalation, Operator halt fail-closed, etc.) rely on the structlog handler configuration to route to a durable destination. If production startup doesn't attach a handler that routes CRITICAL to file/syslog/external alerting, the "CRITICAL log is the contract" claim is hollow.
+  - Risk: medium — affects every safety-critical CRITICAL log across the codebase, not specific to one fix. The Agora post is best-effort by design (subsystem P contract); CRITICAL log is the load-bearing channel and must actually be observable.
+  - Action when picked up: audit production logging configuration, confirm at minimum a file handler routes CRITICAL+ to disk and an external alerting handler (PagerDuty / email / Slack) routes CRITICAL+ to on-call. Add a startup-time assertion that at least one non-stdout handler is attached for CRITICAL.
+  - Trigger to pick up: before live trading transition (CRITICAL log handler reliability is gating for live capital).
+
 - [ ] **CI Postgres integration test fixture for regime review and other Postgres-only logic**
   - Surfaced during: hotfix/genesis-regime-review-hook iteration 3 Critic review
   - Current state: production-path tests use `sqlite:///:memory:`; Postgres-specific code (`sa.text()` UPDATE, check constraints, JSON columns, `INTERVAL` syntax in original drafts, transaction isolation differences) is exercised manually via `scripts/_postgres_e2e_inject.py` but not in pytest. The Postgres e2e for subsystem H was a one-time manual capture, not a recurring CI test.
