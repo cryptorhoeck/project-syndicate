@@ -2,6 +2,242 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-04 - Genesis regime-review (subsystem H) — Critic iteration 4
+
+Addresses two HIGH/MEDIUM blocking findings from iteration 3 Critic
+review (Script Critic). Iteration 3 chat-Critic GREEN-LIT; the new
+findings are about code introduced in iteration 3 itself.
+
+### Finding 1 (HIGH) — Migration backfill idempotency
+The backfill UPDATE in `phase_10_wire_006_regime_review_status.py`
+now restricts to `regime_review_status = 'skipped'`. A re-run of
+`alembic upgrade head` (a common deploy-script idempotency pattern)
+or a backup-restore that re-applies the migration after the consumer
+has begun classifying rows cannot re-flip rows. Comment block above
+the UPDATE documents the idempotency contract and the cutoff
+re-computation hazard the WHERE-by-status filter neutralises.
+Test:
+  - `test_backfill_migration_idempotent` — pre-populates 5 rows in
+    varied states (recent-skipped, old-skipped, already-reviewed,
+    already-failed, already-pending), runs the backfill SQL twice
+    with cutoff recomputed each time, asserts the second run is a
+    no-op (state identical to first-run state).
+
+### Finding 2 (MEDIUM) — Commit-failure handling
+`_consume_pending_regime_reviews` now wraps `session.commit()` in
+try/except. On commit failure: log CRITICAL with the in-flight
+event_ids for diagnosis, then re-raise. The `with self.db_session_factory()`
+block's `__exit__` rolls back the session; `run_cycle` step 2c's
+existing try/except catches the exception, sets
+`consumed_regime_review_ids = []`, and increments the
+consumption-query failure counter (same path as SELECT-level
+failures). Net effect at the run_cycle layer: empty consumed list,
+no event_ids leak to the mark-reviewed UPDATE, escalation works
+identically for SELECT and commit failures.
+Helper docstring updated to document the contract: "Returns event_ids
+ONLY for rows whose attempt_count increment was successfully
+persisted."
+Test:
+  - `test_consume_returns_empty_list_on_commit_failure` — wraps the
+    consume helper so its session's `commit()` raises on the first
+    cycle and succeeds on the second. Asserts cycle 1: no event_id
+    in cycle_report, row stays 'pending' with attempt_count=0
+    (rollback worked), counter incremented to 1. Asserts cycle 2:
+    row consumed normally, attempt_count=1, status='reviewed',
+    counter reset to 0.
+
+### Finding 3 (MEDIUM) — Deferred (CI Postgres testing)
+DEFERRED_ITEMS_TRACKER.md gets entry "CI Postgres integration test
+fixture for regime review and other Postgres-only logic" — adds a
+pytest marker requiring real Postgres, skips if unavailable, plus
+CI config for a Postgres container. Trigger: next CI hardening
+session OR before live trading transition.
+
+### Finding 4 (LOW) — Acknowledged
+`test_escalation_does_not_fire_on_intermittent_pattern` (and
+`test_consumption_query_failure_escalates_after_three_cycles`) use
+mock-injected exceptions to validate the consecutive-only counter
+contract. Real SELECT-level failures in production are caught by the
+same try/except as mocked exceptions; the counter logic itself is
+the unit being tested. Postgres-level CI testing is the separate
+deferred item that addresses real-DB exception triggering.
+
+## [Hotfix] - 2026-05-04 - Genesis regime-review (subsystem H) — Critic iteration 3
+
+Addresses four blocking findings from iteration 2 Critic review:
+
+### Finding 1 (HIGH) — Cap correctness, no extra attempts past MAX
+`_consume_pending_regime_reviews` is now two passes:
+  - PRE-FLIP: SELECT pending rows where `attempt_count >= MAX_ATTEMPTS`,
+    flip to 'failed' with `last_error` populated. attempt_count is NOT
+    incremented during flip; the row stays at exactly MAX at the time
+    of the flip.
+  - CONSUME: SELECT pending rows where `attempt_count < MAX_ATTEMPTS`.
+    Defense-in-depth — even if a future refactor drops the pre-flip
+    pass, the SELECT itself excludes capped rows so they cannot be
+    consumed forever.
+Tests:
+  - `test_regime_review_exact_attempt_count_at_failure_cap` —
+    attempt_count == MAX (NOT MAX+1) at flip time.
+  - `test_regime_review_failed_row_excluded_from_select` — row at
+    `status='failed'` with `attempt_count=MAX` is not selected, not
+    incremented.
+
+### Finding 2 (HIGH) — Per-row last_error attribution
+Per-row try/except moved INSIDE the consume loop. New helper
+`_process_pending_regime_review_row(row)` is the test seam — a per-row
+exception stamps `last_error` on THAT row only; other rows in the
+same batch keep `last_error = NULL`. The cycle-level
+`_record_regime_review_failure` batch-stamp helper has been removed
+entirely; cycle-level failures surface only via `cycle_report["error"]`
+and the structured `genesis_cycle_error` log. The existing
+`test_regime_review_marks_failed_after_three_attempts` was updated to
+assert `last_error is None` after the cycle-level crashes (new
+contract); the cap-flip path still populates a generic
+exceeded-max-attempts message.
+Test:
+  - `test_last_error_attaches_to_offending_row_only` — batch of 5
+    rows, row #3 raises during processing, last_error stamps on
+    row #3 only; rows 1, 2, 4, 5 stay clean and get marked
+    'reviewed'.
+
+### Finding 3 (MEDIUM) — `BACKFILL_WINDOW_MINUTES` rationale
+Comment block above the constant in
+`alembic/versions/phase_10_wire_006_regime_review_status.py`
+documents the derivation: matches `DEFAULT_AUTO_EXPIRE_MINUTES = 30`
+in `src/wire/integration/operator_halt.py`. Sev-5 events older than
+the operator-halt TTL are presumed stale; if the underlying condition
+is still active the upstream producer will re-emit. If the halt TTL
+ever changes, the migration constant must move in lockstep.
+
+### Finding 4 (MEDIUM) — Consecutive-only escalation contract documented
+Comment block above `REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD`
+documents the consecutive-only contract: counter resets on first
+success, only K consecutive failures escalate. Intermittent patterns
+(fail, success, fail, fail) do NOT escalate by design.
+DEFERRED_ITEMS_TRACKER.md gets an explicit entry for the
+cumulative-window detector as a future observability improvement.
+Test:
+  - `test_escalation_does_not_fire_on_intermittent_pattern` —
+    fail/success/fail/fail/success/fail pattern → 4 failures across
+    6 cycles, never 3 in a row → no escalation log, no system-alert
+    post.
+
+## [Hotfix] - 2026-05-04 - Genesis regime-review (subsystem H) — Critic iteration 2
+
+Addresses five blocking findings from the iteration 1 Critic review of
+the subsystem H wiring. NOT-APPROVED → APPROVED-pending-merge once
+War Room signs off on this submission.
+
+### Schema (extends migration phase_10_wire_006)
+- `wire_events.attempt_count` INTEGER NOT NULL DEFAULT 0 — incremented
+  before each consumption attempt; cap at 3 flips the row to 'failed'
+  (Finding 1, poison-pill guard).
+- `wire_events.last_error` TEXT NULL — populated on cycle exception
+  for all rows consumed in the failing cycle; preserved when the cap
+  fires.
+- 'failed' added to the `regime_review_status` check constraint
+  (`'pending'|'reviewed'|'skipped'|'failed'`).
+- Backfill cutoff (Finding 3): only sev-5 rows newer than 30 minutes
+  flip to 'pending'. Older sev-5 rows stay 'skipped' to prevent
+  stale-event replay corrupting regime detection on first deploy.
+  30-minute window matches the operator-halt auto-expiry TTL.
+  Constant `BACKFILL_WINDOW_MINUTES = 30` exported by the migration.
+
+### Consumer (`src/genesis/genesis.py`)
+- `REGIME_REVIEW_MAX_ATTEMPTS = 3` and
+  `REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD = 3` module constants.
+- `_consume_pending_regime_reviews`:
+    - Per-row poison-pill check: rows at the cap flip to 'failed'
+      with `last_error` and are NOT re-consumed (Finding 1).
+    - Increment `attempt_count` BEFORE consuming, commit per-cycle so
+      the increment survives a mid-cycle crash.
+- `_mark_regime_reviews_reviewed`: WHERE filter is now `id IN
+  (consumed_ids)` ONLY — drops the redundant `status='pending'`
+  filter that was behaviorally wrong if a concurrent process flipped
+  status (Finding 2).
+- `_record_regime_review_failure`: new helper. run_cycle's top-level
+  except writes the exception text to `last_error` for all consumed
+  rows so the eventual poison-pill flip carries diagnostic context.
+- Step 2c gains consumption-query failure escalation (Finding 5):
+  per-instance `_regime_review_query_failure_count` increments on
+  SELECT failure, escalates to CRITICAL + `system-alerts` Agora post
+  after 3 consecutive cycles, resets to 0 on first success.
+
+### Tests (6 new, total 15 in
+`tests/test_genesis_regime_review_consumption.py`)
+- `test_regime_review_attempt_count_increments_on_consumption` (F1)
+- `test_regime_review_marks_failed_after_three_attempts` (F1)
+- `test_regime_review_failed_rows_excluded_from_consumption_query` (F1)
+- `test_mid_cycle_inserts_remain_pending` (F2)
+- `test_backfill_marks_old_sev_5_as_skipped` (F3)
+- `test_consumption_query_failure_escalates_after_three_cycles` (F5)
+
+### Postgres e2e (Finding 4)
+- New diagnostic injector `scripts/_postgres_e2e_inject.py`. Run
+  against the real dev Postgres (started via
+  `C:/ProDesk/pgsql/bin/pg_ctl.exe`). Captures pre/post counts,
+  applies migration, injects synthetic sev-5, runs Genesis
+  consumption, asserts row marked 'reviewed' with attempt_count=1,
+  cleans up so dev DB returns to its pre-injection state. See commit
+  message for full output.
+
+## [Hotfix] - 2026-05-04 - Genesis regime-review consumption (subsystem H)
+
+Closes WIRING_AUDIT_REPORT.md subsystem H. Severity-5 wire events were
+firing but no listener invoked Genesis regime review in production —
+the digester had a hook reference but no consumer was ever wired. Per
+War Room iteration 1 directive on hotfix/genesis-regime-review-hook
+(Option C): Postgres-as-queue, no Redis pub/sub, no new GenesisAgent
+public method.
+
+### Verification stop before build (no code yet)
+The original directive locked in `Genesis.review_regime()` as "the
+existing function. Do NOT modify its internals." Verified via
+`git log --all -S "review_regime"` that the method had never been
+implemented — only referenced in docstrings/kickoff docs. Reported
+back to War Room rather than build wiring around a non-existent
+function. War Room confirmed Option C (no new method, queue
+consumption inline in `run_cycle`).
+
+### Added
+- `alembic/versions/phase_10_wire_006_regime_review_status.py`:
+  adds `wire_events.regime_review_status` VARCHAR(16) NOT NULL DEFAULT
+  'skipped' with check constraint `IN ('pending','reviewed','skipped')`.
+  Backfills existing severity-5 rows to 'pending' for catch-up. Adds
+  `ix_wire_events_regime_review_status` on (regime_review_status,
+  severity) for the consumption query.
+- `WireEvent.regime_review_status` ORM column + matching CheckConstraint
+  / Index in `src/wire/models.py`.
+- `GenesisAgent._consume_pending_regime_reviews()` and
+  `_mark_regime_reviews_reviewed(event_ids)` private helpers.
+  Bounded at `REGIME_REVIEW_BATCH_LIMIT = 50` per cycle.
+- New step 2c (consume) and step 12 (mark) inserted into
+  `GenesisAgent.run_cycle()`. At-least-once: an exception in steps
+  3–11 leaves rows 'pending' for the next cycle (mark-reviewed UPDATE
+  is the last statement in the try block).
+- `tests/test_genesis_regime_review_consumption.py` — 9 tests
+  including `test_severity_5_event_consumed_by_genesis_in_production_path`
+  which goes end-to-end through the real HaikuDigester and the real
+  GenesisAgent constructor (production code paths).
+- `scripts/validate_regime_review_consumption_e2e.py` — single-phase
+  e2e validation runner (Postgres-as-queue has well-understood
+  semantics; no Memurai-down dance needed).
+
+### Changed
+- `src/wire/digest/haiku_digester.py`: sev-5 events get
+  `regime_review_status='pending'` at INSERT time. Duplicate sev-5
+  events stay 'skipped' (the original was already reviewed). Imports
+  `SEVERITY_CRITICAL` from `src.wire.constants`.
+
+### Constraints honored
+- `detect_regime()` logic NOT modified — it runs after the new
+  consumption step in the same position it always has.
+- `run_cycle` flow preserved — one step added at top (2c), one at end
+  (12). No restructuring.
+- No new public methods on `GenesisAgent`.
+- No Redis pub/sub.
+
 ## [Hotfix] - 2026-05-03 - Operator halt persistence — Critic iteration-5 fixes
 
 Addresses six blocking findings from the iteration-5 Critic review of
