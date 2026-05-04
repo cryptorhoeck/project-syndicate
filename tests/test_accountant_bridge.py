@@ -94,6 +94,7 @@ def service(db_factory, mock_price_cache):
         fee_schedule=FeeSchedule(),
         warden=approving_warden,
         redis_client=redis,
+        halt_store=MagicMock(is_halted=MagicMock(return_value=(False, None))),  # operator-halt-consumer-wiring hotfix
     )
 
 

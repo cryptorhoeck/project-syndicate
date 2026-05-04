@@ -115,6 +115,7 @@ def production_trading_service(db_factory, fake_redis_client):
         redis_client=fake_redis_client,
         agora_service=None,
         warden=warden,
+        halt_store=MagicMock(is_halted=MagicMock(return_value=(False, None))),  # operator-halt-consumer-wiring hotfix
     )
 
 

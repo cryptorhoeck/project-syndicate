@@ -23,12 +23,78 @@ from src.wire.digest.haiku_digester import HaikuDigester, make_default_haiku_cli
 from src.wire.health.monitor import HealthMonitor
 from src.wire.ingestors.runner import SourceRunner
 from src.wire.ingestors.scheduler import IngestorScheduler
+from src.wire.integration.halt_store import RedisHaltStore
+from src.wire.integration.operator_halt import (
+    get_halt_store as get_producer_halt_store,
+    set_alert_publisher as set_producer_alert_publisher,
+    set_halt_store as set_producer_halt_store,
+)
 from src.wire.models import WireSource
 
 
 def _build_session_factory():
     engine = create_engine(config.database_url, pool_pre_ping=True)
     return sessionmaker(bind=engine)
+
+
+def _initialize_producer_halt_store(
+    *,
+    redis_url: Optional[str] = None,
+    key_prefix: Optional[str] = None,
+) -> RedisHaltStore:
+    """Construct + register the producer-side RedisHaltStore.
+
+    Wire scheduler subprocess calls this at startup so subsequent
+    `publish_halt_for_event` calls write through to the same Memurai
+    keyspace the agents subprocess (consumer) reads from. Same
+    fail-fast wiring contract as Warden / TradeExecutionService.
+
+    Post-construction verification (Critic Finding 3, iteration 5):
+    `redis_client.ping()` proves the Redis connection works, but it
+    does NOT prove the module-level assignment landed. After
+    `set_producer_halt_store(store)` we re-read it via
+    `get_producer_halt_store()` and `sys.exit(2)` if it isn't the
+    instance we just registered — covers any future bug where the
+    setter no-ops or the import path skews between writer and reader.
+
+    `redis_url` / `key_prefix` are optional overrides for tests
+    (Critic Finding 2, iteration 5: the cross-process boundary test
+    must exercise this same factory path, with isolated namespacing).
+    Production callers pass nothing; the production code path is
+    unchanged.
+    """
+    import redis as _redis_lib
+    effective_url = redis_url if redis_url is not None else config.redis_url
+    redis_client = _redis_lib.Redis.from_url(
+        effective_url, decode_responses=True,
+        socket_timeout=10, socket_connect_timeout=5, retry_on_timeout=True,
+    )
+    redis_client.ping()  # fail fast if Memurai is down
+    if key_prefix is None:
+        store = RedisHaltStore(redis_client=redis_client)
+    else:
+        store = RedisHaltStore(redis_client=redis_client, key_prefix=key_prefix)
+    set_producer_halt_store(store)
+
+    # Post-construction verification.
+    registered = get_producer_halt_store()
+    if registered is None:
+        logging.getLogger(__name__).critical(
+            "wire_scheduler_halt_store_assignment_lost",
+            extra={"reason": "set_halt_store completed but get_halt_store returned None"},
+        )
+        sys.exit(2)
+    if registered is not store:
+        logging.getLogger(__name__).critical(
+            "wire_scheduler_halt_store_assignment_mismatch",
+            extra={
+                "expected": id(store),
+                "registered": id(registered),
+                "reason": "module-level reference is not the instance we just registered",
+            },
+        )
+        sys.exit(2)
+    return store
 
 
 # ---------------------------------------------------------------------------
@@ -83,9 +149,70 @@ def cmd_digest_pending(args: argparse.Namespace) -> int:
     return 0
 
 
+def _build_producer_alert_publisher():
+    """Sync alert publisher used by `publish_halt_for_event` when a
+    Redis-backed halt write fails. Posts the failure to the same Redis
+    channel Agora uses for `system-alerts` (`agora:system-alerts`) so
+    any subscriber in any subprocess can observe the producer-side
+    failure. Mirrors the Critic-mandated "loudness" requirement (Finding
+    1, iteration 5).
+
+    Wire scheduler is sync; Agora's normal publish path is async. Going
+    direct to Redis PUBLISH bypasses the async-boundary problem and
+    reaches the exact channel any Agora consumer is already subscribed
+    to. The CRITICAL log + raised exception remain the load-bearing
+    loud signal — this is the cross-process mirror.
+    """
+    import json as _json
+    import redis as _redis_lib
+    redis_client = _redis_lib.Redis.from_url(
+        config.redis_url, decode_responses=True,
+        socket_timeout=5, socket_connect_timeout=5,
+    )
+
+    def _publish(event_class: str, payload: dict) -> None:
+        message = {
+            "channel": "system-alerts",
+            "content": payload.get("summary", f"[{event_class}]"),
+            "message_type": "alert",
+            "importance": 2,  # critical
+            "metadata": {"event_class": event_class, **payload},
+        }
+        redis_client.publish("agora:system-alerts", _json.dumps(message, default=str))
+
+    return _publish
+
+
 def cmd_run_scheduler(args: argparse.Namespace) -> int:
     factory = _build_session_factory()
     haiku_client = make_default_haiku_client() if args.with_digest else None
+    # Initialize producer-side halt store so severity-5 events from this
+    # subprocess are visible cross-process (to PaperTradingService running
+    # in the agents subprocess). Fail-fast on Redis unavailability —
+    # without this, severity-5 halts would be invisible to consumers and
+    # the trading layer would silently keep trading affected coins.
+    try:
+        _initialize_producer_halt_store()
+    except SystemExit:
+        raise
+    except Exception as exc:
+        logging.getLogger(__name__).critical(
+            "wire_scheduler_halt_store_init_failed", extra={"error": str(exc)},
+        )
+        sys.exit(2)
+
+    # Wire alert publisher so producer-side Redis-write failures mirror
+    # to system-alerts cross-process. Best-effort: if the publisher
+    # itself raises, the CRITICAL log + raised OperatorHaltPublishError
+    # remain the load-bearing signal.
+    try:
+        set_producer_alert_publisher(_build_producer_alert_publisher())
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "wire_scheduler_alert_publisher_init_failed",
+            extra={"error": str(exc)},
+        )
+
     scheduler = IngestorScheduler(session_factory=factory, haiku_client=haiku_client)
     scheduler.run_forever(max_ticks=args.max_ticks)
     return 0

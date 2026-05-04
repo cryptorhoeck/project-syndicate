@@ -137,6 +137,26 @@
 
 ---
 
+## OPERATOR HALT CONSUMER HOTFIX (Identified 2026-05-04)
+
+- [x] **Wire halt cross-process visibility (PRODUCTION GAP)** — RESOLVED 2026-05-01
+  - Surfaced during: hotfix/operator-halt-consumer-wiring iteration 4 review (Critic Finding 3)
+  - Was: `OperatorHaltSignal` registry (`_ACTIVE`) is module-level Python state, in-memory only, process-local. Producer in `wire_scheduler` subprocess and consumer in `agents` subprocess held separate `_ACTIVE` copies; halts published by the digester were not visible to PaperTradingService in production. Tests passed because they exercised both sides in a single Python process.
+  - Resolution: Redis-backed `RedisHaltStore` (`src/wire/integration/halt_store.py`) is now the source of truth. Producer (`publish_halt_for_event`) writes through to Redis when the module-level `_halt_store` has been initialized; consumer (`PaperTradingService._check_operator_halt`) calls `halt_store.is_halted(coin, exchange)` at every trade-initiation point. Both subprocesses point at the same Memurai instance via construction in `scripts/run_agents.py:build_halt_store` and `src/wire/cli.py:_initialize_producer_halt_store`. Native Redis TTL handles 30-min auto-expiry. Module-level `_ACTIVE` is now defense-in-depth only — populated when Redis writes fail and consulted only when the consumer's `_halt_state_unknown` flag is set.
+  - Fail-closed: Redis raise OR malformed return → `_halt_state_unknown=True` and trade rejected (mirrors Warden `_safety_state_unknown`). Latch auto-clears on next successful `is_halted` call to prevent DMS-class permanent halt from a transient blip.
+  - Tests: `tests/test_operator_halt_consumer_wiring.py` — 17 tests. The load-bearing one is `test_halt_visible_across_process_boundary`, which spawns two real `subprocess.run` Python processes (publisher + queryer) against a shared Memurai with a unique `key_prefix` and asserts cross-process visibility. Without that test, future refactors could re-introduce in-process state and pass everything else.
+  - Resolving commit: hotfix/operator-halt-consumer-wiring (iteration 5 — Redis persistence layer)
+
+- [ ] **Wire source-side exchange classification**
+  - Surfaced during: hotfix/operator-halt-consumer-wiring (Phase 10 kickoff per-coin-per-exchange scope)
+  - Current state: `OperatorHaltSignal.exchange` is now an optional field that producers leave None ("applies to all exchanges"). The consumer (`PaperTradingService._check_operator_halt`) queries with both coin AND exchange and matches correctly.
+  - Gap: source classification doesn't yet populate `exchange` per event-type. A Kraken withdrawal_halt should ideally set exchange="kraken" so it scopes only to Kraken; a Solana chain_halt should leave exchange=None (chain halts are global). Today both leave it None.
+  - Risk: low. Producers default to wider scope (block on all exchanges), which is the safe-by-default reading. When source-side classification narrows scope, the consumer logic Just Works without further changes.
+  - Action when picked up: in `src/wire/digest/haiku_digester.py`, when calling `publish_halt_for_event`, populate `exchange` based on the source's known venue. Kraken-source events → exchange="kraken". DefiLlama / Etherscan / FRED → exchange=None (cross-venue or chain-level). The Haiku digestion prompt may also be extended to include exchange in the classification schema.
+  - Trigger to pick up: when the colony runs on more than one exchange (today only Kraken) and per-exchange scope becomes operationally meaningful.
+
+---
+
 ## TOOLING — CRITIC (Identified 2026-05-03)
 
 - [ ] **critic.py: tag reviews with reviewed SHA**

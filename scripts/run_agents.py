@@ -41,6 +41,12 @@ from src.risk.warden import Warden
 from src.trading.execution_service import get_trading_service
 from src.trading.fee_schedule import FeeSchedule
 from src.trading.slippage_model import SlippageModel
+from src.wire.integration.halt_store import RedisHaltStore
+from src.wire.integration.operator_halt import (
+    get_halt_store as get_producer_halt_store,
+    list_active as wire_list_active_halts,
+    set_halt_store as set_producer_halt_store,
+)
 
 # Logging
 structlog.configure(
@@ -86,14 +92,43 @@ def build_warden(db_factory, agora_service=None):
     )
 
 
-def build_trading_service(db_factory, redis_client, agora_service=None, warden=None):
+def build_halt_store(redis_client, *, key_prefix: str | None = None) -> RedisHaltStore:
+    """Construct the colony's RedisHaltStore from the live Redis client.
+
+    Closes the cross-process gap surfaced in iteration 4 of the operator
+    halt hotfix: producer (wire_scheduler subprocess) and consumer
+    (this — agents subprocess) both point at the same Memurai instance
+    via this store, so halts published in one are visible in the other.
+
+    Wiring contract: redis_client must be non-None. RedisHaltStore's
+    constructor sys.exit(2)s on None to enforce the same pattern as
+    Warden / TradeExecutionService.
+
+    `key_prefix` is an optional override for tests (Critic Finding 2,
+    iteration 5). Production callers pass nothing — the default
+    `wire:halt` namespace is used and producer/consumer agree by
+    construction. The cross-process boundary test passes a unique
+    per-run prefix so concurrent test runs don't collide on the
+    production keyspace.
+    """
+    if key_prefix is None:
+        return RedisHaltStore(redis_client=redis_client)
+    return RedisHaltStore(redis_client=redis_client, key_prefix=key_prefix)
+
+
+def build_trading_service(
+    db_factory, redis_client, agora_service=None, warden=None, halt_store=None,
+):
     """Construct the colony's TradeExecutionService for the configured mode.
 
-    `warden` is now a required collaborator for production paths — pass the
-    Warden instance from `build_warden` so PaperTradingService.evaluate_trade
-    actually fires. The factory still accepts None for tests that
-    deliberately construct without a Warden, but `run_agents.py` enforces
-    non-None at runtime via the fail-fast check below.
+    `warden` is required in production paths so PaperTradingService.warden
+    is non-None and Warden's evaluate_trade actually fires.
+
+    `halt_store` is the Wire severity-5 consumer (a `RedisHaltStore`).
+    Without it the Operator would silently ignore active halts
+    (subsystem I from the wiring audit). Production runners enforce
+    non-None via fail-fast in main(); the factory still accepts None to
+    keep test fixtures simple.
     """
     price_cache = PriceCache(redis_client=redis_client)
     return get_trading_service(
@@ -104,6 +139,7 @@ def build_trading_service(db_factory, redis_client, agora_service=None, warden=N
         warden=warden,
         redis_client=redis_client,
         agora_service=agora_service,
+        halt_store=halt_store,
     )
 
 
@@ -156,14 +192,54 @@ async def main() -> None:
         sys.exit(2)
     log.info("warden_wired", impl=type(warden).__name__)
 
-    # Trading service. This is the wiring that closes the gap exposed in
-    # ARENA_TRADING_SERVICE_DIAGNOSIS.md. The factory returns the right
-    # concrete TradeExecutionService for the configured mode (paper today).
-    # If this raises or returns None, we surface and abort: every Operator
-    # trade would otherwise fall into the [NO SERVICE] fallback again.
-    # Warden is now passed in so PaperTradingService.evaluate_trade fires.
+    # Halt store. Cross-process severity-5 halt registry (Memurai-backed).
+    # Producer side is initialized in src/wire/cli.py; this is the
+    # consumer side. Both subprocesses construct against the same Redis
+    # instance so halts published in one are visible in the other.
+    try:
+        halt_store = build_halt_store(redis_client)
+    except SystemExit:
+        raise  # propagate sys.exit(2) from RedisHaltStore None-guard
+    except Exception as exc:
+        log.error("halt_store_construction_failed",
+                  error=str(exc),
+                  message="Refusing to start agents — Wire halt registry cannot be built.")
+        sys.exit(2)
+    log.info("halt_store_wired", impl=type(halt_store).__name__)
+    # Also initialize the producer-side module-level reference so any
+    # in-process publish_halt_for_event call (e.g. tests) writes to
+    # Redis. The wire_scheduler subprocess has its own initialization
+    # in src/wire/cli.py.
+    set_producer_halt_store(halt_store)
+    # Post-construction verification (Critic Finding 3, iteration 5):
+    # set_halt_store() success doesn't prove the module-level reference
+    # took. Re-read it via get_halt_store() and fail fast if the assignment
+    # was lost or import-path skewed.
+    registered = get_producer_halt_store()
+    if registered is None:
+        log.error(
+            "halt_store_assignment_lost",
+            message="set_producer_halt_store completed but get_producer_halt_store returned None.",
+        )
+        sys.exit(2)
+    if registered is not halt_store:
+        log.error(
+            "halt_store_assignment_mismatch",
+            expected=id(halt_store), registered=id(registered),
+            message="Module-level halt_store reference is not the instance we just registered.",
+        )
+        sys.exit(2)
+
+    # Trading service. Closes ARENA_TRADING_SERVICE_DIAGNOSIS.md (Phase 3C
+    # was never wired) + WIRING_AUDIT_REPORT.md subsystems N (Warden) and
+    # I (Operator halt consumer). The factory returns the right concrete
+    # TradeExecutionService for the configured mode (paper today). All
+    # collaborators are wired here; main() fails fast on any None.
     trading_service = build_trading_service(
-        db_factory, redis_client, agora_service=agora, warden=warden,
+        db_factory, redis_client,
+        agora_service=agora,
+        warden=warden,
+        halt_store=halt_store,
     )
     if trading_service is None:
         log.error("trading_service_unavailable",
@@ -174,10 +250,16 @@ async def main() -> None:
         log.error("trading_service_warden_missing",
                   message="Refusing to start agents — TradeExecutionService was built without a Warden.")
         sys.exit(2)
+    if getattr(trading_service, "halt_store", None) is None:
+        log.error("trading_service_halt_store_missing",
+                  message="Refusing to start agents — TradeExecutionService was built without a halt_store. "
+                          "Wire severity-5 halts would be silently ignored.")
+        sys.exit(2)
     log.info("trading_service_wired",
              impl=type(trading_service).__name__,
              trading_mode=config.trading_mode,
-             warden=type(getattr(trading_service, "warden", None)).__name__)
+             warden=type(getattr(trading_service, "warden", None)).__name__,
+             halt_store=type(getattr(trading_service, "halt_store", None)).__name__)
 
     log.info("agent_runner_started", poll_interval=POLL_INTERVAL)
 

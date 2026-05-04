@@ -40,7 +40,10 @@ from src.wire.digest.deduper import canonical_hash, find_duplicate
 from src.wire.digest.prompts import SYSTEM_PROMPT, build_user_prompt
 from src.wire.digest.severity import apply_severity_rules
 from src.wire.integration.genesis_regime import maybe_dispatch as dispatch_severity_5
-from src.wire.integration.operator_halt import publish_halt_for_event
+from src.wire.integration.operator_halt import (
+    OperatorHaltPublishError,
+    publish_halt_for_event,
+)
 from src.wire.models import WireEvent, WireRawItem, WireTreasuryLedger
 from src.wire.publishing.ticker import WireTicker
 
@@ -334,13 +337,30 @@ class HaikuDigester:
                 summary=event.summary,
                 occurred_at_iso=event.occurred_at.isoformat() if event.occurred_at else None,
             )
-            publish_halt_for_event(
-                event_id=event.id,
-                coin=event.coin,
-                event_type=event.event_type,
-                severity=event.severity,
-                summary=event.summary,
-            )
+            try:
+                publish_halt_for_event(
+                    event_id=event.id,
+                    coin=event.coin,
+                    event_type=event.event_type,
+                    severity=event.severity,
+                    summary=event.summary,
+                )
+            except OperatorHaltPublishError as exc:
+                # Redis-write failure already logged CRITICAL + posted to
+                # system-alerts inside publish_halt_for_event. Don't
+                # dead-letter the raw item over a halt-store blip — the
+                # event itself was digested successfully and the failure
+                # has been broadcast cross-process.
+                logger.critical(
+                    "wire.digest.operator_halt_publish_failed",
+                    extra={
+                        "raw_item_id": raw.id, "event_id": event.id,
+                        "trigger_event_id": exc.trigger_event_id,
+                        "coin": exc.coin, "exchange": exc.exchange,
+                        "event_type": exc.event_type,
+                        "underlying": str(exc.underlying),
+                    },
+                )
 
         self.session.commit()
 

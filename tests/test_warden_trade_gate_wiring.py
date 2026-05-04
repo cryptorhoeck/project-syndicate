@@ -109,13 +109,15 @@ def production_warden(db_factory):
 @pytest.fixture
 def production_trading_service(db_factory, fake_redis_client, production_warden):
     """Build the trading service via the EXACT helper run_agents.py uses,
-    including the wired Warden."""
+    including the wired Warden. halt_store injected as a no-halts mock
+    since the gate under test in this file is the Warden, not Wire halts."""
     run_agents = importlib.import_module("scripts.run_agents")
     return run_agents.build_trading_service(
         db_factory=db_factory,
         redis_client=fake_redis_client,
         agora_service=None,
         warden=production_warden,
+        halt_store=MagicMock(is_halted=MagicMock(return_value=(False, None))),
     )
 
 
@@ -291,6 +293,7 @@ async def test_warden_missing_branch_rejects_and_alerts(
 
     # Manually construct WITHOUT a warden — the production helper enforces
     # non-None, so we have to construct directly to exercise the fallback.
+    # halt_store is injected (the gate under test is Warden, not halts).
     svc = PaperTradingService(
         db_session_factory=db_factory,
         price_cache=MagicMock(),
@@ -299,6 +302,7 @@ async def test_warden_missing_branch_rejects_and_alerts(
         warden=None,
         redis_client=fake_redis_client,
         agora_service=None,
+        halt_store=MagicMock(is_halted=MagicMock(return_value=(False, None))),
     )
     svc.price_cache.get_ticker = AsyncMock(
         return_value=({"bid": 100.0, "ask": 100.5, "last": 100.25, "baseVolume": 1_000_000}, True)
