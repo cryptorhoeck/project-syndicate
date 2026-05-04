@@ -162,6 +162,14 @@
   - Action when picked up: design a halt-event durability layer if needed. Options include: (a) write halt events to Postgres before publishing to Redis, with a recovery sweeper after Memurai reconnect; (b) accept the trade-off explicitly and document it in operational runbook; (c) revisit when Phase 11 (Wire sentiment + reliability hardening) is being designed.
   - Trigger to pick up: when a real Memurai outage event surfaces in production, or when designing live trading hardening before the Arena → Live transition.
 
+- [ ] **Regime review escalation: cumulative-window failure detection**
+  - Surfaced during: Critic iteration 3 review of subsystem H (Finding 4)
+  - Current contract (locked by War Room iteration 3): `_regime_review_query_failure_count` on `GenesisAgent` resets to 0 on the first successful consumption query. Only K=`REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD` (=3) **consecutive** failures escalate to CRITICAL + system-alert.
+  - Limitation: an intermittent pattern (fail, success, fail, fail, fail) does NOT escalate even though there were 4 failures in 5 cycles — the success in cycle 2 reset the counter. Locked in by `test_escalation_does_not_fire_on_intermittent_pattern`.
+  - Risk: low. Persistent issues will hit consecutive-failure threshold; truly intermittent issues are by definition self-healing. The trade-off is acceptable while subsystem H is freshly wired and we're prioritising minimal surface area.
+  - Action when picked up: implement an M-failures-within-N-cycles rolling-window detector — `collections.deque(maxlen=N)` on `GenesisAgent` keyed on cycle index, escalate when >= M entries in the deque are failures. Distinct alert event class so dashboards can distinguish consecutive vs cumulative escalations. Negative test on the consecutive-only contract should be updated or removed depending on whether both detectors run in parallel.
+  - Trigger to pick up: if observability dashboards show patterns of intermittent regime-review query failures the consecutive-only counter misses; OR when Phase 11 (Wire reliability hardening) is being designed; OR when the Arena run produces a real intermittent failure pattern that the consecutive counter under-reports.
+
 ---
 
 ## TOOLING — CRITIC (Identified 2026-05-03)

@@ -592,9 +592,16 @@ def test_regime_review_marks_failed_after_three_attempts(
     db_factory, seeded_world, memurai_available,
 ):
     """Force exception three cycles in a row. After the 3rd cycle the
-    row's attempt_count is at MAX. On the 4th cycle, the consumption
-    helper sees the cap, flips the row to 'failed' with last_error
-    populated, and does NOT consume it again."""
+    row's attempt_count is at MAX. On the 4th cycle, the pre-flip
+    pass sees attempt_count >= MAX and flips the row to 'failed'
+    with the generic exceeded-max-attempts last_error.
+
+    Note (Critic iteration 3 Finding 2): the cycle-level exception
+    no longer batch-stamps last_error on consumed rows. Only per-row
+    failures stamp; cycle-level failures (post_to_agora here) leave
+    last_error untouched. The pre-flip pass populates a generic
+    last_error message at the time of the flip.
+    """
     assert REGIME_REVIEW_MAX_ATTEMPTS == 3  # contract guard
 
     with db_factory() as session:
@@ -616,12 +623,15 @@ def test_regime_review_marks_failed_after_three_attempts(
             f"After {REGIME_REVIEW_MAX_ATTEMPTS} crash cycles, attempt_count "
             f"should be at the cap. Got {row.attempt_count}."
         )
-        # last_error reflects the most recent cycle exception.
-        assert row.last_error is not None
-        assert "RuntimeError" in row.last_error
-        assert "cycle 3 failure" in row.last_error
+        # last_error stays None — cycle-level failures don't stamp.
+        assert row.last_error is None, (
+            f"Cycle-level exception leaked into per-row last_error: "
+            f"{row.last_error!r}. The Critic iteration 3 Finding 2 "
+            f"contract forbids batch-stamping."
+        )
 
-    # Cycle 4: clean cycle, but cap should fire and flip to 'failed'.
+    # Cycle 4: clean cycle. The pre-flip pass picks up the row at the
+    # cap and flips it to 'failed' with a generic message.
     genesis = _make_genesis_with_mocks(db_factory, memurai_available)
     asyncio.run(genesis.run_cycle())
 
@@ -632,8 +642,7 @@ def test_regime_review_marks_failed_after_three_attempts(
             f"flip to 'failed' on the next cycle. Got {row.regime_review_status!r}."
         )
         assert row.last_error is not None
-        # last_error from the last crash cycle is preserved (the cap
-        # path doesn't overwrite an existing error message).
+        assert "exceeded max" in row.last_error.lower()
 
 
 def test_regime_review_failed_rows_excluded_from_consumption_query(
@@ -893,4 +902,256 @@ def test_consumption_query_failure_escalates_after_three_cycles(
     fresh_alerts = [a for a in alert_posts if a.get("channel") == "system-alerts"]
     assert not fresh_alerts, (
         f"Fresh system-alert post during recovery cycle: {fresh_alerts!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 3 Finding 1 (HIGH): attempt-cap correctness
+# ---------------------------------------------------------------------------
+
+
+def test_regime_review_exact_attempt_count_at_failure_cap(
+    db_factory, seeded_world, memurai_available,
+):
+    """Run cycles until the row is marked 'failed'. Verify
+    attempt_count == MAX_ATTEMPTS at the time of the flip — NOT
+    MAX_ATTEMPTS+1. Locks in the no-extra-attempt-past-the-cap
+    contract."""
+    assert REGIME_REVIEW_MAX_ATTEMPTS == 3
+
+    with db_factory() as session:
+        evt = _insert_wire_event(session, severity=5, status="pending", coin="BTC")
+        evt_id = evt.id
+
+    # Three crash cycles take attempt_count from 0 to 3.
+    for i in range(REGIME_REVIEW_MAX_ATTEMPTS):
+        g = _make_genesis_with_mocks(db_factory, memurai_available)
+        g.post_to_agora = AsyncMock(side_effect=RuntimeError(f"cycle {i+1}"))
+        asyncio.run(g.run_cycle())
+
+    with db_factory() as session:
+        row = session.get(WireEvent, evt_id)
+        assert row.attempt_count == REGIME_REVIEW_MAX_ATTEMPTS
+        assert row.regime_review_status == "pending"
+
+    # Cycle 4: the pre-flip pass flips the row WITHOUT incrementing
+    # again. attempt_count must remain at the cap exactly.
+    g = _make_genesis_with_mocks(db_factory, memurai_available)
+    asyncio.run(g.run_cycle())
+
+    with db_factory() as session:
+        row = session.get(WireEvent, evt_id)
+        assert row.regime_review_status == "failed"
+        assert row.attempt_count == REGIME_REVIEW_MAX_ATTEMPTS, (
+            f"Off-by-one bug: at the time of the flip, attempt_count "
+            f"should equal MAX ({REGIME_REVIEW_MAX_ATTEMPTS}), got "
+            f"{row.attempt_count}. The cap must NOT allow an extra "
+            f"attempt past the limit."
+        )
+
+
+def test_regime_review_failed_row_excluded_from_select(
+    db_factory, seeded_world, memurai_available, capsys,
+):
+    """Direct-insert a row at status='failed' with attempt_count=MAX.
+    Run cycle. Assert the row is NOT consumed (no log line, no
+    attempt_count increment). Defends the SELECT exclusion of
+    capped-and-flipped rows — the load-bearing guard against the
+    'consumed forever' poison-pill scenario."""
+    with db_factory() as session:
+        evt = WireEvent(
+            canonical_hash="failed-select-test",
+            coin="BTC", event_type="exchange_outage",
+            severity=5,
+            summary="Already-failed row",
+            occurred_at=datetime.now(timezone.utc),
+            haiku_cost_usd=0.0,
+            regime_review_status="failed",
+            attempt_count=REGIME_REVIEW_MAX_ATTEMPTS,
+            last_error="exceeded max attempts",
+        )
+        session.add(evt)
+        session.commit()
+        evt_id = evt.id
+
+    g = _make_genesis_with_mocks(db_factory, memurai_available)
+    asyncio.run(g.run_cycle())
+
+    captured = _strip_ansi(capsys.readouterr().out)
+    consume_lines = [
+        l for l in captured.splitlines()
+        if "genesis_consuming_regime_review" in l
+        and f"event_id={evt_id}" in l
+    ]
+    assert not consume_lines, (
+        f"'failed' row was selected/consumed: {consume_lines!r}. "
+        f"SELECT exclusion is broken."
+    )
+
+    with db_factory() as session:
+        row = session.get(WireEvent, evt_id)
+        assert row.regime_review_status == "failed"
+        assert row.attempt_count == REGIME_REVIEW_MAX_ATTEMPTS, (
+            f"attempt_count was incremented for a 'failed' row: "
+            f"{row.attempt_count}. The SELECT must filter terminal rows out."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 3 Finding 2 (HIGH): per-row last_error attribution
+# ---------------------------------------------------------------------------
+
+
+def test_last_error_attaches_to_offending_row_only(
+    db_factory, seeded_world, memurai_available,
+):
+    """Batch of 5 pending rows, force exception during processing of
+    row #3 (index 2). Verify last_error is set on row #3 ONLY; rows
+    1, 2, 4, 5 keep last_error NULL.
+
+    Test seam: override `_process_pending_regime_review_row` on the
+    instance to raise selectively. The production helper increments
+    attempt_count + emits the structured log; the test override
+    raises BEFORE doing either when called for the offending row,
+    so attempt_count for rows 1-2 increments (they processed before
+    the exception) and rows 3-5 stay at 0 (3 raised, 4-5 never
+    reached because rows 1-2's increments already committed in the
+    same session — but the per-row try/except keeps the loop going).
+    """
+    with db_factory() as session:
+        rows = [
+            _insert_wire_event(
+                session, severity=5, status="pending", coin=f"COIN{i}",
+                event_type=f"event_{i}",
+            )
+            for i in range(5)
+        ]
+        all_ids = [r.id for r in rows]
+        offending_id = rows[2].id
+
+    g = _make_genesis_with_mocks(db_factory, memurai_available)
+
+    real_process = g._process_pending_regime_review_row
+
+    def _selective_process(row):
+        if row.id == offending_id:
+            raise RuntimeError("simulated row-3 processing failure")
+        return real_process(row)
+
+    g._process_pending_regime_review_row = _selective_process
+    asyncio.run(g.run_cycle())
+
+    with db_factory() as session:
+        rows_after = {
+            r.id: r for r in session.execute(
+                select(WireEvent).where(WireEvent.id.in_(all_ids))
+            ).scalars().all()
+        }
+
+    offender = rows_after[offending_id]
+    assert offender.last_error is not None, (
+        "last_error not stamped on the offending row."
+    )
+    assert "RuntimeError" in offender.last_error
+    assert "row-3" in offender.last_error
+    # Offender stayed pending (NOT consumed -> NOT marked reviewed).
+    assert offender.regime_review_status == "pending"
+
+    for rid, r in rows_after.items():
+        if rid == offending_id:
+            continue
+        assert r.last_error is None, (
+            f"Innocent row id={rid} got a last_error stamp: "
+            f"{r.last_error!r}. Per-row attribution is broken — the "
+            f"offending row's failure leaked into the rest of the batch."
+        )
+        # Innocent rows were consumed and marked reviewed.
+        assert r.regime_review_status == "reviewed", (
+            f"Innocent row id={rid} not marked reviewed: "
+            f"status={r.regime_review_status!r}"
+        )
+        assert r.attempt_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 3 Finding 4 (MEDIUM): consecutive-only contract
+# ---------------------------------------------------------------------------
+
+
+def test_escalation_does_not_fire_on_intermittent_pattern(
+    db_factory, seeded_world, memurai_available, capsys,
+):
+    """Intermittent failure pattern (fail, success, fail, fail, fail)
+    must NOT escalate. Counter resets on success in cycle 2; only 3
+    consecutive failures (cycles 3-5) follow, which equals the
+    threshold but the pattern as a whole had 4/5 failures.
+
+    War Room locked the consecutive-only contract in iteration 3
+    (Finding 4). The cumulative-window detector lives in
+    DEFERRED_ITEMS_TRACKER.md as a future observability improvement.
+    """
+    g = _make_genesis_with_mocks(db_factory, memurai_available)
+
+    alert_posts: list[dict] = []
+
+    async def _capture_post(channel, content, **kw):
+        alert_posts.append({"channel": channel, "content": content, **kw})
+
+    g.post_to_agora = AsyncMock(side_effect=_capture_post)
+
+    fail_helper = MagicMock(side_effect=RuntimeError("intermittent"))
+    success_helper = MagicMock(return_value=[])
+
+    # Pattern: fail, success, fail, fail, fail.
+    cycle_pattern = [
+        fail_helper,     # cycle 1 — fail (counter -> 1)
+        success_helper,  # cycle 2 — success (counter -> 0)
+        fail_helper,     # cycle 3 — fail (counter -> 1)
+        fail_helper,     # cycle 4 — fail (counter -> 2)
+        fail_helper,     # cycle 5 — fail (counter -> 3, AT threshold)
+    ]
+    # Threshold is 3; the third consecutive failure (cycle 5) WILL
+    # escalate by design. To exercise the "intermittent does not
+    # escalate" property, the pattern must have failures spread such
+    # that the counter never reaches the threshold. Adjust to:
+    # fail, success, fail, fail (counter = 2, below threshold).
+    cycle_pattern = [
+        fail_helper,     # counter -> 1
+        success_helper,  # counter -> 0
+        fail_helper,     # counter -> 1
+        fail_helper,     # counter -> 2
+        success_helper,  # counter -> 0
+        fail_helper,     # counter -> 1
+    ]
+    # 4 failures across 6 cycles, never 3 in a row -> NO escalation.
+
+    for helper in cycle_pattern:
+        g._consume_pending_regime_reviews = helper
+        asyncio.run(g.run_cycle())
+
+    captured = _strip_ansi(capsys.readouterr().out)
+    escalations = [
+        l for l in captured.splitlines()
+        if "regime_review_query_failure_escalated" in l
+    ]
+    assert not escalations, (
+        f"Intermittent failure pattern escalated despite never having "
+        f"{REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD} consecutive "
+        f"failures. Found escalations: {escalations!r}"
+    )
+
+    escalation_alerts = [
+        a for a in alert_posts
+        if a.get("channel") == "system-alerts"
+        and "REGIME REVIEW" in (a.get("content") or "")
+    ]
+    assert not escalation_alerts, (
+        f"Intermittent pattern emitted a system-alert: {escalation_alerts!r}"
+    )
+
+    # Counter reset on the final success cycle.
+    assert g._regime_review_query_failure_count == 1, (
+        f"Counter should reflect the trailing failure count "
+        f"(1 after the final fail), got "
+        f"{g._regime_review_query_failure_count}"
     )

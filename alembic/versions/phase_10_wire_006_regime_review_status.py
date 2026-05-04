@@ -47,8 +47,22 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-# 30 minutes — matches operator-halt auto-expire TTL. Centralized so the
-# backfill cutoff and any future tooling agree on the boundary.
+# BACKFILL_WINDOW_MINUTES = 30
+#
+# Derivation: matches `DEFAULT_AUTO_EXPIRE_MINUTES` in
+# `src/wire/integration/operator_halt.py`. Sev-5 events older than the
+# operator-halt TTL are presumed stale — if the underlying condition
+# is still active, the upstream producer (Wire scheduler) will re-emit
+# a fresh sev-5 event and the new digester run will queue it for
+# review. Older sev-5 events should NOT retroactively trigger regime
+# detection during the catch-up phase of first deploy; that would
+# corrupt regime detection with stale signals.
+#
+# If the operator-halt TTL changes, update this constant in lockstep
+# (the two windows must stay aligned — same operational rationale).
+# The constant is kept here in the migration rather than imported
+# from operator_halt to keep migrations self-contained and avoid
+# coupling schema to runtime modules whose contents may evolve.
 BACKFILL_WINDOW_MINUTES = 30
 
 

@@ -2,6 +2,67 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-04 - Genesis regime-review (subsystem H) — Critic iteration 3
+
+Addresses four blocking findings from iteration 2 Critic review:
+
+### Finding 1 (HIGH) — Cap correctness, no extra attempts past MAX
+`_consume_pending_regime_reviews` is now two passes:
+  - PRE-FLIP: SELECT pending rows where `attempt_count >= MAX_ATTEMPTS`,
+    flip to 'failed' with `last_error` populated. attempt_count is NOT
+    incremented during flip; the row stays at exactly MAX at the time
+    of the flip.
+  - CONSUME: SELECT pending rows where `attempt_count < MAX_ATTEMPTS`.
+    Defense-in-depth — even if a future refactor drops the pre-flip
+    pass, the SELECT itself excludes capped rows so they cannot be
+    consumed forever.
+Tests:
+  - `test_regime_review_exact_attempt_count_at_failure_cap` —
+    attempt_count == MAX (NOT MAX+1) at flip time.
+  - `test_regime_review_failed_row_excluded_from_select` — row at
+    `status='failed'` with `attempt_count=MAX` is not selected, not
+    incremented.
+
+### Finding 2 (HIGH) — Per-row last_error attribution
+Per-row try/except moved INSIDE the consume loop. New helper
+`_process_pending_regime_review_row(row)` is the test seam — a per-row
+exception stamps `last_error` on THAT row only; other rows in the
+same batch keep `last_error = NULL`. The cycle-level
+`_record_regime_review_failure` batch-stamp helper has been removed
+entirely; cycle-level failures surface only via `cycle_report["error"]`
+and the structured `genesis_cycle_error` log. The existing
+`test_regime_review_marks_failed_after_three_attempts` was updated to
+assert `last_error is None` after the cycle-level crashes (new
+contract); the cap-flip path still populates a generic
+exceeded-max-attempts message.
+Test:
+  - `test_last_error_attaches_to_offending_row_only` — batch of 5
+    rows, row #3 raises during processing, last_error stamps on
+    row #3 only; rows 1, 2, 4, 5 stay clean and get marked
+    'reviewed'.
+
+### Finding 3 (MEDIUM) — `BACKFILL_WINDOW_MINUTES` rationale
+Comment block above the constant in
+`alembic/versions/phase_10_wire_006_regime_review_status.py`
+documents the derivation: matches `DEFAULT_AUTO_EXPIRE_MINUTES = 30`
+in `src/wire/integration/operator_halt.py`. Sev-5 events older than
+the operator-halt TTL are presumed stale; if the underlying condition
+is still active the upstream producer will re-emit. If the halt TTL
+ever changes, the migration constant must move in lockstep.
+
+### Finding 4 (MEDIUM) — Consecutive-only escalation contract documented
+Comment block above `REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD`
+documents the consecutive-only contract: counter resets on first
+success, only K consecutive failures escalate. Intermittent patterns
+(fail, success, fail, fail) do NOT escalate by design.
+DEFERRED_ITEMS_TRACKER.md gets an explicit entry for the
+cumulative-window detector as a future observability improvement.
+Test:
+  - `test_escalation_does_not_fire_on_intermittent_pattern` —
+    fail/success/fail/fail/success/fail pattern → 4 failures across
+    6 cycles, never 3 in a row → no escalation log, no system-alert
+    post.
+
 ## [Hotfix] - 2026-05-04 - Genesis regime-review (subsystem H) — Critic iteration 2
 
 Addresses five blocking findings from the iteration 1 Critic review of
