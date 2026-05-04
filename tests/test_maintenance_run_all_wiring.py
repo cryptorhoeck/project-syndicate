@@ -762,3 +762,98 @@ def test_reset_daily_budgets_only_called_inside_daily_gate(
             f"was open (last_reset_date == yesterday). The cross-day "
             f"boundary is broken. Calls: {len(reset_calls)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 3 Finding 1: hourly-gate runtime invariant
+# ---------------------------------------------------------------------------
+
+
+def test_run_all_only_called_when_hourly_gate_open(db_factory, seeded_world):
+    """Runtime invariant guard for the hourly gate at
+    `genesis.py:1473-1478`. Mirrors
+    `test_reset_daily_budgets_only_called_inside_daily_gate` for the
+    inverse axis (hourly cadence rather than daily).
+
+    Every other test in this file sets
+    `g._last_hourly_maintenance = None` to bypass the gate so the
+    hourly body runs. That leaves the gate ENFORCEMENT untested:
+    a future refactor that removes the gate body — turning hourly
+    maintenance into per-cycle maintenance — would not break any of
+    those tests.
+
+    This test patches `MaintenanceService.run_all` and exercises the
+    gate explicitly:
+      - gate CLOSED (_last_hourly_maintenance = now): two
+        invocations in succession → mock called 0 times.
+      - gate OPEN  (_last_hourly_maintenance = now - 2h): one
+        invocation → mock called 1 time AND _last_hourly_maintenance
+        was updated to ~now (proves the gate-update line at 1478
+        also ran, not just the gate-check at 1473).
+    """
+    g = _make_genesis_for_maintenance_test(db_factory)
+
+    run_all_calls: list = []
+
+    async def _fake_run_all(self, redis_client=None):
+        run_all_calls.append({"redis_client": redis_client})
+        return {
+            "opportunities_expired": 0,
+            "plans_cleaned": 0,
+            "memory_pruned": 0,
+        }
+
+    with patch.object(MaintenanceService, "run_all", _fake_run_all):
+        # Gate CLOSED — last run "just now".
+        gate_closed_anchor = datetime.now(timezone.utc)
+        g._last_hourly_maintenance = gate_closed_anchor
+
+        asyncio.run(g._maybe_run_hourly_maintenance())
+        assert len(run_all_calls) == 0, (
+            f"run_all fired on invocation 1 despite the hourly gate "
+            f"being closed (_last_hourly_maintenance just set). "
+            f"Calls: {len(run_all_calls)}. The gate is leaking — "
+            f"hourly maintenance would run every Genesis cycle."
+        )
+        # The gate-update line at 1478 must NOT have rewritten the
+        # field on the closed-gate path (the early return prevents
+        # it). If it did, the gate would erroneously refresh on
+        # every invocation and effectively turn into per-cycle.
+        assert g._last_hourly_maintenance == gate_closed_anchor, (
+            f"Closed-gate invocation rewrote _last_hourly_maintenance — "
+            f"the early-return at line 1474 was bypassed. Hourly "
+            f"cadence is broken. expected={gate_closed_anchor!r} "
+            f"got={g._last_hourly_maintenance!r}"
+        )
+
+        # Second closed-gate invocation. Same anchor, same result.
+        asyncio.run(g._maybe_run_hourly_maintenance())
+        assert len(run_all_calls) == 0, (
+            f"run_all fired on invocation 2 despite the hourly gate "
+            f"still being closed. Calls: {len(run_all_calls)}"
+        )
+
+        # Gate OPEN — last run 2 hours ago.
+        gate_open_anchor = (
+            datetime.now(timezone.utc) - timedelta(hours=2)
+        )
+        g._last_hourly_maintenance = gate_open_anchor
+
+        asyncio.run(g._maybe_run_hourly_maintenance())
+        assert len(run_all_calls) == 1, (
+            f"run_all did NOT fire when the hourly gate was open "
+            f"(_last_hourly_maintenance was 2h ago). Calls: "
+            f"{len(run_all_calls)}. The gate is over-blocking — "
+            f"hourly maintenance would never run."
+        )
+        # Field MUST have been refreshed by the gate-update line so
+        # subsequent invocations see the gate closed.
+        assert g._last_hourly_maintenance > gate_open_anchor, (
+            f"Open-gate invocation did NOT refresh "
+            f"_last_hourly_maintenance. The gate-update line at "
+            f"genesis.py:1478 is missing or bypassed. "
+            f"expected: > {gate_open_anchor!r} "
+            f"got: {g._last_hourly_maintenance!r}. "
+            f"Without the field update, the gate stays open forever "
+            f"and hourly maintenance fires every Genesis cycle."
+        )

@@ -2,6 +2,59 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-04 - Maintenance run_all wiring (subsystem T-subset) — Critic iteration 3
+
+One MEDIUM blocking finding + two LOWs accepted as-is.
+
+### Finding 1 (MEDIUM) — Hourly gate runtime invariant
+Both Critics independently flagged the same gap: every existing
+test sets `_last_hourly_maintenance = None` (or equivalent) to
+bypass the gate, leaving the gate enforcement untested. A future
+refactor that removes the gate body — turning hourly maintenance
+into per-cycle maintenance — would not have broken any test.
+
+New test
+`test_run_all_only_called_when_hourly_gate_open` mirrors the
+iteration-2
+`test_reset_daily_budgets_only_called_inside_daily_gate` for the
+inverse axis (hourly cadence rather than daily). Patches
+`MaintenanceService.run_all`, drives `_maybe_run_hourly_maintenance`
+across the gate boundary:
+  - gate CLOSED (`_last_hourly_maintenance = now`): two invocations
+    → mock called 0 times, field UNCHANGED (early-return preserved
+    the timestamp).
+  - gate OPEN (`_last_hourly_maintenance = now - 2h`): one
+    invocation → mock called 1 time AND field refreshed past the
+    open-anchor (proves the gate-update line at `genesis.py:1478`
+    actually runs).
+
+The "field unchanged on closed-gate" check is the strict guard:
+if a future refactor moved the field-update above the early-return
+or turned the gate into a no-op, the timestamp would refresh on
+every call and effectively turn hourly into per-cycle. The test
+catches both removal patterns.
+
+### Finding 2 (LOW, accepted) — Constructor failure handling
+Script Critic noted `MaintenanceService.__init__` failures are
+caught as WARNING (not CRITICAL). Accept: the WARNING-only policy
+covers constructor failures too. Rationale:
+`db_session_factory` is set at GenesisAgent construction time and
+is the same factory used everywhere else in the colony. If it's
+None or otherwise broken, the colony has far bigger problems —
+that misconfig surfaces in a hundred other places before this
+maintenance call. Treating it as WARNING here is consistent with
+the bounded-impact rationale documented in
+DEFERRED_ITEMS_TRACKER.md "T-subset escalation policy".
+
+### Finding 3 (LOW, accepted) — E2E gate-open coverage
+Script Critic explicitly said "acceptable for current scope, the
+unit tests cover the gate." Acknowledge: the e2e validation
+(`scripts/validate_maintenance_run_all_e2e.py`) only exercises the
+gate-OPEN path against real Postgres; the gate-CLOSED path is
+unit-tested via the new
+`test_run_all_only_called_when_hourly_gate_open` plus
+`test_reset_daily_budgets_only_called_inside_daily_gate`.
+
 ## [Hotfix] - 2026-05-04 - Maintenance run_all wiring (subsystem T-subset) — Critic iteration 2
 
 Three blocking findings + one LOW from iteration 1 review.
