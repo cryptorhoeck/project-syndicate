@@ -27,16 +27,76 @@ class MaintenanceService:
     def __init__(self, db_session_factory: sessionmaker):
         self.db_factory = db_session_factory
 
-    async def run_all(self) -> dict:
-        """Run all maintenance tasks.
+    async def run_all(self, redis_client=None) -> dict:
+        """Run the three hourly-safe maintenance tasks.
+
+        Subsystem T-subset fix: this orchestrator deliberately does
+        NOT call `reset_daily_budgets`. The budget reset is daily-only
+        (resetting agents' `thinking_budget_used_today` more often
+        than once per day would let agents consume up to 24x their
+        intended daily budget). The daily gate lives at the call site
+        in `Genesis._maybe_run_hourly_maintenance`; budget reset is
+        invoked separately from there.
+
+        Each method is wrapped in its own try/except so a single
+        task failure does not prevent the others from running. On
+        per-task failure, log WARNING with the task name and return
+        0 in the result dict for that task.
+
+        Args:
+            redis_client: Optional Redis client, threaded through to
+                `prune_terminated_agent_memory`. If None, that task
+                is a no-op (returns 0).
 
         Returns:
-            Dict with results of each task.
+            Dict with three counts: opportunities_expired,
+            plans_cleaned, memory_pruned. Each task's count is the
+            number of rows it touched (or 0 on failure).
         """
-        results = {}
-        results["expired_opportunities"] = self.expire_stale_opportunities()
-        results["stale_plans"] = self.cleanup_stale_plans()
-        results["budget_resets"] = self.reset_daily_budgets()
+        results = {
+            "opportunities_expired": 0,
+            "plans_cleaned": 0,
+            "memory_pruned": 0,
+        }
+
+        try:
+            results["opportunities_expired"] = self.expire_stale_opportunities()
+        except Exception as exc:
+            logger.warning(
+                "maintenance_task_failed",
+                extra={
+                    "task": "expire_stale_opportunities",
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+            )
+
+        try:
+            results["plans_cleaned"] = self.cleanup_stale_plans()
+        except Exception as exc:
+            logger.warning(
+                "maintenance_task_failed",
+                extra={
+                    "task": "cleanup_stale_plans",
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+            )
+
+        try:
+            results["memory_pruned"] = self.prune_terminated_agent_memory(
+                redis_client=redis_client,
+            )
+        except Exception as exc:
+            logger.warning(
+                "maintenance_task_failed",
+                extra={
+                    "task": "prune_terminated_agent_memory",
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+            )
+
         return results
 
     def expire_stale_opportunities(self) -> int:

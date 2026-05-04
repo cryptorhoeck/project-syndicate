@@ -2,6 +2,91 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-04 - Maintenance run_all wiring (subsystem T-subset)
+
+Closes WIRING_AUDIT_REPORT.md subsystem T-subset. Three of
+`MaintenanceService`'s four methods were never invoked in production:
+`expire_stale_opportunities`, `cleanup_stale_plans`, and
+`prune_terminated_agent_memory`. The Arena's 3-day backlog of stale
+opportunities (22 rows all `status='new'` for 3 days) was direct
+evidence. Only `reset_daily_budgets` was wired, under a daily gate.
+
+### Verification stop before build (no code yet)
+The original directive's literal replacement
+(`await maint.run_all()` with no daily gate) would have triggered
+budget reset every hour, letting agents consume up to 24× their
+intended daily thinking budget. Stopped before any code change and
+surfaced the dollar-impact bug to War Room. War Room confirmed
+**Option B**: `run_all()` invokes ONLY the three hourly-safe
+methods; `reset_daily_budgets` stays at its existing daily-gated
+call site.
+
+### Changed
+- `src/agents/maintenance.py:run_all` — signature now
+  `async def run_all(self, redis_client=None) -> dict`. Calls
+  `expire_stale_opportunities`, `cleanup_stale_plans`, and
+  `prune_terminated_agent_memory` only — does NOT call
+  `reset_daily_budgets`. Each task wrapped in its own try/except
+  with WARNING log on failure (task name in structured fields).
+  Returns `{opportunities_expired, plans_cleaned, memory_pruned}`.
+- `src/genesis/genesis.py:_maybe_run_hourly_maintenance` — new
+  hourly block (placed just above the existing daily-gated budget-
+  reset block) that constructs `MaintenanceService` and awaits
+  `run_all(redis_client=self.redis_client)`. Logs structured
+  `hourly_maintenance_completed` with all three counts. The existing
+  daily-gated `reset_daily_budgets()` call is **unchanged**.
+
+### Constraints honored (Option B)
+- `run_all()` runs THREE methods, NOT four. `reset_daily_budgets`
+  is not in the `run_all` body.
+- The existing daily-gate block in `genesis.py` is preserved
+  exactly. No refactor.
+- The new run_all call site is OUTSIDE the daily gate — runs every
+  hour, but only invokes hourly-safe methods.
+- The CRITICAL test
+  `test_thinking_budget_used_today_unchanged_by_run_all_path`
+  locks in the cadence asymmetry: a future refactor that pulls
+  `reset_daily_budgets` back into `run_all` will fail the test.
+
+### Tests — 12 in `tests/test_maintenance_run_all_wiring.py`
+- 5 unit tests on `run_all`: invokes the three methods,
+  does NOT call `reset_daily_budgets`, per-task try/except,
+  per-task counts, redis_client threaded through.
+- 3 Genesis wiring tests: hourly cadence independent of daily gate;
+  daily gate fires alongside hourly without double-firing budget
+  reset; source-inspection guard that `reset_daily_budgets` is
+  called at exactly ONE site inside the daily-gate `if`.
+- 3 production-path "actually-runs" tests: insert 5 stale + 5
+  fresh opportunities → invoke production path → assert 5 stale
+  flipped to 'expired', 5 fresh stayed 'new'. Same shape for
+  plans (draft / submitted) and Redis keys.
+- 1 LOAD-BEARING budget-cadence guard:
+  `test_thinking_budget_used_today_unchanged_by_run_all_path` —
+  invokes hourly path TWICE on a same-UTC-day boundary, asserts
+  agents' `thinking_budget_used_today` unchanged.
+
+### E2E validation (`scripts/validate_maintenance_run_all_e2e.py`)
+Three phases against the dev Postgres. Output:
+```
+PHASE 1 — PRE-STATE
+  stale opportunities (synthetic, status=new): 5
+  stale plans         (synthetic, status=submitted): 3
+  terminated-agent Redis key exists:  True
+  sample agent budgets: id=0:0.0, id=1:0.4887, id=2:0.5372,
+                        id=3:0.4882, id=4:0.4857
+
+PHASE 2 — INVOKE genesis._maybe_run_hourly_maintenance()
+  hourly_maintenance_completed memory_pruned=1
+                              opportunities_expired=5 plans_cleaned=3
+
+PHASE 3 — POST-STATE + DELTAS
+  OK   all 5 synthetic stale opportunities flipped to 'expired'
+  OK   all 3 synthetic stale plans flipped to 'draft'
+  OK   terminated-agent Redis key was pruned
+  OK   thinking_budget_used_today UNCHANGED (Option B contract)
+  Overall: GREEN — subsystem T-subset wired end-to-end
+```
+
 ## [Hotfix] - 2026-05-04 - Eval engine async bridge (subsystem P) — Critic iteration 3
 
 One MEDIUM blocking finding from iteration 2 review.
