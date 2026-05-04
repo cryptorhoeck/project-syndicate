@@ -42,6 +42,11 @@ from src.wire.models import WireEvent
 # a backlog this large means the colony was offline for hours. Cap so
 # one cycle never monopolises Genesis on queue catch-up. Excess rows
 # stay 'pending' for the next cycle.
+#
+# Derivation: 50 rows × 5-min Genesis cycle = 600 events/hour catch-up
+# throughput, which is ~10x the realistic sev-5 event rate (typically
+# <1/hour during normal operation). Sufficient for catch-up after a
+# multi-day colony outage without flooding any single cycle.
 REGIME_REVIEW_BATCH_LIMIT = 50
 
 # Per-row retry cap (Critic iteration 2 Finding 1, poison-pill guard).
@@ -49,6 +54,12 @@ REGIME_REVIEW_BATCH_LIMIT = 50
 # end-of-cycle mark-reviewed gets flipped to 'failed' instead of being
 # re-consumed. Same anti-DMS-self-defeat semantics as the warden
 # safety_state_unknown latch.
+#
+# Derivation: a persistently-failing row is marked 'failed' after 3
+# cycles = 15 minutes of retry. Long enough to absorb transient DB
+# issues; short enough that a true poison-pill row doesn't block
+# diagnostic attention indefinitely. Tunable via config if operational
+# experience requires adjustment.
 REGIME_REVIEW_MAX_ATTEMPTS = 3
 
 # Cycle-level escalation cap for consumption-query failures (Critic
@@ -138,6 +149,14 @@ class GenesisAgent(BaseAgent):
         # which counts how many cycles a specific row has been consumed
         # without successful mark-reviewed.
         self._regime_review_query_failure_count: int = 0
+
+        # Phase tag set by the consume helper before raising, read by
+        # step 2c's escalation log so on-call can tell whether the
+        # failure was on the read path (SELECT) or the write path
+        # (commit). Set to "commit" by the commit's except branch;
+        # left at None for SELECT failures (step 2c interprets None
+        # as "select"). See `_consume_pending_regime_reviews`.
+        self._last_query_failure_phase: Optional[str] = None
 
         # Dead Man's Switch meta-monitor. Genesis is the canonical "always
         # running" process and so is the natural host for the failsafe-of-
@@ -276,6 +295,7 @@ class GenesisAgent(BaseAgent):
             #     cycles, escalate to CRITICAL + system-alert
             #     (Finding 5). Reset on first success.
             try:
+                self._last_query_failure_phase = None
                 consumed_regime_review_ids = self._consume_pending_regime_reviews()
                 if consumed_regime_review_ids:
                     cycle_report["regime_reviews_consumed"] = len(
@@ -287,11 +307,18 @@ class GenesisAgent(BaseAgent):
                 consumed_regime_review_ids = []
                 self._regime_review_query_failure_count += 1
                 threshold = REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD
+                # If the helper reached the commit before raising, the
+                # commit's except branch will have tagged the phase
+                # "commit". Otherwise the failure was upstream (SELECT
+                # or row processing that escaped the per-row except),
+                # tagged "select" for short-hand.
+                failure_phase = self._last_query_failure_phase or "select"
                 if self._regime_review_query_failure_count >= threshold:
                     self.log.critical(
                         "regime_review_query_failure_escalated",
                         consecutive_failures=self._regime_review_query_failure_count,
                         threshold=threshold,
+                        failure_phase=failure_phase,
                         error=str(exc),
                         error_type=type(exc).__name__,
                     )
@@ -301,7 +328,7 @@ class GenesisAgent(BaseAgent):
                             (
                                 f"[REGIME REVIEW] Consumption query has failed "
                                 f"{self._regime_review_query_failure_count} consecutive cycles "
-                                f"(threshold {threshold}). "
+                                f"(threshold {threshold}, phase {failure_phase}). "
                                 f"Last error: {type(exc).__name__}: {exc}"
                             ),
                             message_type=MessageType.ALERT,
@@ -309,6 +336,7 @@ class GenesisAgent(BaseAgent):
                                 "event_class": "regime_review.query_failure_escalated",
                                 "consecutive_failures": self._regime_review_query_failure_count,
                                 "threshold": threshold,
+                                "failure_phase": failure_phase,
                                 "error": str(exc),
                                 "error_type": type(exc).__name__,
                             },
@@ -595,6 +623,8 @@ class GenesisAgent(BaseAgent):
 
             event_ids: list[int] = []
             for row in rows:
+                # Increment attempt_count before processing, so retry cap fires even if helper raises during attribute access
+                row.attempt_count = row.attempt_count + 1
                 try:
                     # Per-row try/except (Critic iteration 3 Finding 2).
                     # last_error attribution is per-row, never batched.
@@ -602,13 +632,13 @@ class GenesisAgent(BaseAgent):
                     event_ids.append(row.id)
                 except Exception as exc:
                     # Stamp last_error on THIS row only. The other rows
-                    # in the batch keep their last_error untouched.
-                    # The increment to attempt_count may or may not have
-                    # landed depending on where the exception was raised
-                    # inside _process_pending_regime_review_row; either
-                    # way, the row stays 'pending' (NOT in event_ids,
-                    # so end-of-cycle won't mark it reviewed) and will
-                    # be re-attempted next cycle until the cap fires.
+                    # in the batch keep their last_error untouched. The
+                    # increment above already landed (Critic iteration 4
+                    # follow-up 1), so the cap fires deterministically
+                    # even on attribute-access failures inside the
+                    # helper. Row stays 'pending' (NOT in event_ids,
+                    # so end-of-cycle won't mark reviewed) and will be
+                    # re-attempted next cycle until the cap fires.
                     row.last_error = f"{type(exc).__name__}: {exc}"
                     self.log.exception(
                         "regime_review_consume_row_failed",
@@ -635,6 +665,10 @@ class GenesisAgent(BaseAgent):
             try:
                 session.commit()
             except Exception as exc:
+                # Tag the failure phase so step 2c's escalation log
+                # can distinguish read-path (SELECT) from write-path
+                # (commit) failures (Critic iteration 4 follow-up 3).
+                self._last_query_failure_phase = "commit"
                 self.log.critical(
                     "regime_review_consumption_commit_failed",
                     error=str(exc),
@@ -646,19 +680,18 @@ class GenesisAgent(BaseAgent):
         return event_ids
 
     def _process_pending_regime_review_row(self, row) -> None:
-        """Per-row consumption side-effects.
+        """Per-row consumption side-effects (logging only).
 
-        Side effects on the row:
-          - Increments `attempt_count` by 1 (BEFORE any failure-prone
-            work, so even a crash inside this method records the
-            attempt).
-          - Emits the `genesis_consuming_regime_review` structured log.
+        Critic iteration 4 follow-up 1: `attempt_count` is now
+        incremented by the caller (`_consume_pending_regime_reviews`)
+        BEFORE this helper is invoked. That guarantees the retry cap
+        fires deterministically even if attribute access on a corrupt
+        ORM object raises inside this method.
 
-        Test seam: tests inject failures by overriding this method
-        on a specific instance. Production callers should use the
-        method as-is.
+        This method now only emits the
+        `genesis_consuming_regime_review` structured log. It still
+        serves as the test seam for injecting per-row failures.
         """
-        row.attempt_count = row.attempt_count + 1
         self.log.info(
             "genesis_consuming_regime_review",
             event_id=row.id,

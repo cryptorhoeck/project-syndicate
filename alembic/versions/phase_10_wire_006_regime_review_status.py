@@ -66,6 +66,35 @@ depends_on: Union[str, Sequence[str], None] = None
 BACKFILL_WINDOW_MINUTES = 30
 
 
+def backfill_pending_status(bind, cutoff) -> None:
+    """Idempotent backfill UPDATE.
+
+    Called from `upgrade()` and from
+    `tests/test_genesis_regime_review_consumption.py::
+    test_backfill_migration_idempotent` so the production code path
+    and the test exercise the SAME SQL — no reimplementation drift
+    (Critic iteration 4 follow-up 2).
+
+    IDEMPOTENT (Critic iteration 3 Finding 1): the WHERE clause
+    restricts to rows still at the server-default `'skipped'`. Re-runs
+    of `alembic upgrade head` (a common deploy-script idempotency
+    pattern) will not re-flip rows that the consumer has already
+    processed to 'reviewed' / 'failed' / consumed-and-still-'pending'.
+    This also bounds time-skew hazards — a CI-time cutoff applied via
+    a backup restore won't retroactively re-queue rows that have
+    since been classified by Genesis.
+    """
+    bind.execute(
+        sa.text(
+            "UPDATE wire_events SET regime_review_status = 'pending' "
+            "WHERE severity = 5 AND duplicate_of IS NULL "
+            "AND occurred_at >= :cutoff "
+            "AND regime_review_status = 'skipped'"
+        ),
+        {"cutoff": cutoff},
+    )
+
+
 def upgrade() -> None:
     bind = op.get_bind()
 
@@ -96,28 +125,11 @@ def upgrade() -> None:
         sa.Column("last_error", sa.Text(), nullable=True),
     )
 
-    # 3. Backfill: severity-5 rows in the last 30 minutes -> 'pending'.
-    # Older rows stay 'skipped' (server_default). Genuinely active
-    # conditions will re-publish; historical events stay historical.
-    #
-    # IDEMPOTENT (Critic iteration 3 Finding 1): the WHERE clause
-    # restricts to rows still at the server-default `'skipped'`. Re-runs
-    # of `alembic upgrade head` (a common deploy-script idempotency
-    # pattern) will not re-flip rows that the consumer has already
-    # processed to 'reviewed' / 'failed' / consumed-and-still-'pending'.
-    # This also bounds time-skew hazards — a CI-time cutoff applied via
-    # a backup restore won't retroactively re-queue rows that have
-    # since been classified by Genesis.
+    # 3. Backfill via the shared helper so tests exercise the exact
+    # same SQL the migration runs (Critic iteration 4 follow-up 2 —
+    # tests must NOT reimplement the SQL).
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=BACKFILL_WINDOW_MINUTES)
-    bind.execute(
-        sa.text(
-            "UPDATE wire_events SET regime_review_status = 'pending' "
-            "WHERE severity = 5 AND duplicate_of IS NULL "
-            "AND occurred_at >= :cutoff "
-            "AND regime_review_status = 'skipped'"
-        ),
-        {"cutoff": cutoff},
-    )
+    backfill_pending_status(bind, cutoff)
 
     # 4. Index for the consumption query
     # (regime_review_status='pending' ORDER BY severity DESC, occurred_at).

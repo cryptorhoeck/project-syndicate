@@ -1167,11 +1167,17 @@ def test_backfill_migration_idempotent(db_factory):
     = 'skipped'` so a second run cannot re-flip rows that have since
     been classified by the consumer (e.g. consumed-and-reviewed,
     failed, or in-flight pending). Pre-populates rows in varied states,
-    runs the backfill SQL twice, asserts the second run is a no-op."""
+    invokes the migration's `backfill_pending_status()` helper twice,
+    asserts the second run is a no-op.
+
+    Critic iteration 4 follow-up 2: the test imports the shared helper
+    `backfill_pending_status` directly from the migration module — the
+    same helper `upgrade()` invokes — so the production code path and
+    the test exercise IDENTICAL SQL. No Python reimplementation.
+    """
     from datetime import timedelta
     import importlib.util
     import os as _os
-    from sqlalchemy import text as sql_text
 
     _project_root = _os.path.dirname(
         _os.path.dirname(_os.path.abspath(__file__))
@@ -1216,15 +1222,13 @@ def test_backfill_migration_idempotent(db_factory):
             session.add(evt)
         session.commit()
 
-        # FIRST RUN of the backfill SQL.
+        # FIRST RUN — invoke the migration's shared helper directly
+        # against this session's connection. Production `upgrade()`
+        # passes `op.get_bind()` (a Connection); we pass
+        # `session.connection()` for shape-equivalent semantics on
+        # SQLAlchemy 2.0 (where `Engine.execute` was removed).
         cutoff = now - timedelta(minutes=_mig.BACKFILL_WINDOW_MINUTES)
-        backfill_sql = (
-            "UPDATE wire_events SET regime_review_status = 'pending' "
-            "WHERE severity = 5 AND duplicate_of IS NULL "
-            "AND occurred_at >= :cutoff "
-            "AND regime_review_status = 'skipped'"
-        )
-        session.execute(sql_text(backfill_sql), {"cutoff": cutoff})
+        _mig.backfill_pending_status(session.connection(), cutoff)
         session.commit()
 
         first_state = {
@@ -1232,14 +1236,14 @@ def test_backfill_migration_idempotent(db_factory):
             for r in session.execute(select(WireEvent)).scalars().all()
         }
 
-        # SECOND RUN of the same backfill SQL. cutoff is recomputed
-        # because in production a re-run of `alembic upgrade head` is
-        # at a fresh wall-clock; the WHERE-by-status filter is what
-        # makes the second run a no-op even though cutoff drifted.
+        # SECOND RUN of the same helper, with cutoff recomputed (in
+        # production a re-run of `alembic upgrade head` runs at a
+        # fresh wall-clock; the WHERE-by-status filter is what makes
+        # the second run a no-op even though cutoff drifted).
         second_cutoff = datetime.now(timezone.utc) - timedelta(
             minutes=_mig.BACKFILL_WINDOW_MINUTES
         )
-        session.execute(sql_text(backfill_sql), {"cutoff": second_cutoff})
+        _mig.backfill_pending_status(session.connection(), second_cutoff)
         session.commit()
 
         second_state = {
