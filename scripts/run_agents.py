@@ -41,6 +41,7 @@ from src.risk.warden import Warden
 from src.trading.execution_service import get_trading_service
 from src.trading.fee_schedule import FeeSchedule
 from src.trading.slippage_model import SlippageModel
+from src.wire.integration.operator_halt import list_active as wire_list_active_halts
 
 # Logging
 structlog.configure(
@@ -86,14 +87,19 @@ def build_warden(db_factory, agora_service=None):
     )
 
 
-def build_trading_service(db_factory, redis_client, agora_service=None, warden=None):
+def build_trading_service(
+    db_factory, redis_client, agora_service=None, warden=None, halt_checker=None,
+):
     """Construct the colony's TradeExecutionService for the configured mode.
 
-    `warden` is now a required collaborator for production paths — pass the
-    Warden instance from `build_warden` so PaperTradingService.evaluate_trade
-    actually fires. The factory still accepts None for tests that
-    deliberately construct without a Warden, but `run_agents.py` enforces
-    non-None at runtime via the fail-fast check below.
+    `warden` is required in production paths so PaperTradingService.warden
+    is non-None and Warden's evaluate_trade actually fires.
+
+    `halt_checker` is the Wire severity-5 consumer — typically
+    `src.wire.integration.operator_halt.list_active`. Without it the
+    Operator would silently ignore active halts (subsystem I from the
+    wiring audit). Production runners enforce non-None via fail-fast in
+    main(); the factory still accepts None to keep test fixtures simple.
     """
     price_cache = PriceCache(redis_client=redis_client)
     return get_trading_service(
@@ -104,6 +110,7 @@ def build_trading_service(db_factory, redis_client, agora_service=None, warden=N
         warden=warden,
         redis_client=redis_client,
         agora_service=agora_service,
+        halt_checker=halt_checker,
     )
 
 
@@ -156,14 +163,16 @@ async def main() -> None:
         sys.exit(2)
     log.info("warden_wired", impl=type(warden).__name__)
 
-    # Trading service. This is the wiring that closes the gap exposed in
-    # ARENA_TRADING_SERVICE_DIAGNOSIS.md. The factory returns the right
-    # concrete TradeExecutionService for the configured mode (paper today).
-    # If this raises or returns None, we surface and abort: every Operator
-    # trade would otherwise fall into the [NO SERVICE] fallback again.
-    # Warden is now passed in so PaperTradingService.evaluate_trade fires.
+    # Trading service. Closes ARENA_TRADING_SERVICE_DIAGNOSIS.md (Phase 3C
+    # was never wired) + WIRING_AUDIT_REPORT.md subsystems N (Warden) and
+    # I (Operator halt consumer). The factory returns the right concrete
+    # TradeExecutionService for the configured mode (paper today). All
+    # collaborators are wired here; main() fails fast on any None.
     trading_service = build_trading_service(
-        db_factory, redis_client, agora_service=agora, warden=warden,
+        db_factory, redis_client,
+        agora_service=agora,
+        warden=warden,
+        halt_checker=wire_list_active_halts,
     )
     if trading_service is None:
         log.error("trading_service_unavailable",
@@ -174,10 +183,16 @@ async def main() -> None:
         log.error("trading_service_warden_missing",
                   message="Refusing to start agents — TradeExecutionService was built without a Warden.")
         sys.exit(2)
+    if getattr(trading_service, "halt_checker", None) is None:
+        log.error("trading_service_halt_checker_missing",
+                  message="Refusing to start agents — TradeExecutionService was built without a halt_checker. "
+                          "Wire severity-5 halts would be silently ignored.")
+        sys.exit(2)
     log.info("trading_service_wired",
              impl=type(trading_service).__name__,
              trading_mode=config.trading_mode,
-             warden=type(getattr(trading_service, "warden", None)).__name__)
+             warden=type(getattr(trading_service, "warden", None)).__name__,
+             halt_checker=getattr(getattr(trading_service, "halt_checker", None), "__name__", "?"))
 
     log.info("agent_runner_started", poll_interval=POLL_INTERVAL)
 

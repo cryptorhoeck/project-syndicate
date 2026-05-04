@@ -145,6 +145,7 @@ class PaperTradingService(TradeExecutionService):
         warden=None,
         redis_client=None,
         agora_service=None,
+        halt_checker=None,
     ):
         self.db_factory = db_session_factory
         self.price_cache = price_cache
@@ -154,6 +155,13 @@ class PaperTradingService(TradeExecutionService):
         self.redis = redis_client
         self.agora = agora_service
         self.exchange = config.default_exchange
+        # Wire severity-5 halt consumer. Production wiring guarantees a
+        # callable here (run_agents.py passes
+        # `src.wire.integration.operator_halt.list_active`). Tests may
+        # construct without one to exercise the defense-in-depth fallback,
+        # which logs CRITICAL and rejects rather than silent-passing.
+        # See WIRING_AUDIT_REPORT.md subsystem I.
+        self.halt_checker = halt_checker
 
     async def execute_market_order(
         self, agent_id: int, symbol: str, side: str, size_usd: float,
@@ -167,6 +175,21 @@ class PaperTradingService(TradeExecutionService):
             agent = session.get(Agent, agent_id)
             if not agent:
                 return OrderResult(success=False, error=f"Agent {agent_id} not found")
+
+            # 0. Operator halt check (Wire severity-5 hooks).
+            # WIRING_AUDIT_REPORT.md subsystem I: severity-5 events
+            # (exchange_outage / withdrawal_halt / chain_halt) publish to
+            # an in-memory _ACTIVE list; nothing read it before this fix.
+            # Halt check runs BEFORE Warden because it's finer-grained
+            # (per-coin-per-exchange) and an active halt makes Warden's
+            # subsequent state irrelevant for the affected scope.
+            halt_reject = await self._check_operator_halt(
+                session=session, agent=agent, symbol=symbol, side=side,
+                size_usd=size_usd, order_type="market",
+                source_plan_id=source_plan_id, source_cycle_id=source_cycle_id,
+            )
+            if halt_reject is not None:
+                return halt_reject
 
             # 1. Check Warden — production wiring guarantees self.warden is
             # not None (build_trading_service refuses to construct without
@@ -361,6 +384,17 @@ class PaperTradingService(TradeExecutionService):
             agent = session.get(Agent, agent_id)
             if not agent:
                 return OrderResult(success=False, error=f"Agent {agent_id} not found")
+
+            # Operator halt check — see execute_market_order step 0 for
+            # rationale. Limit-order initiation is the second trade-init
+            # point per WIRING_AUDIT_REPORT.md subsystem I.
+            halt_reject = await self._check_operator_halt(
+                session=session, agent=agent, symbol=symbol, side=side,
+                size_usd=size_usd, order_type="limit",
+                source_plan_id=source_plan_id, source_cycle_id=source_cycle_id,
+            )
+            if halt_reject is not None:
+                return halt_reject
 
             # Check Warden — see execute_market_order for the defense-in-depth
             # rationale. Limit-order initiation is also a trade-initiation
@@ -631,6 +665,179 @@ class PaperTradingService(TradeExecutionService):
                 position_count=agent.position_count,
             )
 
+    async def _check_operator_halt(
+        self, *, session, agent, symbol: str, side: str, size_usd: float,
+        order_type: str, source_plan_id: int | None, source_cycle_id: int | None,
+    ):
+        """Consume the Wire severity-5 halt list (WIRING_AUDIT_REPORT.md
+        subsystem I). Returns None if no halt blocks this trade, OR a
+        rejected OrderResult if a halt is active.
+
+        Symbol parsing: ccxt-style 'BTC/USDT' → coin = 'BTC'. The halt
+        registry is per-coin-per-exchange; we query with both the trade's
+        coin AND the configured exchange (`self.exchange`), so a Kraken-
+        scoped halt does not block trades on a different exchange.
+        """
+        # Defense-in-depth: production wiring guarantees a halt_checker.
+        # If a future bug lands here with None, REJECT — not soft-pass.
+        if self.halt_checker is None:
+            await self._raise_halt_checker_missing_alert(
+                agent_id=int(agent.id), symbol=symbol, side=side,
+                size_usd=size_usd, order_type=order_type,
+            )
+            return self._create_rejected_order(
+                session, agent, symbol, side, size_usd, order_type,
+                "Operator halt-checker missing — trade rejected (defense in depth)",
+                source_plan_id, source_cycle_id,
+            )
+
+        # Parse the trade coin from the symbol (e.g., 'BTC/USDT' -> 'BTC').
+        # Falls back to the full symbol if the slash isn't present.
+        trade_coin = symbol.split("/", 1)[0] if "/" in symbol else symbol
+
+        try:
+            active = self.halt_checker(coin=trade_coin, exchange=self.exchange)
+        except TypeError:
+            # Older signature without `exchange` kwarg — tolerate but log.
+            try:
+                active = self.halt_checker(coin=trade_coin)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).critical(
+                    "trade_halt_checker_failed",
+                    extra={"agent_id": int(agent.id), "symbol": symbol, "error": str(exc)},
+                )
+                return self._create_rejected_order(
+                    session, agent, symbol, side, size_usd, order_type,
+                    f"Halt checker raised: {exc} — trade rejected (fail-closed)",
+                    source_plan_id, source_cycle_id,
+                )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).critical(
+                "trade_halt_checker_failed",
+                extra={"agent_id": int(agent.id), "symbol": symbol, "error": str(exc)},
+            )
+            return self._create_rejected_order(
+                session, agent, symbol, side, size_usd, order_type,
+                f"Halt checker raised: {exc} — trade rejected (fail-closed)",
+                source_plan_id, source_cycle_id,
+            )
+
+        if not active:
+            return None
+
+        # Active halt(s) match this trade. Reject with details from the
+        # most-specific (newest) signal. Loud log + Agora system-alerts.
+        signal = active[-1]
+        reason = (
+            f"Operator halt active: trigger_event_id={signal.trigger_event_id} "
+            f"event_type={signal.event_type} coin={signal.coin or '*'} "
+            f"exchange={signal.exchange or '*'} "
+            f"issued={signal.issued_at.isoformat(timespec='seconds')} "
+            f"expires={signal.expires_at.isoformat(timespec='seconds')}"
+        )
+        await self._raise_halt_block_alert(
+            agent_id=int(agent.id), symbol=symbol, side=side,
+            size_usd=size_usd, order_type=order_type, signal=signal,
+        )
+        return self._create_rejected_order(
+            session, agent, symbol, side, size_usd, order_type,
+            reason, source_plan_id, source_cycle_id,
+        )
+
+    async def _raise_halt_block_alert(
+        self, *, agent_id: int, symbol: str, side: str,
+        size_usd: float, order_type: str, signal,
+    ) -> None:
+        """Log CRITICAL + post to system-alerts when a trade is blocked by
+        an active halt. Per the directive, every halt-blocked trade emits
+        an alert; if this proves too noisy under a long outage, dedup is a
+        downstream concern (deferred), not this hotfix's responsibility.
+        """
+        import logging
+        log = logging.getLogger(__name__)
+        log.critical(
+            "trade_blocked_by_operator_halt",
+            extra={
+                "agent_id": agent_id, "symbol": symbol, "side": side,
+                "size_usd": size_usd, "order_type": order_type,
+                "trigger_event_id": signal.trigger_event_id,
+                "halt_event_type": signal.event_type,
+                "halt_coin": signal.coin, "halt_exchange": signal.exchange,
+            },
+        )
+        if self.agora is None:
+            return
+        try:
+            from src.agora.schemas import AgoraMessage, MessageType
+            await self.agora.post_message(AgoraMessage(
+                agent_id=int(agent_id),
+                agent_name="PaperTradingService",
+                channel="system-alerts",
+                content=(
+                    f"[HALT BLOCK] Operator trade blocked. "
+                    f"agent_id={agent_id} {side} {symbol} {order_type} ${size_usd:.2f}. "
+                    f"Halt: trigger_event_id={signal.trigger_event_id} "
+                    f"event_type={signal.event_type} coin={signal.coin or '*'} "
+                    f"exchange={signal.exchange or '*'}."
+                ),
+                message_type=MessageType.ALERT,
+                importance=2,
+                metadata={
+                    "event_class": "operator_halt.trade_blocked",
+                    "agent_id": agent_id, "symbol": symbol, "side": side,
+                    "size_usd": size_usd, "order_type": order_type,
+                    "trigger_event_id": signal.trigger_event_id,
+                    "halt_event_type": signal.event_type,
+                    "halt_coin": signal.coin, "halt_exchange": signal.exchange,
+                },
+            ))
+        except Exception:
+            log.exception("halt_block_agora_post_failed")
+
+    async def _raise_halt_checker_missing_alert(
+        self, *, agent_id: int, symbol: str, side: str,
+        size_usd: float, order_type: str,
+    ) -> None:
+        """Defense-in-depth alert when self.halt_checker is None at trade
+        time. Production wiring guarantees this can't happen
+        (build_trading_service threads `list_active`); this branch
+        screams loud rather than silent-passing the trade."""
+        import logging
+        log = logging.getLogger(__name__)
+        log.critical(
+            "trade_halt_checker_missing",
+            extra={
+                "agent_id": agent_id, "symbol": symbol, "side": side,
+                "size_usd": size_usd, "order_type": order_type,
+            },
+        )
+        if self.agora is None:
+            return
+        try:
+            from src.agora.schemas import AgoraMessage, MessageType
+            await self.agora.post_message(AgoraMessage(
+                agent_id=int(agent_id),
+                agent_name="PaperTradingService",
+                channel="system-alerts",
+                content=(
+                    f"[HALT-CHECKER MISSING] Operator trade rejected — "
+                    f"halt_checker was None at trade-initiation point. "
+                    f"agent_id={agent_id} symbol={symbol} {side} {order_type} "
+                    f"${size_usd:.2f}. This indicates a runtime wiring break."
+                ),
+                message_type=MessageType.ALERT,
+                importance=2,
+                metadata={
+                    "event_class": "operator_halt.checker_missing",
+                    "agent_id": agent_id, "symbol": symbol, "side": side,
+                    "size_usd": size_usd, "order_type": order_type,
+                },
+            ))
+        except Exception:
+            log.exception("halt_checker_missing_agora_post_failed")
+
     async def _raise_warden_missing_alert(
         self, *, agent_id: int, symbol: str, side: str,
         size_usd: float, order_type: str,
@@ -718,11 +925,17 @@ def get_trading_service(
     warden=None,
     redis_client=None,
     agora_service=None,
+    halt_checker=None,
 ) -> TradeExecutionService:
     """Factory function returning the appropriate trading service.
 
     Returns PaperTradingService when TRADING_MODE=paper (default),
     or raises NotImplementedError for live mode (Phase 4+).
+
+    `halt_checker` is the Wire severity-5 consumer (typically
+    `src.wire.integration.operator_halt.list_active`). Production wiring
+    in `scripts/run_agents.py:build_trading_service` passes it; tests
+    that don't may exercise the defense-in-depth fallback.
     """
     if config.trading_mode == "paper":
         return PaperTradingService(
@@ -733,6 +946,7 @@ def get_trading_service(
             warden=warden,
             redis_client=redis_client,
             agora_service=agora_service,
+            halt_checker=halt_checker,
         )
     else:
         raise NotImplementedError(

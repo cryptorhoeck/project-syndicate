@@ -104,7 +104,18 @@ def approving_warden():
 
 
 @pytest.fixture
-def service(db_factory, mock_price_cache, mock_slippage, mock_redis, approving_warden):
+def empty_halt_checker():
+    """No-active-halts halt_checker. Required after hotfix
+    `operator-halt-consumer-wiring`: PaperTradingService now hard-rejects
+    when `self.halt_checker is None`. Tests exercising happy-path
+    execution must inject one; the soft-pass branch is gone.
+    """
+    return lambda **kw: []
+
+
+@pytest.fixture
+def service(db_factory, mock_price_cache, mock_slippage, mock_redis,
+            approving_warden, empty_halt_checker):
     return PaperTradingService(
         db_session_factory=db_factory,
         price_cache=mock_price_cache,
@@ -112,6 +123,7 @@ def service(db_factory, mock_price_cache, mock_slippage, mock_redis, approving_w
         fee_schedule=FeeSchedule(),
         warden=approving_warden,
         redis_client=mock_redis,
+        halt_checker=empty_halt_checker,
     )
 
 
@@ -242,6 +254,7 @@ async def test_warden_rejection(db_factory, mock_price_cache, mock_slippage, moc
         fee_schedule=FeeSchedule(),
         warden=mock_warden,
         redis_client=mock_redis,
+        halt_checker=lambda **kw: [],  # no active halts (Warden is the gate under test)
     )
     result = await svc.execute_market_order(
         agent_id=1, symbol="BTC/USDT", side="buy", size_usd=10.0,

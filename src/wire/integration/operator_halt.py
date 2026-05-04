@@ -43,6 +43,21 @@ class OperatorHaltSignal:
     """One operator halt request, derived from a severity-5 event.
 
     The signal is purposefully immutable; the registry decides when to clear.
+
+    Scope semantics (per-coin-per-exchange, per Phase 10 kickoff):
+      - `coin = None` ⇒ applies to ALL coins (rare; e.g., colony-wide halt)
+      - `coin = "BTC"` ⇒ applies only to BTC trades
+      - `exchange = None` ⇒ applies to ALL exchanges (default; safest)
+      - `exchange = "kraken"` ⇒ applies only to Kraken trades
+
+    Today's Wire source classification doesn't populate `exchange` at the
+    digester layer (the kickoff didn't carry exchange through the event
+    schema). Producers leave exchange=None, which means "block this coin
+    on every exchange" — the safe-by-default reading. When source-side
+    classification distinguishes "Kraken withdrawal_halt" from "Solana
+    chain_halt", producers can populate `exchange` and the consumer will
+    automatically narrow scope. See DEFERRED_ITEMS_TRACKER.md "Wire
+    source-side exchange classification" entry added with this hotfix.
     """
 
     trigger_event_id: int
@@ -52,6 +67,7 @@ class OperatorHaltSignal:
     issued_at: datetime
     expires_at: datetime
     summary: str
+    exchange: Optional[str] = None
 
     def is_active(self, *, now: Optional[datetime] = None) -> bool:
         now = now or datetime.now(timezone.utc)
@@ -82,12 +98,18 @@ def publish_halt_for_event(
     event_type: str,
     severity: int,
     summary: str,
+    exchange: Optional[str] = None,
     auto_expire_minutes: int = DEFAULT_AUTO_EXPIRE_MINUTES,
     now: Optional[datetime] = None,
 ) -> Optional[OperatorHaltSignal]:
     """Issue a halt signal if this event qualifies. Returns the signal or None.
 
     Qualifies if severity == 5 AND event_type ∈ OPERATOR_HALT_EVENT_TYPES.
+
+    `exchange` is optional; producers that don't yet populate it leave
+    None, which means "halt this coin on every exchange". Producers that
+    do populate it (e.g., a future Kraken-specific source upgrade) get
+    narrower per-coin-per-exchange scope automatically.
     """
     if severity != SEVERITY_CRITICAL:
         return None
@@ -104,6 +126,7 @@ def publish_halt_for_event(
         issued_at=issued,
         expires_at=issued + timedelta(minutes=int(auto_expire_minutes)),
         summary=summary,
+        exchange=exchange,
     )
     _ACTIVE.append(signal)
     logger.warning(
@@ -111,6 +134,7 @@ def publish_halt_for_event(
         extra={
             "trigger_event_id": signal.trigger_event_id,
             "coin": signal.coin,
+            "exchange": signal.exchange,
             "event_type": signal.event_type,
             "expires_at": signal.expires_at.isoformat(),
         },
@@ -122,12 +146,29 @@ def list_active(
     *,
     now: Optional[datetime] = None,
     coin: Optional[str] = None,
+    exchange: Optional[str] = None,
 ) -> list[OperatorHaltSignal]:
-    """Return active signals, optionally filtered by coin."""
+    """Return active signals matching the (coin, exchange) query.
+
+    Match rules (per-coin-per-exchange):
+      - signal.coin == None matches any coin query (covers colony-wide halts)
+      - signal.coin == query.coin matches
+      - signal.exchange == None matches any exchange query (broad halt)
+      - signal.exchange == query.exchange matches
+      - All other combinations exclude
+
+    Calling with `coin=None` AND `exchange=None` returns every active
+    signal (the audit / dashboard view).
+    """
     now = now or datetime.now(timezone.utc)
     active = [s for s in _ACTIVE if s.is_active(now=now)]
     if coin is not None:
         active = [s for s in active if (s.coin is None) or (s.coin == coin)]
+    if exchange is not None:
+        active = [
+            s for s in active
+            if (s.exchange is None) or (s.exchange == exchange)
+        ]
     return active
 
 
