@@ -99,12 +99,22 @@ def upgrade() -> None:
     # 3. Backfill: severity-5 rows in the last 30 minutes -> 'pending'.
     # Older rows stay 'skipped' (server_default). Genuinely active
     # conditions will re-publish; historical events stay historical.
+    #
+    # IDEMPOTENT (Critic iteration 3 Finding 1): the WHERE clause
+    # restricts to rows still at the server-default `'skipped'`. Re-runs
+    # of `alembic upgrade head` (a common deploy-script idempotency
+    # pattern) will not re-flip rows that the consumer has already
+    # processed to 'reviewed' / 'failed' / consumed-and-still-'pending'.
+    # This also bounds time-skew hazards — a CI-time cutoff applied via
+    # a backup restore won't retroactively re-queue rows that have
+    # since been classified by Genesis.
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=BACKFILL_WINDOW_MINUTES)
     bind.execute(
         sa.text(
             "UPDATE wire_events SET regime_review_status = 'pending' "
             "WHERE severity = 5 AND duplicate_of IS NULL "
-            "AND occurred_at >= :cutoff"
+            "AND occurred_at >= :cutoff "
+            "AND regime_review_status = 'skipped'"
         ),
         {"cutoff": cutoff},
     )

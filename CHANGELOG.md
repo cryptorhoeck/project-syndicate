@@ -2,6 +2,66 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-04 - Genesis regime-review (subsystem H) — Critic iteration 4
+
+Addresses two HIGH/MEDIUM blocking findings from iteration 3 Critic
+review (Script Critic). Iteration 3 chat-Critic GREEN-LIT; the new
+findings are about code introduced in iteration 3 itself.
+
+### Finding 1 (HIGH) — Migration backfill idempotency
+The backfill UPDATE in `phase_10_wire_006_regime_review_status.py`
+now restricts to `regime_review_status = 'skipped'`. A re-run of
+`alembic upgrade head` (a common deploy-script idempotency pattern)
+or a backup-restore that re-applies the migration after the consumer
+has begun classifying rows cannot re-flip rows. Comment block above
+the UPDATE documents the idempotency contract and the cutoff
+re-computation hazard the WHERE-by-status filter neutralises.
+Test:
+  - `test_backfill_migration_idempotent` — pre-populates 5 rows in
+    varied states (recent-skipped, old-skipped, already-reviewed,
+    already-failed, already-pending), runs the backfill SQL twice
+    with cutoff recomputed each time, asserts the second run is a
+    no-op (state identical to first-run state).
+
+### Finding 2 (MEDIUM) — Commit-failure handling
+`_consume_pending_regime_reviews` now wraps `session.commit()` in
+try/except. On commit failure: log CRITICAL with the in-flight
+event_ids for diagnosis, then re-raise. The `with self.db_session_factory()`
+block's `__exit__` rolls back the session; `run_cycle` step 2c's
+existing try/except catches the exception, sets
+`consumed_regime_review_ids = []`, and increments the
+consumption-query failure counter (same path as SELECT-level
+failures). Net effect at the run_cycle layer: empty consumed list,
+no event_ids leak to the mark-reviewed UPDATE, escalation works
+identically for SELECT and commit failures.
+Helper docstring updated to document the contract: "Returns event_ids
+ONLY for rows whose attempt_count increment was successfully
+persisted."
+Test:
+  - `test_consume_returns_empty_list_on_commit_failure` — wraps the
+    consume helper so its session's `commit()` raises on the first
+    cycle and succeeds on the second. Asserts cycle 1: no event_id
+    in cycle_report, row stays 'pending' with attempt_count=0
+    (rollback worked), counter incremented to 1. Asserts cycle 2:
+    row consumed normally, attempt_count=1, status='reviewed',
+    counter reset to 0.
+
+### Finding 3 (MEDIUM) — Deferred (CI Postgres testing)
+DEFERRED_ITEMS_TRACKER.md gets entry "CI Postgres integration test
+fixture for regime review and other Postgres-only logic" — adds a
+pytest marker requiring real Postgres, skips if unavailable, plus
+CI config for a Postgres container. Trigger: next CI hardening
+session OR before live trading transition.
+
+### Finding 4 (LOW) — Acknowledged
+`test_escalation_does_not_fire_on_intermittent_pattern` (and
+`test_consumption_query_failure_escalates_after_three_cycles`) use
+mock-injected exceptions to validate the consecutive-only counter
+contract. Real SELECT-level failures in production are caught by the
+same try/except as mocked exceptions; the counter logic itself is
+the unit being tested. Postgres-level CI testing is the separate
+deferred item that addresses real-DB exception triggering.
+
 ## [Hotfix] - 2026-05-04 - Genesis regime-review (subsystem H) — Critic iteration 3
 
 Addresses four blocking findings from iteration 2 Critic review:

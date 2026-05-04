@@ -521,9 +521,19 @@ class GenesisAgent(BaseAgent):
              batch. Failed rows are NOT added to the consumed list,
              so end-of-cycle won't mark them 'reviewed'.
 
-        Returns the list of consumed IDs. End-of-cycle (step 12) marks
-        these 'reviewed' if every prior step in run_cycle succeeded;
-        otherwise they stay 'pending' for the next cycle (at-least-once).
+        Returns the list of consumed IDs ONLY for rows whose
+        attempt_count increment was successfully persisted. The commit
+        is wrapped in try/except (Critic iteration 4 Finding 2): on
+        commit failure the helper raises, the in-memory mutations
+        roll back via the `with` block's __exit__, and `run_cycle`
+        step 2c's existing try/except sets `consumed_regime_review_ids
+        = []` and increments the consumption-query failure counter.
+        Net effect: zero event_id leakage to the mark-reviewed path,
+        commit failures escalate alongside SELECT failures.
+
+        End-of-cycle (step 12) marks the returned IDs 'reviewed' if
+        every prior step in run_cycle succeeded; otherwise they stay
+        'pending' for the next cycle (at-least-once).
         """
         with self.db_session_factory() as session:
             # PRE-FLIP PASS (Critic iteration 3 Finding 1).
@@ -608,7 +618,30 @@ class GenesisAgent(BaseAgent):
                         event_type=row.event_type,
                     )
 
-            session.commit()
+            # COMMIT (Critic iteration 4 Finding 2): wrap explicitly so a
+            # commit-time failure (deadlock retry exhausted, FK
+            # violation, schema drift, network blip) is observable and
+            # does NOT leak event_ids to the caller. The `with` block
+            # would roll back the session on its way out via __exit__,
+            # so the in-memory increments and last_error stamps are
+            # discarded with the connection. We re-raise the exception
+            # so `run_cycle` step 2c's existing try/except handles it
+            # the same way as a SELECT-level failure: increments the
+            # consumption-query failure counter, escalates after
+            # threshold, sets `consumed_regime_review_ids = []`. End
+            # result observable at the run_cycle layer: empty list,
+            # nothing leaks, no row gets marked 'reviewed' on the back
+            # of an increment that didn't persist.
+            try:
+                session.commit()
+            except Exception as exc:
+                self.log.critical(
+                    "regime_review_consumption_commit_failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    in_flight_event_ids=event_ids,
+                )
+                raise
 
         return event_ids
 

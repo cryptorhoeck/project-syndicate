@@ -1155,3 +1155,218 @@ def test_escalation_does_not_fire_on_intermittent_pattern(
         f"(1 after the final fail), got "
         f"{g._regime_review_query_failure_count}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 4 Finding 1 (HIGH): migration backfill idempotency
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_migration_idempotent(db_factory):
+    """The migration's backfill UPDATE filters by `regime_review_status
+    = 'skipped'` so a second run cannot re-flip rows that have since
+    been classified by the consumer (e.g. consumed-and-reviewed,
+    failed, or in-flight pending). Pre-populates rows in varied states,
+    runs the backfill SQL twice, asserts the second run is a no-op."""
+    from datetime import timedelta
+    import importlib.util
+    import os as _os
+    from sqlalchemy import text as sql_text
+
+    _project_root = _os.path.dirname(
+        _os.path.dirname(_os.path.abspath(__file__))
+    )
+    _mig_path = _os.path.join(
+        _project_root, "alembic", "versions",
+        "phase_10_wire_006_regime_review_status.py",
+    )
+    _spec = importlib.util.spec_from_file_location("_mig006_idem", _mig_path)
+    _mig = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mig)
+
+    now = datetime.now(timezone.utc)
+
+    # Mix of rows that will exercise the WHERE clause:
+    #   - a recent sev-5 still 'skipped'         -> should flip to 'pending'
+    #   - an old sev-5 still 'skipped'           -> should stay 'skipped'
+    #   - a recent sev-5 already 'reviewed'      -> must NOT flip back to 'pending'
+    #   - a recent sev-5 already 'failed'        -> must NOT flip back to 'pending'
+    #   - a recent sev-5 already 'pending'       -> stays 'pending' (no-op)
+    fixtures = [
+        ("RECENT_SKIP",    1,  5, "skipped"),
+        ("OLD_SKIP",       60, 5, "skipped"),
+        ("ALREADY_REVIEW", 1,  5, "reviewed"),
+        ("ALREADY_FAIL",   1,  5, "failed"),
+        ("ALREADY_PEND",   1,  5, "pending"),
+    ]
+    with db_factory() as session:
+        for coin, age_min, sev, status in fixtures:
+            evt = WireEvent(
+                canonical_hash=f"backfill-idem-{coin}",
+                coin=coin, event_type="exchange_outage",
+                severity=sev,
+                summary=f"backfill idempotency fixture {coin}",
+                occurred_at=now - timedelta(minutes=age_min),
+                haiku_cost_usd=0.0,
+                regime_review_status=status,
+                attempt_count=(
+                    REGIME_REVIEW_MAX_ATTEMPTS if status == "failed" else 0
+                ),
+            )
+            session.add(evt)
+        session.commit()
+
+        # FIRST RUN of the backfill SQL.
+        cutoff = now - timedelta(minutes=_mig.BACKFILL_WINDOW_MINUTES)
+        backfill_sql = (
+            "UPDATE wire_events SET regime_review_status = 'pending' "
+            "WHERE severity = 5 AND duplicate_of IS NULL "
+            "AND occurred_at >= :cutoff "
+            "AND regime_review_status = 'skipped'"
+        )
+        session.execute(sql_text(backfill_sql), {"cutoff": cutoff})
+        session.commit()
+
+        first_state = {
+            r.coin: r.regime_review_status
+            for r in session.execute(select(WireEvent)).scalars().all()
+        }
+
+        # SECOND RUN of the same backfill SQL. cutoff is recomputed
+        # because in production a re-run of `alembic upgrade head` is
+        # at a fresh wall-clock; the WHERE-by-status filter is what
+        # makes the second run a no-op even though cutoff drifted.
+        second_cutoff = datetime.now(timezone.utc) - timedelta(
+            minutes=_mig.BACKFILL_WINDOW_MINUTES
+        )
+        session.execute(sql_text(backfill_sql), {"cutoff": second_cutoff})
+        session.commit()
+
+        second_state = {
+            r.coin: r.regime_review_status
+            for r in session.execute(select(WireEvent)).scalars().all()
+        }
+
+    # Expected post-first-run state.
+    assert first_state["RECENT_SKIP"] == "pending"
+    assert first_state["OLD_SKIP"] == "skipped"
+    assert first_state["ALREADY_REVIEW"] == "reviewed"
+    assert first_state["ALREADY_FAIL"] == "failed"
+    assert first_state["ALREADY_PEND"] == "pending"
+
+    # Idempotency: state after the second run is identical.
+    assert second_state == first_state, (
+        f"Backfill is NOT idempotent. "
+        f"first_state={first_state!r} "
+        f"second_state={second_state!r}. "
+        f"Re-running `alembic upgrade head` corrupted classifications "
+        f"the consumer had already produced."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 4 Finding 2 (MEDIUM): commit failure does not leak
+# ---------------------------------------------------------------------------
+
+
+def test_consume_returns_empty_list_on_commit_failure(
+    db_factory, seeded_world, memurai_available,
+):
+    """Mock `session.commit()` to raise on the first cycle and succeed
+    on the second. Verify caller-observable invariants:
+      - cycle 1: no event_ids leak to the mark-reviewed path
+                 (cycle_report.regime_reviews_consumed is None or 0,
+                  the row's attempt_count is unchanged due to rollback,
+                  the row's status remains 'pending', counter
+                  incremented to 1)
+      - cycle 2: row is consumed normally, attempt_count starts fresh
+                 from DB state and increments to 1, status='reviewed',
+                 counter resets to 0.
+
+    Implementation detail: helper raises on commit failure; run_cycle
+    step 2c's existing try/except catches and sets
+    `consumed_regime_review_ids = []`. Test asserts the run_cycle-layer
+    behavior because that is the contract the rest of the system
+    relies on (mark-reviewed path, escalation, cycle_report).
+    """
+    with db_factory() as session:
+        evt = _insert_wire_event(
+            session, severity=5, status="pending", coin="BTC",
+        )
+        evt_id = evt.id
+
+    g = _make_genesis_with_mocks(db_factory, memurai_available)
+
+    # Inject a one-shot commit failure ONLY on sessions created by the
+    # consume helper, so other run_cycle steps (health check, dms
+    # monitor) aren't disturbed. Toggle the state flag immediately
+    # before invoking the consume helper, untoggle after.
+    real_factory = g.db_session_factory
+    fail_state = {"active": False}
+
+    def _maybe_failing_factory():
+        session = real_factory()
+        if fail_state["active"]:
+            def _raising_commit():
+                raise RuntimeError("simulated commit failure")
+            session.commit = _raising_commit
+        return session
+
+    g.db_session_factory = _maybe_failing_factory
+
+    # Wrap the consume helper so the failure window is narrow:
+    # only the helper's own session.commit raises, and only on the
+    # first invocation (cycle 2 must execute normally).
+    real_consume = g._consume_pending_regime_reviews
+    one_shot = {"used": False}
+
+    def _consume_with_failing_commit():
+        if not one_shot["used"]:
+            one_shot["used"] = True
+            fail_state["active"] = True
+            try:
+                return real_consume()
+            finally:
+                fail_state["active"] = False
+        return real_consume()
+
+    g._consume_pending_regime_reviews = _consume_with_failing_commit
+
+    # CYCLE 1 — commit fails.
+    report1 = asyncio.run(g.run_cycle())
+    assert report1.get("regime_reviews_consumed") in (None, 0), (
+        f"event_ids leaked into cycle_report despite commit failure: "
+        f"{report1.get('regime_reviews_consumed')!r}"
+    )
+
+    with db_factory() as session:
+        row = session.get(WireEvent, evt_id)
+        assert row.regime_review_status == "pending", (
+            f"Row was marked '{row.regime_review_status}' even though "
+            f"the commit that would have persisted the increment "
+            f"failed. The mark-reviewed UPDATE ran on a leaked event_id."
+        )
+        assert row.attempt_count == 0, (
+            f"attempt_count={row.attempt_count} despite rollback. "
+            f"Increments must roll back when the commit fails."
+        )
+    assert g._regime_review_query_failure_count >= 1, (
+        f"Counter should have incremented for the commit failure. "
+        f"Got {g._regime_review_query_failure_count}."
+    )
+
+    # CYCLE 2 — commit succeeds, row processes normally from fresh
+    # DB state (attempt_count=0).
+    report2 = asyncio.run(g.run_cycle())
+    assert report2.get("regime_reviews_consumed") == 1
+    with db_factory() as session:
+        row = session.get(WireEvent, evt_id)
+        assert row.regime_review_status == "reviewed"
+        assert row.attempt_count == 1, (
+            f"Cycle 2 should have started attempt_count fresh from "
+            f"DB state (0) and incremented to 1; got {row.attempt_count}."
+        )
+    assert g._regime_review_query_failure_count == 0, (
+        f"Counter should reset on successful consumption. Got "
+        f"{g._regime_review_query_failure_count}."
+    )

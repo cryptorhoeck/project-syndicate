@@ -162,6 +162,13 @@
   - Action when picked up: design a halt-event durability layer if needed. Options include: (a) write halt events to Postgres before publishing to Redis, with a recovery sweeper after Memurai reconnect; (b) accept the trade-off explicitly and document it in operational runbook; (c) revisit when Phase 11 (Wire sentiment + reliability hardening) is being designed.
   - Trigger to pick up: when a real Memurai outage event surfaces in production, or when designing live trading hardening before the Arena → Live transition.
 
+- [ ] **CI Postgres integration test fixture for regime review and other Postgres-only logic**
+  - Surfaced during: hotfix/genesis-regime-review-hook iteration 3 Critic review
+  - Current state: production-path tests use `sqlite:///:memory:`; Postgres-specific code (`sa.text()` UPDATE, check constraints, JSON columns, `INTERVAL` syntax in original drafts, transaction isolation differences) is exercised manually via `scripts/_postgres_e2e_inject.py` but not in pytest. The Postgres e2e for subsystem H was a one-time manual capture, not a recurring CI test.
+  - Risk: medium — CI cannot catch Postgres-specific regressions in the regime review consumer, halt store, or any other Postgres-dependent code path. SQLite tolerates things Postgres rejects (and vice versa); a test that passes locally can break in production.
+  - Action when picked up: add a pytest marker (e.g. `@pytest.mark.postgres`) that requires a real Postgres instance via fixture. Skip if unavailable. Add CI config to spin up a Postgres container for these tests (Docker Compose or testcontainers-python). Backfill key integration tests for regime review consumption, halt store cross-process visibility, and any future cross-process work.
+  - Trigger to pick up: next CI hardening session, OR before the live trading transition (Postgres-specific bugs in production safety code is unacceptable risk for live capital).
+
 - [ ] **Regime review escalation: cumulative-window failure detection**
   - Surfaced during: Critic iteration 3 review of subsystem H (Finding 4)
   - Current contract (locked by War Room iteration 3): `_regime_review_query_failure_count` on `GenesisAgent` resets to 0 on the first successful consumption query. Only K=`REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD` (=3) **consecutive** failures escalate to CRITICAL + system-alert.
