@@ -70,7 +70,12 @@ def _seed_synthetic(factory) -> dict:
     seeded = {"opp_ids": [], "plan_ids": [], "agent_id": None}
 
     # Need a scout/strategist agent to satisfy FK. Pick the first
-    # non-Genesis active agent in the DB, or skip seeding if none.
+    # active scout/strategist; fall back to the Genesis row at id=0
+    # if no role-specific agent exists. If even Genesis is missing,
+    # FAIL LOUDLY (Critic iteration 2 Finding 4) — auto-creating
+    # rows here would mask a real signal that the dev DB is in an
+    # unexpected state, AND a None FK silently passed through to
+    # SQLAlchemy would surface as a confusing IntegrityError later.
     with factory() as session:
         scout = session.execute(
             select(Agent).where(Agent.type == "scout").limit(1)
@@ -80,10 +85,16 @@ def _seed_synthetic(factory) -> dict:
         ).scalar_one_or_none()
 
         if scout is None or strategist is None:
-            # Fall back to the Genesis row at id=0 — it's not really
-            # a scout/strategist, but the FK is satisfied for the
-            # synthetic test rows.
             genesis_row = session.get(Agent, 0)
+            if genesis_row is None:
+                raise RuntimeError(
+                    "E2E requires at least one agent in the DB "
+                    "(scout, strategist, or Genesis at id=0). The "
+                    "dev DB is empty; insert a test agent first or "
+                    "seed via boot sequence. Auto-creating rows here "
+                    "would mask the real signal that the colony has "
+                    "no agents to maintain."
+                )
             scout = scout or genesis_row
             strategist = strategist or genesis_row
 

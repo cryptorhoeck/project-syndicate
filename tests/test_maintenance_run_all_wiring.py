@@ -627,3 +627,138 @@ def test_thinking_budget_used_today_unchanged_by_run_all_path(
         f"is broken — run_all() must NOT trigger budget reset.\n"
         f"pre:  {pre!r}\npost: {post!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 2 Finding 2: AST guard for the call-site wiring
+# ---------------------------------------------------------------------------
+
+
+def test_run_cycle_invokes_maybe_run_hourly_maintenance():
+    """LOAD-BEARING regression guard. The new run_all() block lives
+    inside `_maybe_run_hourly_maintenance`. That method is itself
+    invoked from `run_cycle`. If a future refactor drops the
+    `await self._maybe_run_hourly_maintenance()` line from
+    `run_cycle` (without removing the method itself), the entire
+    T-subset fix is silently disabled — `run_all` exists but is
+    never called.
+
+    Parses the AST of `GenesisAgent.run_cycle` and asserts an
+    `await self._maybe_run_hourly_maintenance(...)` call exists in
+    the body. AST-level (not substring) so a commented-out call
+    cannot satisfy the test.
+
+    Same risk class as `test_run_cycle_source_contains_consume_and_mark_steps`
+    from subsystem H, but stricter (ast.parse rather than substring).
+    """
+    import ast
+    import inspect
+    import textwrap as _textwrap
+    from src.genesis.genesis import GenesisAgent
+
+    # `inspect.getsource(method)` preserves the class-body indentation,
+    # which `ast.parse` rejects. Dedent first.
+    source = _textwrap.dedent(inspect.getsource(GenesisAgent.run_cycle))
+    tree = ast.parse(source)
+
+    # `inspect.getsource(method)` returns the method definition; the
+    # parsed module's body[0] is the AsyncFunctionDef itself.
+    func_def = tree.body[0]
+    assert isinstance(
+        func_def, (ast.AsyncFunctionDef, ast.FunctionDef)
+    ), f"Expected run_cycle to be a function def, got {type(func_def)!r}"
+
+    found_call = False
+    for node in ast.walk(func_def):
+        # `await self._maybe_run_hourly_maintenance(...)` parses to
+        # Await(value=Call(func=Attribute(value=Name('self'),
+        # attr='_maybe_run_hourly_maintenance'), ...))
+        if not isinstance(node, ast.Await):
+            continue
+        call = node.value
+        if not isinstance(call, ast.Call):
+            continue
+        attr = call.func
+        if not isinstance(attr, ast.Attribute):
+            continue
+        if attr.attr != "_maybe_run_hourly_maintenance":
+            continue
+        # Confirm the receiver is `self`.
+        recv = attr.value
+        if isinstance(recv, ast.Name) and recv.id == "self":
+            found_call = True
+            break
+
+    assert found_call, (
+        "GenesisAgent.run_cycle does NOT contain "
+        "`await self._maybe_run_hourly_maintenance(...)`. "
+        "The entire subsystem T-subset fix is silently disabled — "
+        "the maintenance method exists but is never invoked from "
+        "the cycle. Did a recent refactor drop the call?"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 2 Finding 3: runtime daily-gate test
+# ---------------------------------------------------------------------------
+
+
+def test_reset_daily_budgets_only_called_inside_daily_gate(
+    db_factory, seeded_world,
+):
+    """Runtime guard for the daily gate (replaces dependency on the
+    text-distance heuristic in
+    `test_genesis_hourly_maintenance_does_not_call_reset_daily_budgets_directly_outside_gate`).
+
+    Patches `MaintenanceService.reset_daily_budgets` with a mock,
+    then drives `_maybe_run_hourly_maintenance` through three
+    invocations:
+      - daily gate CLOSED (today's date) → invocation 1: NOT called
+      - daily gate CLOSED (still today) → invocation 2: NOT called
+      - daily gate OPENED (yesterday's date) → invocation 3: called once
+
+    This proves the daily gate actually gates correctly without
+    depending on text-distance heuristics. The text-based
+    inspection guard above remains as defense-in-depth against
+    accidental refactors that bypass the gate.
+    """
+    g = _make_genesis_for_maintenance_test(db_factory)
+    today = datetime.now(timezone.utc).date()
+    yesterday = today - timedelta(days=1)
+
+    reset_calls: list = []
+
+    def _fake_reset(self):
+        reset_calls.append(True)
+        return 0
+
+    with patch.object(
+        MaintenanceService, "reset_daily_budgets", _fake_reset,
+    ):
+        # Invocations 1 and 2 — daily gate held closed (same day).
+        g._last_budget_reset_date = today
+        asyncio.run(g._maybe_run_hourly_maintenance())
+        assert len(reset_calls) == 0, (
+            f"reset_daily_budgets fired on invocation 1 despite "
+            f"daily gate being closed (last_reset_date == today). "
+            f"Calls: {len(reset_calls)}"
+        )
+
+        g._last_hourly_maintenance = None  # reopen hourly gate
+        asyncio.run(g._maybe_run_hourly_maintenance())
+        assert len(reset_calls) == 0, (
+            f"reset_daily_budgets fired on invocation 2 despite "
+            f"daily gate being closed. The gate is leaking — agents "
+            f"could lose 24x their daily thinking budget. "
+            f"Calls: {len(reset_calls)}"
+        )
+
+        # Invocation 3 — daily gate opened (yesterday's date).
+        g._last_budget_reset_date = yesterday
+        g._last_hourly_maintenance = None  # reopen hourly gate
+        asyncio.run(g._maybe_run_hourly_maintenance())
+        assert len(reset_calls) == 1, (
+            f"reset_daily_budgets did NOT fire when the daily gate "
+            f"was open (last_reset_date == yesterday). The cross-day "
+            f"boundary is broken. Calls: {len(reset_calls)}"
+        )

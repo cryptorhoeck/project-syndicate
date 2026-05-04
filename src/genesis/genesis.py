@@ -1524,6 +1524,13 @@ class GenesisAgent(BaseAgent):
         # `run_all()` does NOT call `reset_daily_budgets` — running
         # that hourly would let agents consume 24x their intended
         # daily thinking budget. The cadence asymmetry is by design.
+        #
+        # WARNING-only failure handling is intentional. Unlike H
+        # (regime review) and P (eval engine async), T-subset
+        # maintenance failures have bounded downstream impact:
+        # log-spam alone is the appropriate signal. See
+        # DEFERRED_ITEMS_TRACKER.md entry "T-subset escalation
+        # policy" for the design rationale.
         try:
             from src.agents.maintenance import MaintenanceService
             hourly_maint = MaintenanceService(self.db_session_factory)

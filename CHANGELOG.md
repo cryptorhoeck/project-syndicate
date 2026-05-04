@@ -2,6 +2,58 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-04 - Maintenance run_all wiring (subsystem T-subset) — Critic iteration 2
+
+Three blocking findings + one LOW from iteration 1 review.
+
+### Finding 1 (MEDIUM) — Document escalation choice (no counter)
+War Room called: WARNING-only is intentional for T-subset.
+- Comment block above the `run_all()` block in `genesis.py` cites
+  the deferred-tracker entry as the design rationale.
+- New entry in `DEFERRED_ITEMS_TRACKER.md`: **"T-subset escalation
+  policy (intentional design)"** — documents the asymmetry with H/P
+  (regime review and eval engine async are safety-adjacent;
+  T-subset is hygiene-class), the data we'd want before reversing
+  the decision (multi-week WARNING log frequency), and the trigger
+  to revisit (any incident where stale state caused a measurable
+  problem).
+
+### Finding 2 (MEDIUM) — AST guard for the call-site wiring
+New test `test_run_cycle_invokes_maybe_run_hourly_maintenance`.
+Parses the AST of `GenesisAgent.run_cycle` (after `textwrap.dedent`),
+walks the body looking for an `Await(Call(Attribute(Name='self'),
+'_maybe_run_hourly_maintenance')))` node. AST-level (not substring)
+so a commented-out call cannot satisfy the test. Without this guard
+the entire T-subset fix could be silently disabled by a future
+refactor that drops the call site without removing the method.
+
+### Finding 3 (LOW) — Runtime daily-gate test
+Replaces dependency on the iteration-1 text-distance heuristic.
+New test `test_reset_daily_budgets_only_called_inside_daily_gate`:
+patches `MaintenanceService.reset_daily_budgets`, drives
+`_maybe_run_hourly_maintenance` three times across the daily-gate
+boundary (closed → closed → open), asserts the mock was invoked
+exactly when the daily gate was open and never when it was closed.
+Proves the gate gates correctly without text-distance heuristics.
+The text-based inspection guard remains as defense-in-depth.
+
+### Finding 4 (LOW) — E2E empty-DB guard
+`scripts/validate_maintenance_run_all_e2e.py` previously fell back
+to `genesis_row` (id=0) if no scout/strategist existed; if Genesis
+was also missing, it would silently use None as a foreign key.
+Now: if all three are missing, the script raises with a clear
+"E2E requires at least one agent in the DB" message. Does NOT
+auto-create rows — a truly empty DB is a real signal that the
+colony has no agents to maintain, and masking it would defeat
+the validation.
+
+### War Room verification (closed by inspection)
+Iteration 1 chat-Critic concern about hourly-gate placement was
+verified at `genesis.py:1473-1478`: `_last_hourly_maintenance` field
+declared at line 140, the gate check (`if (now - self._last_hourly_maintenance) < timedelta(hours=1): return`)
+sits at lines 1473-1474, and the field update happens at line 1478.
+The hourly cadence is correctly enforced. No code change required.
+
 ## [Hotfix] - 2026-05-04 - Maintenance run_all wiring (subsystem T-subset)
 
 Closes WIRING_AUDIT_REPORT.md subsystem T-subset. Three of
