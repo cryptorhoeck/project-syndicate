@@ -98,6 +98,14 @@ PROCESSES = {
     },
 }
 
+# Reverse order of criticality at Arena exit. Names absent from this list
+# are orphaned (not explicitly terminated). Module-level so tests can
+# assert membership at runtime instead of grepping the source of main().
+SHUTDOWN_ORDER: list[str] = [
+    "genesis", "agents", "trading", "wire_scheduler",
+    "dashboard", "heartbeat", "warden",
+]
+
 _running = True
 _children: dict[str, subprocess.Popen] = {}
 _restart_times: dict[str, float] = {}
@@ -534,10 +542,9 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
 
-    # Graceful shutdown — reverse order of criticality
+    # Graceful shutdown — see module-level SHUTDOWN_ORDER for the policy.
     log.info("arena_shutting_down")
-    shutdown_order = ["genesis", "agents", "trading", "wire_scheduler", "dashboard", "heartbeat", "warden"]
-    for name in shutdown_order:
+    for name in SHUTDOWN_ORDER:
         proc = _children.get(name)
         if proc and proc.poll() is None:
             log.info("terminating", name=name, pid=proc.pid)
