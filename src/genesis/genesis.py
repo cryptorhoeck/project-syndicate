@@ -44,6 +44,20 @@ from src.wire.models import WireEvent
 # stay 'pending' for the next cycle.
 REGIME_REVIEW_BATCH_LIMIT = 50
 
+# Per-row retry cap (Critic iteration 2 Finding 1, poison-pill guard).
+# A row that has been consumed this many times without a successful
+# end-of-cycle mark-reviewed gets flipped to 'failed' instead of being
+# re-consumed. Same anti-DMS-self-defeat semantics as the warden
+# safety_state_unknown latch.
+REGIME_REVIEW_MAX_ATTEMPTS = 3
+
+# Cycle-level escalation cap for consumption-query failures (Critic
+# iteration 2 Finding 5). Distinct from per-row attempt_count: this
+# counts consecutive failures of the SELECT itself (DB unreachable,
+# schema mismatch, etc.). After this many consecutive cycles where the
+# query path is broken, escalate to CRITICAL + system-alert.
+REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD = 3
+
 if TYPE_CHECKING:
     from src.agora.agora_service import AgoraService
     from src.economy.economy_service import EconomyService
@@ -99,6 +113,15 @@ class GenesisAgent(BaseAgent):
         self._last_hourly_maintenance: datetime | None = None
         # Track last daily budget reset
         self._last_budget_reset_date: date | None = None
+
+        # Consumption-query failure latch (Critic iteration 2 Finding 5).
+        # Counts consecutive cycles where the regime-review SELECT
+        # itself raised. Reset to 0 on first successful query. At
+        # REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD, escalates to
+        # CRITICAL + system-alert. Distinct from per-row attempt_count
+        # which counts how many cycles a specific row has been consumed
+        # without successful mark-reviewed.
+        self._regime_review_query_failure_count: int = 0
 
         # Dead Man's Switch meta-monitor. Genesis is the canonical "always
         # running" process and so is the natural host for the failsafe-of-
@@ -227,20 +250,65 @@ class GenesisAgent(BaseAgent):
             # modified by this fix. Rows are flipped 'reviewed' at
             # end-of-cycle (step 12) so an exception in any later step
             # leaves them 'pending' for next cycle — at-least-once.
+            #
+            # Two distinct failure modes here:
+            #   - per-row failures: handled inside the helper via the
+            #     attempt_count cap (Finding 1).
+            #   - consumption-query (SELECT) failures: counted via
+            #     `_regime_review_query_failure_count`; after
+            #     REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD consecutive
+            #     cycles, escalate to CRITICAL + system-alert
+            #     (Finding 5). Reset on first success.
             try:
                 consumed_regime_review_ids = self._consume_pending_regime_reviews()
                 if consumed_regime_review_ids:
                     cycle_report["regime_reviews_consumed"] = len(
                         consumed_regime_review_ids
                     )
+                # Reset escalation counter on success.
+                self._regime_review_query_failure_count = 0
             except Exception as exc:
-                # Consumption failure must NOT prevent the cycle from
-                # running. Log + continue with empty list (nothing to
-                # mark at end-of-cycle). Notification class.
-                self.log.warning(
-                    "regime_review_consumption_failed", error=str(exc)
-                )
                 consumed_regime_review_ids = []
+                self._regime_review_query_failure_count += 1
+                threshold = REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD
+                if self._regime_review_query_failure_count >= threshold:
+                    self.log.critical(
+                        "regime_review_query_failure_escalated",
+                        consecutive_failures=self._regime_review_query_failure_count,
+                        threshold=threshold,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
+                    try:
+                        await self.post_to_agora(
+                            "system-alerts",
+                            (
+                                f"[REGIME REVIEW] Consumption query has failed "
+                                f"{self._regime_review_query_failure_count} consecutive cycles "
+                                f"(threshold {threshold}). "
+                                f"Last error: {type(exc).__name__}: {exc}"
+                            ),
+                            message_type=MessageType.ALERT,
+                            metadata={
+                                "event_class": "regime_review.query_failure_escalated",
+                                "consecutive_failures": self._regime_review_query_failure_count,
+                                "threshold": threshold,
+                                "error": str(exc),
+                                "error_type": type(exc).__name__,
+                            },
+                            importance=2,
+                        )
+                    except Exception:
+                        # Alert path is best-effort — log already fired.
+                        self.log.exception(
+                            "regime_review_query_alert_post_failed"
+                        )
+                else:
+                    self.log.warning(
+                        "regime_review_consumption_failed",
+                        error=str(exc),
+                        consecutive_failures=self._regime_review_query_failure_count,
+                    )
 
             # 3. MARKET REGIME CHECK
             try:
@@ -399,6 +467,16 @@ class GenesisAgent(BaseAgent):
         except Exception as exc:
             self.log.error("genesis_cycle_error", error=str(exc))
             cycle_report["error"] = str(exc)
+            # Record the cycle failure on each consumed row's last_error
+            # column so when the row eventually trips the
+            # attempt_count cap (Finding 1), the diagnostic context
+            # carries through. attempt_count was already incremented
+            # in step 2c inside the helper.
+            if consumed_regime_review_ids:
+                self._record_regime_review_failure(
+                    consumed_regime_review_ids,
+                    f"{type(exc).__name__}: {exc}",
+                )
 
         return cycle_report
 
@@ -409,16 +487,22 @@ class GenesisAgent(BaseAgent):
     def _consume_pending_regime_reviews(self) -> list[int]:
         """Read up to REGIME_REVIEW_BATCH_LIMIT pending sev-5 wire events.
 
-        Logs `genesis_consuming_regime_review` for each consumed row
-        with event_id, severity, coin, event_type. Returns the list of
-        event IDs so end-of-cycle can mark them 'reviewed' atomically.
+        For each pending row:
+          - If `attempt_count >= REGIME_REVIEW_MAX_ATTEMPTS`, mark
+            'failed' with `last_error` populated and SKIP (poison-pill
+            guard, Critic iteration 2 Finding 1).
+          - Else, increment `attempt_count` BEFORE returning the row
+            (committed immediately so a crash mid-cycle still
+            increments — at-least-once + bounded retries).
 
-        Read-only at this stage — the rows stay 'pending' until step 12
-        actually runs. If anything in steps 3-11 raises, the next cycle
-        re-reads them (at-least-once). Idempotent: marking 'reviewed'
-        is a one-way transition, so a duplicate read in the next cycle
-        only re-emits the structured log; nothing downstream is
-        re-fired (regime detection is a fresh state read every cycle).
+        Logs `genesis_consuming_regime_review` per consumed row.
+        Returns the list of consumed IDs so end-of-cycle can mark them
+        'reviewed' atomically.
+
+        Idempotent: marking 'reviewed' is a one-way transition. A row
+        re-read in the next cycle (because the prior cycle crashed)
+        re-emits the structured log; nothing downstream is re-fired —
+        regime detection is a fresh state read every cycle.
         """
         with self.db_session_factory() as session:
             rows = (
@@ -431,26 +515,80 @@ class GenesisAgent(BaseAgent):
                 .scalars()
                 .all()
             )
+
             event_ids: list[int] = []
+            failed_count = 0
             for row in rows:
+                # Poison-pill cap. attempt_count was incremented at the
+                # PRIOR cycle's consumption; if it has already hit the
+                # cap, this row never gets another consumption attempt.
+                if row.attempt_count >= REGIME_REVIEW_MAX_ATTEMPTS:
+                    error_text = (
+                        f"exceeded max regime-review attempts "
+                        f"({REGIME_REVIEW_MAX_ATTEMPTS}) without successful mark-reviewed"
+                    )
+                    row.regime_review_status = "failed"
+                    if not row.last_error:
+                        row.last_error = error_text
+                    failed_count += 1
+                    self.log.critical(
+                        "genesis_regime_review_poison_pill",
+                        event_id=row.id,
+                        severity=row.severity,
+                        coin=row.coin,
+                        event_type=row.event_type,
+                        attempt_count=row.attempt_count,
+                        last_error=row.last_error,
+                    )
+                    continue
+
+                # Increment BEFORE consuming so a mid-cycle crash still
+                # records the attempt. Commit per-row so the
+                # increment is durable even if a later row's processing
+                # raises (the SELECT-level exception path is handled by
+                # the outer try in run_cycle).
+                row.attempt_count = row.attempt_count + 1
+
                 self.log.info(
                     "genesis_consuming_regime_review",
                     event_id=row.id,
                     severity=row.severity,
                     coin=row.coin,
                     event_type=row.event_type,
+                    attempt_count=row.attempt_count,
                 )
                 event_ids.append(row.id)
+
+            session.commit()
+
+            if failed_count > 0:
+                # Surface a single CRITICAL summary too — easier to
+                # alert on than per-row criticals when a wave hits.
+                self.log.critical(
+                    "genesis_regime_review_failed_batch",
+                    failed_count=failed_count,
+                    max_attempts=REGIME_REVIEW_MAX_ATTEMPTS,
+                )
+
         return event_ids
 
     def _mark_regime_reviews_reviewed(self, event_ids: list[int]) -> None:
-        """Atomically flip 'pending' -> 'reviewed' for the given IDs.
+        """Flip the given IDs to 'reviewed'.
 
-        Single UPDATE inside one session. Always called with a
-        non-empty list (caller guards). The WHERE clause includes
-        regime_review_status='pending' so a concurrent override
-        (e.g., a manual SQL flip) is not stomped — only rows still
-        pending get reviewed.
+        Critic iteration 2 Finding 2: filter by `id IN (event_ids)`
+        ONLY — not also by `regime_review_status='pending'`. The
+        consumption query at top-of-cycle returned exactly these IDs;
+        we promised end-of-cycle to mark them. Keeping the status
+        filter would silently drop the marker if a concurrent process
+        (manual SQL, a separate Genesis instance) had flipped the
+        status — and that's a less correct outcome than honoring the
+        cycle's contract.
+
+        The race the Critic flagged ("new pending rows arrive
+        mid-cycle and get silently marked reviewed") is already
+        impossible because the WHERE includes the explicit id list —
+        new rows have new IDs the cycle never saw. The fix is to drop
+        the redundant (and behaviorally-wrong) status filter.
         """
         if not event_ids:
             return
@@ -458,10 +596,36 @@ class GenesisAgent(BaseAgent):
             session.execute(
                 WireEvent.__table__.update()
                 .where(WireEvent.id.in_(event_ids))
-                .where(WireEvent.regime_review_status == "pending")
                 .values(regime_review_status="reviewed")
             )
             session.commit()
+
+    def _record_regime_review_failure(
+        self, event_ids: list[int], error_text: str,
+    ) -> None:
+        """Called from run_cycle's top-level except when the cycle
+        crashed AFTER step 2c consumed rows but BEFORE step 12 marked
+        them. Writes the failure text to `last_error` for each
+        consumed row so the eventual poison-pill flip carries
+        diagnostic context. Best-effort — DB failures here log a
+        warning and return; the row state itself (still 'pending'
+        with attempt_count incremented) is the load-bearing signal.
+        """
+        if not event_ids or not error_text:
+            return
+        try:
+            with self.db_session_factory() as session:
+                session.execute(
+                    WireEvent.__table__.update()
+                    .where(WireEvent.id.in_(event_ids))
+                    .values(last_error=error_text)
+                )
+                session.commit()
+        except Exception as exc:
+            self.log.warning(
+                "regime_review_record_failure_failed",
+                error=str(exc), event_ids=event_ids,
+            )
 
     # ------------------------------------------------------------------
     # Health Check

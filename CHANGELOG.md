@@ -2,6 +2,65 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-04 - Genesis regime-review (subsystem H) — Critic iteration 2
+
+Addresses five blocking findings from the iteration 1 Critic review of
+the subsystem H wiring. NOT-APPROVED → APPROVED-pending-merge once
+War Room signs off on this submission.
+
+### Schema (extends migration phase_10_wire_006)
+- `wire_events.attempt_count` INTEGER NOT NULL DEFAULT 0 — incremented
+  before each consumption attempt; cap at 3 flips the row to 'failed'
+  (Finding 1, poison-pill guard).
+- `wire_events.last_error` TEXT NULL — populated on cycle exception
+  for all rows consumed in the failing cycle; preserved when the cap
+  fires.
+- 'failed' added to the `regime_review_status` check constraint
+  (`'pending'|'reviewed'|'skipped'|'failed'`).
+- Backfill cutoff (Finding 3): only sev-5 rows newer than 30 minutes
+  flip to 'pending'. Older sev-5 rows stay 'skipped' to prevent
+  stale-event replay corrupting regime detection on first deploy.
+  30-minute window matches the operator-halt auto-expiry TTL.
+  Constant `BACKFILL_WINDOW_MINUTES = 30` exported by the migration.
+
+### Consumer (`src/genesis/genesis.py`)
+- `REGIME_REVIEW_MAX_ATTEMPTS = 3` and
+  `REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD = 3` module constants.
+- `_consume_pending_regime_reviews`:
+    - Per-row poison-pill check: rows at the cap flip to 'failed'
+      with `last_error` and are NOT re-consumed (Finding 1).
+    - Increment `attempt_count` BEFORE consuming, commit per-cycle so
+      the increment survives a mid-cycle crash.
+- `_mark_regime_reviews_reviewed`: WHERE filter is now `id IN
+  (consumed_ids)` ONLY — drops the redundant `status='pending'`
+  filter that was behaviorally wrong if a concurrent process flipped
+  status (Finding 2).
+- `_record_regime_review_failure`: new helper. run_cycle's top-level
+  except writes the exception text to `last_error` for all consumed
+  rows so the eventual poison-pill flip carries diagnostic context.
+- Step 2c gains consumption-query failure escalation (Finding 5):
+  per-instance `_regime_review_query_failure_count` increments on
+  SELECT failure, escalates to CRITICAL + `system-alerts` Agora post
+  after 3 consecutive cycles, resets to 0 on first success.
+
+### Tests (6 new, total 15 in
+`tests/test_genesis_regime_review_consumption.py`)
+- `test_regime_review_attempt_count_increments_on_consumption` (F1)
+- `test_regime_review_marks_failed_after_three_attempts` (F1)
+- `test_regime_review_failed_rows_excluded_from_consumption_query` (F1)
+- `test_mid_cycle_inserts_remain_pending` (F2)
+- `test_backfill_marks_old_sev_5_as_skipped` (F3)
+- `test_consumption_query_failure_escalates_after_three_cycles` (F5)
+
+### Postgres e2e (Finding 4)
+- New diagnostic injector `scripts/_postgres_e2e_inject.py`. Run
+  against the real dev Postgres (started via
+  `C:/ProDesk/pgsql/bin/pg_ctl.exe`). Captures pre/post counts,
+  applies migration, injects synthetic sev-5, runs Genesis
+  consumption, asserts row marked 'reviewed' with attempt_count=1,
+  cleans up so dev DB returns to its pre-injection state. See commit
+  message for full output.
+
 ## [Hotfix] - 2026-05-04 - Genesis regime-review consumption (subsystem H)
 
 Closes WIRING_AUDIT_REPORT.md subsystem H. Severity-5 wire events were

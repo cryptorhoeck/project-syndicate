@@ -129,7 +129,7 @@ class WireEvent(Base):
             name="ck_wire_events_direction",
         ),
         CheckConstraint(
-            "regime_review_status IN ('pending','reviewed','skipped')",
+            "regime_review_status IN ('pending','reviewed','skipped','failed')",
             name="ck_wire_events_regime_review_status",
         ),
         Index("ix_wire_events_coin_severity", "coin", "severity", "occurred_at"),
@@ -169,10 +169,17 @@ class WireEvent(Base):
     # Genesis regime-review queue marker (subsystem H, Option C). Sev-5
     # events get 'pending' at INSERT; Genesis.run_cycle() consumes them
     # at top-of-cycle and flips to 'reviewed' at end-of-cycle. Non-sev-5
-    # events default to 'skipped' and are never re-touched.
+    # events default to 'skipped' and are never re-touched. After 3
+    # failed consumption attempts (cycle exception leaves the row
+    # pending) the row flips to 'failed' as a poison-pill guard
+    # (Critic iteration 2 Finding 1).
     regime_review_status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="skipped", server_default="skipped"
     )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     raw_item: Mapped[WireRawItem | None] = relationship(back_populates="events")
 

@@ -36,7 +36,12 @@ from sqlalchemy.pool import StaticPool
 
 from src.common.config import config
 from src.common.models import Agent, Base, SystemState
-from src.genesis.genesis import GenesisAgent, REGIME_REVIEW_BATCH_LIMIT
+from src.genesis.genesis import (
+    GenesisAgent,
+    REGIME_REVIEW_BATCH_LIMIT,
+    REGIME_REVIEW_MAX_ATTEMPTS,
+    REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD,
+)
 from src.wire.constants import (
     DIGESTION_STATUS_DIGESTED,
     SEVERITY_CRITICAL,
@@ -551,4 +556,341 @@ def test_run_cycle_source_contains_consume_and_mark_steps():
     assert "_mark_regime_reviews_reviewed" in src, (
         "run_cycle no longer calls _mark_regime_reviews_reviewed — "
         "queue rows would stay pending forever."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 2 Finding 1 (HIGH): retry cap + last_error
+# ---------------------------------------------------------------------------
+
+
+def test_regime_review_attempt_count_increments_on_consumption(
+    db_factory, seeded_world, memurai_available,
+):
+    """Happy path: each consumption increments attempt_count by 1.
+    Mark-reviewed at end-of-cycle leaves the count at 1 (since it was
+    only consumed once before being marked)."""
+    with db_factory() as session:
+        evt = _insert_wire_event(session, severity=5, status="pending", coin="BTC")
+        evt_id = evt.id
+        assert evt.attempt_count == 0  # baseline
+
+    genesis = _make_genesis_with_mocks(db_factory, memurai_available)
+    asyncio.run(genesis.run_cycle())
+
+    with db_factory() as session:
+        row = session.get(WireEvent, evt_id)
+        assert row.regime_review_status == "reviewed"
+        assert row.attempt_count == 1, (
+            f"Happy path should increment attempt_count from 0 to 1, "
+            f"got {row.attempt_count}"
+        )
+        assert row.last_error is None
+
+
+def test_regime_review_marks_failed_after_three_attempts(
+    db_factory, seeded_world, memurai_available,
+):
+    """Force exception three cycles in a row. After the 3rd cycle the
+    row's attempt_count is at MAX. On the 4th cycle, the consumption
+    helper sees the cap, flips the row to 'failed' with last_error
+    populated, and does NOT consume it again."""
+    assert REGIME_REVIEW_MAX_ATTEMPTS == 3  # contract guard
+
+    with db_factory() as session:
+        evt = _insert_wire_event(session, severity=5, status="pending", coin="BTC")
+        evt_id = evt.id
+
+    # Cycles 1-3: force run_cycle to raise after consumption.
+    for cycle_num in range(REGIME_REVIEW_MAX_ATTEMPTS):
+        genesis = _make_genesis_with_mocks(db_factory, memurai_available)
+        genesis.post_to_agora = AsyncMock(
+            side_effect=RuntimeError(f"simulated cycle {cycle_num+1} failure"),
+        )
+        asyncio.run(genesis.run_cycle())
+
+    with db_factory() as session:
+        row = session.get(WireEvent, evt_id)
+        assert row.regime_review_status == "pending"
+        assert row.attempt_count == REGIME_REVIEW_MAX_ATTEMPTS, (
+            f"After {REGIME_REVIEW_MAX_ATTEMPTS} crash cycles, attempt_count "
+            f"should be at the cap. Got {row.attempt_count}."
+        )
+        # last_error reflects the most recent cycle exception.
+        assert row.last_error is not None
+        assert "RuntimeError" in row.last_error
+        assert "cycle 3 failure" in row.last_error
+
+    # Cycle 4: clean cycle, but cap should fire and flip to 'failed'.
+    genesis = _make_genesis_with_mocks(db_factory, memurai_available)
+    asyncio.run(genesis.run_cycle())
+
+    with db_factory() as session:
+        row = session.get(WireEvent, evt_id)
+        assert row.regime_review_status == "failed", (
+            f"After {REGIME_REVIEW_MAX_ATTEMPTS} failed attempts, row should "
+            f"flip to 'failed' on the next cycle. Got {row.regime_review_status!r}."
+        )
+        assert row.last_error is not None
+        # last_error from the last crash cycle is preserved (the cap
+        # path doesn't overwrite an existing error message).
+
+
+def test_regime_review_failed_rows_excluded_from_consumption_query(
+    db_factory, seeded_world, memurai_available, capsys,
+):
+    """Direct-insert a 'failed' row → run_cycle → not picked up. The
+    consumption query filters by status='pending' so terminal rows
+    never get consumed again."""
+    with db_factory() as session:
+        evt = WireEvent(
+            canonical_hash="failed-row-test",
+            coin="BTC", event_type="exchange_outage",
+            severity=5,
+            summary="Synthetic failed row",
+            occurred_at=datetime.now(timezone.utc),
+            haiku_cost_usd=0.0,
+            regime_review_status="failed",
+            attempt_count=REGIME_REVIEW_MAX_ATTEMPTS,
+            last_error="exceeded max regime-review attempts",
+        )
+        session.add(evt)
+        session.commit()
+        evt_id = evt.id
+
+    genesis = _make_genesis_with_mocks(db_factory, memurai_available)
+    asyncio.run(genesis.run_cycle())
+
+    captured = _strip_ansi(capsys.readouterr().out)
+    consume_lines = [
+        line for line in captured.splitlines()
+        if "genesis_consuming_regime_review" in line
+    ]
+    assert not consume_lines, (
+        f"'failed' row was re-consumed: {consume_lines!r}. The "
+        f"WHERE status='pending' filter is broken."
+    )
+
+    with db_factory() as session:
+        row = session.get(WireEvent, evt_id)
+        assert row.regime_review_status == "failed"  # unchanged
+        assert row.attempt_count == REGIME_REVIEW_MAX_ATTEMPTS  # unchanged
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 2 Finding 2: UPDATE filter race
+# ---------------------------------------------------------------------------
+
+
+def test_mid_cycle_inserts_remain_pending(
+    db_factory, seeded_world, memurai_available,
+):
+    """A new pending row inserted between consumption (step 2c) and
+    mark-reviewed (step 12) must NOT be marked 'reviewed'. The UPDATE
+    filters by id IN (consumed_ids), so a row whose ID was never in
+    that list is untouched.
+
+    Implementation: stub `_mark_regime_reviews_reviewed` to insert a
+    new pending row BEFORE running the original UPDATE — this is the
+    closest deterministic test for the race window."""
+    with db_factory() as session:
+        original = _insert_wire_event(
+            session, severity=5, status="pending", coin="BTC",
+        )
+        original_id = original.id
+
+    genesis = _make_genesis_with_mocks(db_factory, memurai_available)
+
+    # Wrap the real mark helper. Before it runs, insert a new pending
+    # row simulating a digester landing a sev-5 event mid-cycle.
+    real_mark = genesis._mark_regime_reviews_reviewed
+    new_row_holder = {"id": None}
+
+    def _wrapped_mark(event_ids):
+        with db_factory() as session:
+            new_row = _insert_wire_event(
+                session, severity=5, status="pending", coin="ETH",
+            )
+            new_row_holder["id"] = new_row.id
+        real_mark(event_ids)
+
+    genesis._mark_regime_reviews_reviewed = _wrapped_mark
+    asyncio.run(genesis.run_cycle())
+
+    with db_factory() as session:
+        original_row = session.get(WireEvent, original_id)
+        new_row = session.get(WireEvent, new_row_holder["id"])
+        assert original_row.regime_review_status == "reviewed"
+        assert new_row.regime_review_status == "pending", (
+            f"Mid-cycle insert was silently marked reviewed — the UPDATE "
+            f"filter is too broad. Got status={new_row.regime_review_status!r}."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 2 Finding 3: backfill 30-min cutoff
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_marks_old_sev_5_as_skipped(db_factory):
+    """Pre-populate sev-5 rows at 1m / 35m / 24h ages, run the
+    migration's backfill SQL against an empty schema, verify only the
+    1m row is 'pending'. The 30-min cutoff matches the operator-halt
+    auto-expire TTL — anything older is historical, not actionable."""
+    from datetime import timedelta
+    import importlib.util
+    import os as _os
+    from sqlalchemy import text as sql_text
+
+    # alembic/versions/ isn't a real Python package, so import the
+    # migration module by file path to read its BACKFILL_WINDOW_MINUTES
+    # constant. This keeps the test source-of-truth-coupled to the
+    # migration without duplicating the value.
+    _project_root = _os.path.dirname(
+        _os.path.dirname(_os.path.abspath(__file__))
+    )
+    _mig_path = _os.path.join(
+        _project_root, "alembic", "versions",
+        "phase_10_wire_006_regime_review_status.py",
+    )
+    _spec = importlib.util.spec_from_file_location(
+        "_mig006", _mig_path,
+    )
+    _mig = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mig)
+    assert _mig.BACKFILL_WINDOW_MINUTES == 30
+
+    now = datetime.now(timezone.utc)
+    ages_minutes = [1, 35, 24 * 60]  # 1m (recent), 35m (just past), 24h (old)
+    coins = ["RECENT", "JUSTPAST", "OLD"]
+
+    with db_factory() as session:
+        for age_min, coin in zip(ages_minutes, coins):
+            evt = WireEvent(
+                canonical_hash=f"backfill-test-{coin}",
+                coin=coin, event_type="exchange_outage",
+                severity=5,
+                summary=f"sev-5 from {age_min}m ago",
+                occurred_at=now - timedelta(minutes=age_min),
+                haiku_cost_usd=0.0,
+                # No regime_review_status set — uses server default
+                # 'skipped' as if newly migrated.
+            )
+            session.add(evt)
+        session.commit()
+
+        # Apply the migration's backfill SQL directly. This is the
+        # same parametrized statement the migration runs in upgrade()
+        # — verifying the WHERE clause boundaries hold against a real
+        # SQL backend.
+        cutoff = now - timedelta(minutes=_mig.BACKFILL_WINDOW_MINUTES)
+        session.execute(
+            sql_text(
+                "UPDATE wire_events SET regime_review_status = 'pending' "
+                "WHERE severity = 5 AND duplicate_of IS NULL "
+                "AND occurred_at >= :cutoff"
+            ),
+            {"cutoff": cutoff},
+        )
+        session.commit()
+
+        rows_by_coin = {
+            r.coin: r for r in session.execute(select(WireEvent)).scalars().all()
+        }
+        assert rows_by_coin["RECENT"].regime_review_status == "pending", (
+            "Sev-5 row 1m old should be queued for review."
+        )
+        assert rows_by_coin["JUSTPAST"].regime_review_status == "skipped", (
+            f"Sev-5 row 35m old (just past 30m cutoff) should stay skipped, "
+            f"got {rows_by_coin['JUSTPAST'].regime_review_status!r}."
+        )
+        assert rows_by_coin["OLD"].regime_review_status == "skipped", (
+            f"Sev-5 row 24h old should stay skipped to prevent stale "
+            f"replay, got {rows_by_coin['OLD'].regime_review_status!r}."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 2 Finding 5: consumption-query failure escalation
+# ---------------------------------------------------------------------------
+
+
+def test_consumption_query_failure_escalates_after_three_cycles(
+    db_factory, seeded_world, memurai_available, capsys,
+):
+    """The consumption query path itself raises. Three consecutive
+    cycles of failure escalate to CRITICAL + system-alert (instead of
+    the silent WARNING the original handler emitted). On the 4th
+    cycle, restore the query to working — counter resets and no
+    further escalation log fires."""
+    assert REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD == 3
+
+    genesis = _make_genesis_with_mocks(db_factory, memurai_available)
+
+    # Capture system-alert posts so the test asserts the alert went
+    # out, not just the CRITICAL log.
+    alert_posts: list[dict] = []
+
+    async def _capture_post(channel, content, **kw):
+        alert_posts.append({"channel": channel, "content": content, **kw})
+
+    genesis.post_to_agora = AsyncMock(side_effect=_capture_post)
+
+    # Force three consecutive failures of the consumption query.
+    raise_helper = MagicMock(
+        side_effect=RuntimeError("simulated DB unreachable"),
+    )
+    genesis._consume_pending_regime_reviews = raise_helper
+
+    for _ in range(REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD):
+        asyncio.run(genesis.run_cycle())
+
+    captured = _strip_ansi(capsys.readouterr().out)
+    escalated_logs = [
+        line for line in captured.splitlines()
+        if "regime_review_query_failure_escalated" in line
+    ]
+    assert escalated_logs, (
+        f"After {REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD} consecutive "
+        f"consumption-query failures, expected a CRITICAL escalation log. "
+        f"None found in:\n{captured}"
+    )
+    assert (
+        genesis._regime_review_query_failure_count
+        >= REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD
+    )
+
+    # Verify the system-alert post landed (importance=2 = critical).
+    escalation_alerts = [
+        a for a in alert_posts
+        if a.get("channel") == "system-alerts"
+        and "REGIME REVIEW" in (a.get("content") or "")
+    ]
+    assert escalation_alerts, (
+        f"No system-alert post for the escalation. all posts: {alert_posts!r}"
+    )
+    assert escalation_alerts[0].get("importance") == 2
+
+    # Cycle 4: restore the query to working. Counter resets; no new
+    # escalation log fires.
+    genesis._consume_pending_regime_reviews = MagicMock(return_value=[])
+    capsys.readouterr()  # drain
+    alert_posts.clear()
+    asyncio.run(genesis.run_cycle())
+
+    assert genesis._regime_review_query_failure_count == 0, (
+        f"Counter should reset on first successful consumption. "
+        f"Got {genesis._regime_review_query_failure_count}"
+    )
+    captured4 = _strip_ansi(capsys.readouterr().out)
+    fresh_escalations = [
+        line for line in captured4.splitlines()
+        if "regime_review_query_failure_escalated" in line
+    ]
+    assert not fresh_escalations, (
+        f"Fresh escalation log fired during recovery cycle: {fresh_escalations!r}"
+    )
+    fresh_alerts = [a for a in alert_posts if a.get("channel") == "system-alerts"]
+    assert not fresh_alerts, (
+        f"Fresh system-alert post during recovery cycle: {fresh_alerts!r}"
     )
