@@ -162,6 +162,14 @@ class PaperTradingService(TradeExecutionService):
         # which logs CRITICAL and rejects rather than silent-passing.
         # See WIRING_AUDIT_REPORT.md subsystem I.
         self.halt_checker = halt_checker
+        # Fail-closed-to-halt-everything state, mirrors the Warden's
+        # _safety_state_unknown flag. When `halt_checker` raises or returns
+        # malformed data we cannot determine whether trades are safe; the
+        # only correct policy is to refuse trades. Auto-clears on the next
+        # successful halt_checker call — see _check_operator_halt. This is
+        # NOT sticky-by-default; a single transient Wire glitch must not
+        # permanently halt the colony (DMS-class anti-pattern).
+        self._halt_state_unknown: bool = False
 
     async def execute_market_order(
         self, agent_id: int, symbol: str, side: str, size_usd: float,
@@ -671,12 +679,18 @@ class PaperTradingService(TradeExecutionService):
     ):
         """Consume the Wire severity-5 halt list (WIRING_AUDIT_REPORT.md
         subsystem I). Returns None if no halt blocks this trade, OR a
-        rejected OrderResult if a halt is active.
+        rejected OrderResult if a halt is active OR halt state is unknown.
 
         Symbol parsing: ccxt-style 'BTC/USDT' → coin = 'BTC'. The halt
         registry is per-coin-per-exchange; we query with both the trade's
         coin AND the configured exchange (`self.exchange`), so a Kraken-
         scoped halt does not block trades on a different exchange.
+
+        Fail-closed-to-halt-everything (iteration 4 / Critic Finding 1):
+        if `halt_checker` raises OR returns non-list garbage, we cannot
+        determine whether trades are safe. Set `_halt_state_unknown` and
+        REJECT the trade. Mirrors the Warden's fail-closed-to-red.
+        Auto-clears on next successful call.
         """
         # Defense-in-depth: production wiring guarantees a halt_checker.
         # If a future bug lands here with None, REJECT — not soft-pass.
@@ -695,34 +709,52 @@ class PaperTradingService(TradeExecutionService):
         # Falls back to the full symbol if the slash isn't present.
         trade_coin = symbol.split("/", 1)[0] if "/" in symbol else symbol
 
+        # Call halt_checker. Tolerate older signature without `exchange`
+        # kwarg as a graceful-degradation step (the Wire integration on
+        # this branch always supports it; defensive against future drift).
         try:
-            active = self.halt_checker(coin=trade_coin, exchange=self.exchange)
-        except TypeError:
-            # Older signature without `exchange` kwarg — tolerate but log.
             try:
+                active = self.halt_checker(coin=trade_coin, exchange=self.exchange)
+            except TypeError:
+                # Signature mismatch — try the older one.
                 active = self.halt_checker(coin=trade_coin)
-            except Exception as exc:
-                import logging
-                logging.getLogger(__name__).critical(
-                    "trade_halt_checker_failed",
-                    extra={"agent_id": int(agent.id), "symbol": symbol, "error": str(exc)},
-                )
-                return self._create_rejected_order(
-                    session, agent, symbol, side, size_usd, order_type,
-                    f"Halt checker raised: {exc} — trade rejected (fail-closed)",
-                    source_plan_id, source_cycle_id,
-                )
         except Exception as exc:
-            import logging
-            logging.getLogger(__name__).critical(
-                "trade_halt_checker_failed",
-                extra={"agent_id": int(agent.id), "symbol": symbol, "error": str(exc)},
+            # FAIL-CLOSED-TO-HALT-EVERYTHING: cannot determine state.
+            self._halt_state_unknown = True
+            await self._raise_halt_state_unknown_alert(
+                agent_id=int(agent.id), symbol=symbol, side=side,
+                size_usd=size_usd, order_type=order_type,
+                exc=exc, kind="raise",
             )
             return self._create_rejected_order(
                 session, agent, symbol, side, size_usd, order_type,
-                f"Halt checker raised: {exc} — trade rejected (fail-closed)",
+                f"Halt state unknown ({type(exc).__name__}: {exc}) — "
+                f"trade rejected (fail-closed)",
                 source_plan_id, source_cycle_id,
             )
+
+        # Validate the response shape. Anything that isn't a list of
+        # halt-signal-like objects is treated as unknown state.
+        if not isinstance(active, list):
+            self._halt_state_unknown = True
+            await self._raise_halt_state_unknown_alert(
+                agent_id=int(agent.id), symbol=symbol, side=side,
+                size_usd=size_usd, order_type=order_type,
+                exc=TypeError(f"halt_checker returned {type(active).__name__}, expected list"),
+                kind="garbage",
+            )
+            return self._create_rejected_order(
+                session, agent, symbol, side, size_usd, order_type,
+                f"Halt state unknown (halt_checker returned "
+                f"{type(active).__name__}, expected list) — trade rejected "
+                f"(fail-closed)",
+                source_plan_id, source_cycle_id,
+            )
+
+        # Successful, well-formed call — clear the unknown latch.
+        # MUST run unconditionally so a single transient blip cannot
+        # permanently halt the colony (DMS-class anti-pattern).
+        self._halt_state_unknown = False
 
         if not active:
             return None
@@ -795,6 +827,55 @@ class PaperTradingService(TradeExecutionService):
             ))
         except Exception:
             log.exception("halt_block_agora_post_failed")
+
+    async def _raise_halt_state_unknown_alert(
+        self, *, agent_id: int, symbol: str, side: str,
+        size_usd: float, order_type: str, exc: Exception, kind: str,
+    ) -> None:
+        """Loud alert path for the FAIL-CLOSED-TO-HALT-EVERYTHING branch
+        in `_check_operator_halt`. Fires when `halt_checker` raises (kind
+        == 'raise') OR returns malformed data (kind == 'garbage').
+        Mirrors the Warden's safety-state-unknown alert. Per Critic
+        Finding 1 (iteration 4) — auto-recovery on next successful call
+        is verified by `test_halt_unknown_auto_clears_on_recovery`."""
+        import logging
+        log = logging.getLogger(__name__)
+        log.critical(
+            "trade_halt_state_unknown",
+            extra={
+                "agent_id": agent_id, "symbol": symbol, "side": side,
+                "size_usd": size_usd, "order_type": order_type,
+                "kind": kind, "exception_type": type(exc).__name__,
+                "exception": str(exc),
+            },
+        )
+        if self.agora is None:
+            return
+        try:
+            from src.agora.schemas import AgoraMessage, MessageType
+            await self.agora.post_message(AgoraMessage(
+                agent_id=int(agent_id),
+                agent_name="PaperTradingService",
+                channel="system-alerts",
+                content=(
+                    f"[HALT STATE UNKNOWN] Operator trade rejected — "
+                    f"halt_checker {kind}: {type(exc).__name__}: {exc}. "
+                    f"agent_id={agent_id} {side} {symbol} {order_type} "
+                    f"${size_usd:.2f}. Failing closed: no trades until "
+                    f"halt registry is readable again."
+                ),
+                message_type=MessageType.ALERT,
+                importance=2,
+                metadata={
+                    "event_class": "operator_halt.state_unknown",
+                    "agent_id": agent_id, "symbol": symbol, "side": side,
+                    "size_usd": size_usd, "order_type": order_type,
+                    "kind": kind, "exception_type": type(exc).__name__,
+                    "exception": str(exc),
+                },
+            ))
+        except Exception:
+            log.exception("halt_state_unknown_agora_post_failed")
 
     async def _raise_halt_checker_missing_alert(
         self, *, agent_id: int, symbol: str, side: str,

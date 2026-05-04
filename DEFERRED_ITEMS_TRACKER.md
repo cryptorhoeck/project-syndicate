@@ -137,6 +137,30 @@
 
 ---
 
+## OPERATOR HALT CONSUMER HOTFIX (Identified 2026-05-04)
+
+- [ ] **Wire halt cross-process visibility (PRODUCTION GAP)**
+  - Surfaced during: hotfix/operator-halt-consumer-wiring iteration 4 review (Critic Finding 3)
+  - Current state: `OperatorHaltSignal` registry (`_ACTIVE`) is module-level Python state, in-memory only, process-local.
+  - In production, the digester runs in the `wire_scheduler` subprocess and writes to its OWN copy of `_ACTIVE`. PaperTradingService runs in the `agents` subprocess and reads from a DIFFERENT (always-empty) copy. Halts published by the digester are **not visible** to the trading service in production today.
+  - Tests pass because they run both producer and consumer in the same Python process — that does NOT exercise the cross-process flow.
+  - Risk: HIGH for an Arena run that boots the full process tree. The wiring fix in this hotfix closes the IN-PROCESS contract; the cross-process contract is still broken. Severity-5 events would be detected by the digester, registered into the wire_scheduler's `_ACTIVE`, and silently ignored by the agents process.
+  - Action when picked up: add a persistence layer. Two options:
+    a) Redis-backed: producer publishes signals to a Redis hash/sorted set keyed by trigger_event_id; consumer queries Redis. Auto-expire via Redis TTL aligned with `expires_at`. Smallest blast radius.
+    b) DB-backed: persist signals to a new `operator_halts` table; consumer queries the table with a `WHERE expires_at > NOW()` filter. Simpler model, larger blast radius.
+  - Tests when picked up: a multi-process integration test that spawns two processes (producer + consumer) and verifies a halt published in one is visible in the other within N seconds.
+  - Trigger to pick up: BEFORE the next Arena run that depends on Wire severity-5 hooks for safety. Until persistence lands, treat the consumer wiring as a documentation contract, not a working safety gate cross-process.
+
+- [ ] **Wire source-side exchange classification**
+  - Surfaced during: hotfix/operator-halt-consumer-wiring (Phase 10 kickoff per-coin-per-exchange scope)
+  - Current state: `OperatorHaltSignal.exchange` is now an optional field that producers leave None ("applies to all exchanges"). The consumer (`PaperTradingService._check_operator_halt`) queries with both coin AND exchange and matches correctly.
+  - Gap: source classification doesn't yet populate `exchange` per event-type. A Kraken withdrawal_halt should ideally set exchange="kraken" so it scopes only to Kraken; a Solana chain_halt should leave exchange=None (chain halts are global). Today both leave it None.
+  - Risk: low. Producers default to wider scope (block on all exchanges), which is the safe-by-default reading. When source-side classification narrows scope, the consumer logic Just Works without further changes.
+  - Action when picked up: in `src/wire/digest/haiku_digester.py`, when calling `publish_halt_for_event`, populate `exchange` based on the source's known venue. Kraken-source events → exchange="kraken". DefiLlama / Etherscan / FRED → exchange=None (cross-venue or chain-level). The Haiku digestion prompt may also be extended to include exchange in the classification schema.
+  - Trigger to pick up: when the colony runs on more than one exchange (today only Kraken) and per-exchange scope becomes operationally meaningful.
+
+---
+
 ## TOOLING — CRITIC (Identified 2026-05-03)
 
 - [ ] **critic.py: tag reviews with reviewed SHA**

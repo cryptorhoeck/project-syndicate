@@ -79,10 +79,28 @@ class OperatorHaltSignal:
         return expires > now
 
 
-# In-process registry. The Wire scheduler runs in its own process; the
-# Operator process consults this via a shared persistence layer. For Phase 10
-# we keep the registry in Redis-friendly memory; downstream phases may move
-# it to a dedicated table.
+# IN-MEMORY ONLY, PROCESS-LOCAL. No DB row, no Redis key, no file
+# persistence. The list lives in this Python module's globals; readers
+# and writers in the SAME process see the same list, but readers in a
+# DIFFERENT process see their own (empty) list.
+#
+# That matters in production today: the Wire digester runs in the
+# wire_scheduler subprocess and writes here; PaperTradingService runs in
+# the agents subprocess and reads here; those are different processes.
+# Halts published by the digester are NOT visible to the trading service.
+# Tests pass because they exercise both sides in a single Python process.
+#
+# Tracked in DEFERRED_ITEMS_TRACKER.md "Wire halt cross-process
+# visibility"; the persistence-layer plan there closes the cross-process
+# gap. Until that lands, an Arena run that boots both subprocesses cannot
+# rely on Wire-published halts to gate trades cross-process.
+#
+# Expiry policy: filter-on-read. `list_active` excludes signals whose
+# `is_active(now=...)` returns False. There is NO background sweeper —
+# expired signals remain in `_ACTIVE` until the next manual call to
+# `expire_stale()` or until the process restarts. Tests of expiry
+# semantics rely on the filter-on-read behavior in `list_active`, NOT on
+# any sweeper running in the background.
 _ACTIVE: list[OperatorHaltSignal] = []
 
 

@@ -267,12 +267,17 @@ async def test_operator_halt_does_not_block_unaffected_coin(
 async def test_operator_halt_auto_lifts_on_signal_expiry(
     db_factory, seeded_world, production_trading_service,
 ):
-    """Halts auto-expire via the existing 30-min auto-resume timer
-    (DEFAULT_AUTO_EXPIRE_MINUTES). After expiry, list_active filters the
-    expired signal out, so the consumer sees an empty list and approves
-    the trade. We force expiry by registering a short-duration halt and
-    waiting (logically — by clearing _ACTIVE manually after asserting
-    the rejection branch fires)."""
+    """Halts auto-expire via FILTER-ON-READ in `list_active` — there is
+    NO background sweeper (Critic Finding 4). On every call, list_active
+    filters out signals whose `is_active(now)` returns False (i.e.,
+    `expires_at <= now`). When `expires_at` passes wallclock now, the
+    consumer sees an empty list and approves the trade.
+
+    The default auto-resume window is 30 min (DEFAULT_AUTO_EXPIRE_MINUTES).
+    We force expiry deterministically by re-publishing the signal with an
+    `issued_at` far enough in the past that `expires_at` (= issued_at +
+    auto_expire_minutes) is already behind wallclock now. That exercises
+    the SAME filter-on-read path a long-running Arena would hit naturally."""
     # Issue a halt with a 1-minute timer.
     publish_halt_for_event(
         event_id=44,
@@ -371,6 +376,274 @@ async def test_halt_checker_missing_branch_rejects_and_alerts(
     assert positions == []
     assert len(orders) == 1
     assert orders[0].status == "rejected"
+
+
+# ---------------------------------------------------------------------------
+# Iteration 4 — Critic findings (HIGH/MEDIUM/LOW)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_operator_halt_fails_closed_when_list_active_raises(
+    db_factory, seeded_world, fake_redis_client, production_warden,
+):
+    """Critic Finding 1 (HIGH): if halt_checker raises, treat as halt-state-
+    unknown and REJECT. Mirrors the Warden's fail-closed-to-red. Without
+    this, a transient Wire glitch silently lets all trades through."""
+    from src.trading.fee_schedule import FeeSchedule
+    from src.trading.slippage_model import SlippageModel
+
+    def _raising_checker(**kw):
+        raise RuntimeError("simulated Wire registry unavailability")
+
+    svc = PaperTradingService(
+        db_session_factory=db_factory,
+        price_cache=MagicMock(),
+        slippage_model=SlippageModel(),
+        fee_schedule=FeeSchedule(),
+        warden=production_warden,
+        redis_client=fake_redis_client,
+        agora_service=None,
+        halt_checker=_raising_checker,
+    )
+    svc.price_cache.get_ticker = AsyncMock(
+        return_value=({"bid": 100.0, "ask": 100.5, "last": 100.25, "baseVolume": 1_000_000}, True)
+    )
+
+    result = await svc.execute_market_order(
+        agent_id=seeded_world, symbol="BTC/USDT", side="buy", size_usd=10.0,
+    )
+    assert result.success is False
+    err = (result.error or "").lower()
+    assert "unknown" in err and "fail-closed" in err, (
+        f"Expected halt-state-unknown reason; got {result.error!r}"
+    )
+    assert svc._halt_state_unknown is True
+
+
+@pytest.mark.asyncio
+async def test_check_operator_halt_fails_closed_when_list_active_returns_garbage(
+    db_factory, seeded_world, fake_redis_client, production_warden,
+):
+    """Critic Finding 1 (HIGH): malformed return → same fail-closed
+    behavior. A halt_checker that returns the wrong shape (e.g., None,
+    a string, a dict) cannot be trusted; treat as unknown state."""
+    from src.trading.fee_schedule import FeeSchedule
+    from src.trading.slippage_model import SlippageModel
+
+    def _garbage_checker(**kw):
+        return "not a list"  # garbage
+
+    svc = PaperTradingService(
+        db_session_factory=db_factory,
+        price_cache=MagicMock(),
+        slippage_model=SlippageModel(),
+        fee_schedule=FeeSchedule(),
+        warden=production_warden,
+        redis_client=fake_redis_client,
+        agora_service=None,
+        halt_checker=_garbage_checker,
+    )
+    svc.price_cache.get_ticker = AsyncMock(
+        return_value=({"bid": 100.0, "ask": 100.5, "last": 100.25, "baseVolume": 1_000_000}, True)
+    )
+
+    result = await svc.execute_market_order(
+        agent_id=seeded_world, symbol="BTC/USDT", side="buy", size_usd=10.0,
+    )
+    assert result.success is False
+    err = (result.error or "").lower()
+    assert "unknown" in err, f"Expected halt-state-unknown reason; got {result.error!r}"
+    assert "expected list" in err or "expected: list" in err or "list" in err
+    assert svc._halt_state_unknown is True
+
+
+@pytest.mark.asyncio
+async def test_halt_unknown_auto_clears_on_recovery(
+    db_factory, seeded_world, fake_redis_client, production_warden,
+):
+    """Critic Finding 1 (HIGH): the fail-closed latch MUST auto-clear on
+    the next successful halt_checker call. A single transient blip cannot
+    permanently halt the colony — that would be the DMS self-defeating-
+    loop pattern in a new costume.
+
+    Cycle:
+      (a) Healthy halt_checker → trade approves
+      (b) Switch to raising checker → trade rejected, _halt_state_unknown=True
+      (c) Switch back to healthy → trade approves, _halt_state_unknown=False
+    """
+    from src.trading.fee_schedule import FeeSchedule
+    from src.trading.slippage_model import SlippageModel
+
+    state = {"mode": "healthy"}
+
+    def _toggling_checker(**kw):
+        if state["mode"] == "raise":
+            raise RuntimeError("simulated transient Wire glitch")
+        return []  # healthy: no active halts
+
+    svc = PaperTradingService(
+        db_session_factory=db_factory,
+        price_cache=MagicMock(),
+        slippage_model=SlippageModel(),
+        fee_schedule=FeeSchedule(),
+        warden=production_warden,
+        redis_client=fake_redis_client,
+        agora_service=None,
+        halt_checker=_toggling_checker,
+    )
+    svc.price_cache.get_ticker = AsyncMock(
+        return_value=({"bid": 100.0, "ask": 100.5, "last": 100.25, "baseVolume": 1_000_000}, True)
+    )
+    svc.price_cache.get_order_book = AsyncMock(
+        return_value=({"asks": [[100.5, 100]], "bids": [[100.0, 100]]}, True)
+    )
+    svc.price_cache.is_stale = MagicMock(return_value=False)
+
+    # (a) Healthy
+    res_a = await svc.execute_market_order(
+        agent_id=seeded_world, symbol="BTC/USDT", side="buy", size_usd=5.0,
+    )
+    assert res_a.success is True, f"Step (a) approval expected: {res_a.error!r}"
+    assert svc._halt_state_unknown is False
+
+    # (b) Raising
+    state["mode"] = "raise"
+    res_b = await svc.execute_market_order(
+        agent_id=seeded_world, symbol="BTC/USDT", side="buy", size_usd=5.0,
+    )
+    assert res_b.success is False
+    assert svc._halt_state_unknown is True
+
+    # (c) Recovered
+    state["mode"] = "healthy"
+    res_c = await svc.execute_market_order(
+        agent_id=seeded_world, symbol="BTC/USDT", side="buy", size_usd=5.0,
+    )
+    assert res_c.success is True, (
+        f"Step (c-recovery) approval expected: {res_c.error!r}. If this "
+        f"fails the latch became sticky — DMS-class regression."
+    )
+    assert svc._halt_state_unknown is False, (
+        "Latch did not clear after halt_checker recovery — sticky regression."
+    )
+
+
+@pytest.mark.asyncio
+async def test_operator_halt_blocks_only_matching_exchange(
+    db_factory, seeded_world, fake_redis_client,
+):
+    """Critic Finding 2 (HIGH): per-coin-PER-EXCHANGE scope must work.
+    Publish a halt with exchange='kraken'. Same coin BTC, different
+    exchanges, opposite outcomes:
+      - BTC trade on a kraken-configured service → REJECTED
+      - BTC trade on a binance-configured service → APPROVED
+    This proves both axes of scope are honored."""
+    from src.trading.fee_schedule import FeeSchedule
+    from src.trading.slippage_model import SlippageModel
+
+    # Approving Warden so the gate under test is the halt scope, not Warden.
+    approving_warden = MagicMock()
+    approving_warden.evaluate_trade = AsyncMock(
+        return_value={"status": "approved", "reason": "test", "request_id": "test"}
+    )
+
+    def _make_svc(exchange_name: str):
+        svc = PaperTradingService(
+            db_session_factory=db_factory,
+            price_cache=MagicMock(),
+            slippage_model=SlippageModel(),
+            fee_schedule=FeeSchedule(),
+            warden=approving_warden,
+            redis_client=fake_redis_client,
+            agora_service=None,
+            halt_checker=list_active,  # the real Wire consumer
+        )
+        # Override the per-exchange config so each service identifies as a
+        # different venue. Production sets this from `config.default_exchange`
+        # at __init__; we override post-init for the test.
+        svc.exchange = exchange_name
+        svc.price_cache.get_ticker = AsyncMock(
+            return_value=({"bid": 100.0, "ask": 100.5, "last": 100.25, "baseVolume": 1_000_000}, True)
+        )
+        svc.price_cache.get_order_book = AsyncMock(
+            return_value=({"asks": [[100.5, 100]], "bids": [[100.0, 100]]}, True)
+        )
+        svc.price_cache.is_stale = MagicMock(return_value=False)
+        return svc
+
+    kraken_svc = _make_svc("kraken")
+    binance_svc = _make_svc("binance")
+
+    # Publish a Kraken-scoped BTC halt.
+    publish_halt_for_event(
+        event_id=200, coin="BTC", event_type="exchange_outage",
+        severity=SEVERITY_CRITICAL,
+        summary="SYNTHETIC: Kraken-scoped BTC outage",
+        exchange="kraken",
+    )
+
+    # BTC on Kraken → must REJECT
+    kraken_result = await kraken_svc.execute_market_order(
+        agent_id=seeded_world, symbol="BTC/USDT", side="buy", size_usd=5.0,
+    )
+    assert kraken_result.success is False, (
+        f"Kraken-scoped halt should block BTC trades on Kraken. Got: "
+        f"{kraken_result.error!r}"
+    )
+    assert "kraken" in (kraken_result.error or "").lower() or \
+           "trigger_event_id=200" in (kraken_result.error or ""), (
+        f"Reject reason should cite the Kraken halt: {kraken_result.error!r}"
+    )
+
+    # BTC on Binance → must APPROVE (different exchange axis)
+    binance_result = await binance_svc.execute_market_order(
+        agent_id=seeded_world, symbol="BTC/USDT", side="buy", size_usd=5.0,
+    )
+    assert binance_result.success is True, (
+        f"Kraken-scoped halt should NOT block BTC trades on Binance. Got: "
+        f"{binance_result.error!r}. If this fails, the per-exchange axis "
+        f"of scope has regressed — kickoff violation."
+    )
+
+
+@pytest.mark.asyncio
+async def test_close_position_succeeds_during_active_halt(
+    db_factory, seeded_world, production_trading_service,
+):
+    """Critic Finding 5 (LOW): close_position must bypass the halt check
+    by design (cannot refuse to close a losing position because of a
+    halt). This test enforces that contract rather than leaving it as
+    a comment in the commit message.
+
+    Open a BTC position, publish a BTC halt, attempt close — must succeed.
+    """
+    # Open a BTC position with no halt active.
+    open_result = await production_trading_service.execute_market_order(
+        agent_id=seeded_world, symbol="BTC/USDT", side="buy", size_usd=10.0,
+    )
+    assert open_result.success is True
+    position_id = open_result.position_id
+    assert position_id is not None
+
+    # Now publish a BTC halt.
+    publish_halt_for_event(
+        event_id=300, coin="BTC", event_type="withdrawal_halt",
+        severity=SEVERITY_CRITICAL,
+        summary="SYNTHETIC: halt issued AFTER position was opened",
+    )
+    assert list_active(coin="BTC")  # halt is active
+
+    # Attempt close — must succeed despite halt (close-by-design bypass).
+    close_result = await production_trading_service.close_position(
+        position_id=position_id, reason="halt-bypass-test",
+    )
+    assert close_result.success is True, (
+        f"close_position must bypass the halt check (cannot refuse to close "
+        f"a losing position because of a halt). Got: {close_result.error!r}. "
+        f"If this fails, close was incorrectly halt-gated — verify the halt "
+        f"check stays out of close_position / _do_close_position."
+    )
 
 
 def test_halt_consumer_present_in_both_market_and_limit_paths():
