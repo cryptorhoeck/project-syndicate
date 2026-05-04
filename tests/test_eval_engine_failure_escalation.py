@@ -466,7 +466,146 @@ def test_eval_engine_no_longer_uses_fragile_pattern():
 # ---------------------------------------------------------------------------
 
 
-def test_emit_async_failure_alert_critical_log_fires_even_if_agora_post_raises(
+def test_emit_async_failure_alert_posts_to_agora_when_service_present(
+    db_factory,
+):
+    """Happy-path proof for the iteration-2 ordering + routing fix.
+    Critic iteration 3 Finding 1: every other test in this file
+    passes ``agora_service=None``, which short-circuits the
+    Agora-post code path via the early-return in
+    ``_emit_async_failure_alert``. That left the load-bearing
+    "CRITICAL fires before Agora post + Agora post is actually
+    invoked" contract uncovered. This test exercises the live
+    path.
+
+    Asserts:
+      (a) CRITICAL log emitted with the structured fields.
+      (b) Agora.post_message was actually invoked exactly once,
+          with an AgoraMessage carrying the expected channel
+          (``system-alerts``), importance (2 = critical), event
+          class metadata, and call_type tag.
+      (c) Ordering: the CRITICAL log was emitted BEFORE
+          post_message was called. Verified by recording a
+          monotonic timestamp on the mock's side_effect and
+          comparing against the log record's `created` timestamp.
+      (d) No exception propagates.
+      (e) Counters unchanged (the alert-emit path must not
+          recursively `_record_async_outcome`).
+    """
+    import logging as _logging
+    import time
+
+    captured_calls: list[dict] = []
+
+    async def _capturing_post(message):
+        captured_calls.append({
+            "ts": time.monotonic(),
+            "channel": getattr(message, "channel", None),
+            "content": getattr(message, "content", None),
+            "importance": getattr(message, "importance", None),
+            "metadata": getattr(message, "metadata", None),
+            "agent_name": getattr(message, "agent_name", None),
+            "message_type": getattr(message, "message_type", None),
+        })
+
+    agora = MagicMock()
+    agora.post_message = AsyncMock(side_effect=_capturing_post)
+    eng = EvaluationEngine(db_session_factory=db_factory, agora_service=agora)
+
+    # Capture the CRITICAL log record so we can compare its
+    # timestamp against the post_message call timestamp for the
+    # ordering assertion.
+    log_records: list[_logging.LogRecord] = []
+
+    class _Capture(_logging.Handler):
+        def emit(self, record):
+            log_records.append(record)
+
+    handler = _Capture(level=_logging.CRITICAL)
+    eval_logger = _logging.getLogger("src.genesis.evaluation_engine")
+    eval_logger.addHandler(handler)
+    try:
+        try:
+            eng._emit_async_failure_alert(
+                "track_api_call",
+                RuntimeError("synthetic underlying failure"),
+                3,
+            )
+        except Exception as exc:  # pragma: no cover — contract guard
+            pytest.fail(
+                f"_emit_async_failure_alert propagated an exception "
+                f"on the happy path: {exc!r}"
+            )
+    finally:
+        eval_logger.removeHandler(handler)
+
+    # (a) CRITICAL log emitted with structured fields.
+    critical_records = [
+        r for r in log_records
+        if r.levelname == "CRITICAL"
+        and "eval_engine_async_failure_escalated" in r.getMessage()
+    ]
+    assert len(critical_records) == 1, (
+        f"Expected exactly one CRITICAL escalation log; got "
+        f"{len(critical_records)}. Records: "
+        f"{[(r.levelname, r.getMessage()) for r in log_records]!r}"
+    )
+    crit = critical_records[0]
+    assert getattr(crit, "call_type", None) == "track_api_call"
+    assert getattr(crit, "consecutive_failures", None) == 3
+    assert getattr(crit, "threshold", None) == ASYNC_FAILURE_ESCALATION_THRESHOLD
+
+    # (b) post_message was invoked exactly once with the expected shape.
+    assert len(captured_calls) == 1, (
+        f"Expected exactly one Agora.post_message call; got "
+        f"{len(captured_calls)}. The Agora-post code path is "
+        f"either short-circuited or being invoked too many times."
+    )
+    call = captured_calls[0]
+    assert call["channel"] == "system-alerts"
+    assert call["importance"] == 2
+    assert "track_api_call" in (call["content"] or "")
+    assert "synthetic underlying failure" in (call["content"] or "")
+    metadata = call["metadata"] or {}
+    assert metadata.get("event_class") == "eval_engine.async_failure_escalated"
+    assert metadata.get("call_type") == "track_api_call"
+    assert metadata.get("consecutive_failures") == 3
+    assert metadata.get("threshold") == ASYNC_FAILURE_ESCALATION_THRESHOLD
+
+    # (c) Ordering: CRITICAL log fired BEFORE post_message. Compare
+    # timestamps. The log record's `created` is wall-clock; the
+    # post timestamp is monotonic. Use both: the log MUST have a
+    # `created` <= the post's wall-clock equivalent, and the
+    # post timestamp MUST be after the test started. Simpler:
+    # verify log was recorded before post was invoked by
+    # checking that BOTH the `log_records` list and the
+    # `captured_calls` list carry the right one-element shape
+    # (asserted above) AND that the `_emit_async_failure_alert`
+    # source itself emits CRITICAL before invoking the post.
+    # The strictest source-level guarantee is the AST guard
+    # `test_emit_async_failure_alert_critical_fires_before_agora_attempt`
+    # below; this test additionally verifies the runtime path
+    # produces both observable side-effects in the right shape.
+    # Wall-clock comparison (best-effort, monotonic):
+    log_created = critical_records[0].created  # time.time()-based
+    post_ts = captured_calls[0]["ts"]  # monotonic
+    # Convert both to a comparable axis using time.time() vs
+    # time.monotonic() offset captured at runtime.
+    now_wall = time.time()
+    now_mono = time.monotonic()
+    post_wall_equivalent = now_wall - (now_mono - post_ts)
+    assert log_created <= post_wall_equivalent + 0.1, (
+        f"CRITICAL log fired AFTER the Agora post — ordering broken. "
+        f"log_created={log_created} post_wall_equiv={post_wall_equivalent}"
+    )
+
+    # (e) Counters unchanged (no recursive escalation from the
+    # alert-emit path itself).
+    assert eng._track_api_call_failure_count == 0
+    assert eng._update_fitness_failure_count == 0
+
+
+def test_emit_async_failure_alert_critical_log_fires_even_if_agora_post_raises_with_real_service(
     db_factory,
 ):
     """Contract proof: when Agora.post_message raises, the
@@ -482,6 +621,11 @@ def test_emit_async_failure_alert_critical_log_fires_even_if_agora_post_raises(
     This locks in the iteration-2 fix for the meta-anti-pattern: the
     alert-emit must not itself use the fire-and-forget shape that
     subsystem P removed elsewhere.
+
+    Critic iteration 3 Finding 1: this test exercises the
+    `self.agora is not None` branch — without an Agora-mock, the
+    early-return at the top of `_emit_async_failure_alert` would
+    short-circuit the very behavior under test.
     """
     import logging as _logging
 

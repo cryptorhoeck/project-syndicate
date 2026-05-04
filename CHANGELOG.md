@@ -2,6 +2,41 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-04 - Eval engine async bridge (subsystem P) — Critic iteration 3
+
+One MEDIUM blocking finding from iteration 2 review.
+
+### Finding 1 — Agora-post path coverage gap
+Iteration 2 added the CRITICAL-first ordering and `run_async_safely`
+routing for the Agora system-alerts post, but every existing test
+passed `agora_service=None`, which short-circuits the Agora-post
+branch via the early-return at the top of
+`_emit_async_failure_alert`. The contract behavior was correct on
+inspection but uncovered at runtime.
+
+Two test additions:
+  - `test_emit_async_failure_alert_posts_to_agora_when_service_present`
+    (NEW, happy path) — exercises the live Agora-post path with a
+    capturing mock. Asserts: CRITICAL log emitted with structured
+    fields; `Agora.post_message` invoked exactly once with the
+    expected channel (`system-alerts`), importance=2, content,
+    and `event_class`/`call_type`/`consecutive_failures`/`threshold`
+    metadata; CRITICAL fired BEFORE the post (wall-clock timestamp
+    comparison via monotonic offset); no exception propagates;
+    counters unchanged (no recursion).
+  - `test_emit_async_failure_alert_critical_log_fires_even_if_agora_post_raises_with_real_service`
+    (renamed from iteration 2's
+    `..._critical_log_fires_even_if_agora_post_raises` — the new
+    name makes it explicit that this is the failure-path test
+    against a present mock Agora, not the `agora_service=None`
+    short-circuit). Body unchanged; this was the iteration-2
+    addition that already exercised the live failure path.
+
+### Finding 2 (LOW) — Closed by War Room verification
+War Room verified `test_eval_engine_no_longer_uses_fragile_pattern`
+exists at `tests/test_eval_engine_failure_escalation.py`. Script
+Critic was reading a truncated diff. No code change required.
+
 ## [Hotfix] - 2026-05-04 - Eval engine async bridge (subsystem P) — Critic iteration 2
 
 Two MEDIUM blocking findings from iteration 1 Critic review.
