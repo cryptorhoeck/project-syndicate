@@ -100,17 +100,38 @@ def test_wire_scheduler_starts_before_agents_in_processes_dict():
 
 def test_wire_scheduler_in_shutdown_order():
     """Names absent from SHUTDOWN_ORDER are orphaned at Arena exit. Verify
-    the runner explicitly terminates wire_scheduler via runtime inspection
-    of the module-level constant — a comment containing 'wire_scheduler'
-    cannot accidentally satisfy this test."""
+    three things, since each in isolation can be spoofed:
+      (1) the SHUTDOWN_ORDER module-level constant exists,
+      (2) wire_scheduler is in it (runtime — a code comment cannot satisfy),
+      (3) main() actually consumes SHUTDOWN_ORDER (otherwise a future
+          refactor that hardcodes a different list inside main() would
+          leave wire_scheduler in the constant but never get terminated).
+
+    Without (3), a future refactor could pass (1) and (2) while quietly
+    breaking the wiring — the MEDIUM Critic flagged in iteration review.
+    """
+    import inspect
     run_arena = _import_run_arena()
+
+    # (1) constant exists
     assert hasattr(run_arena, "SHUTDOWN_ORDER"), (
         "scripts.run_arena.SHUTDOWN_ORDER missing — was the module-level "
         "constant removed? main() depends on it for graceful shutdown."
     )
+    # (2) wire_scheduler is in it
     assert "wire_scheduler" in run_arena.SHUTDOWN_ORDER, (
         f"wire_scheduler missing from SHUTDOWN_ORDER ({run_arena.SHUTDOWN_ORDER}). "
         "The scheduler subprocess would be orphaned at Arena exit."
+    )
+    # (3) main() actually iterates over SHUTDOWN_ORDER
+    main_src = inspect.getsource(run_arena.main)
+    assert "SHUTDOWN_ORDER" in main_src, (
+        "main() does not reference SHUTDOWN_ORDER. The module-level "
+        "constant is in place but unused — wire_scheduler (and every "
+        "other name in the list) would orphan at Arena exit. If main()'s "
+        "shutdown loop was refactored to a different identifier, update "
+        "this test to match — but make sure the new identifier is exactly "
+        "what main() iterates over for graceful termination."
     )
 
 
