@@ -54,6 +54,18 @@ PROCESSES = {
         "restart_delay": 0,  # Immediate restart — safety critical
         "critical": True,
     },
+    "wire_scheduler": {
+        # Closes WIRING_AUDIT_REPORT.md subsystem U: the Wire's data
+        # acquisition layer was never started in production. Without this,
+        # the Wire pipeline is empty — Scout `recent_signals`, severity-5
+        # hooks, and Archive queries all become no-ops because nothing
+        # populates wire_events. Starts AFTER Postgres/Memurai preflight
+        # and BEFORE genesis/agents so Scout/Strategist/Critic see a live
+        # ticker on their first cycle.
+        "cmd": [PYTHON, "-m", "src.wire.cli", "run-scheduler", "--with-digest"],
+        "restart_delay": 5,
+        "critical": True,
+    },
     "genesis": {
         "cmd": [PYTHON, os.path.join(PROJECT_ROOT, "scripts", "run_genesis.py")],
         "restart_delay": 30,  # Wait 30s before restarting Genesis
@@ -235,6 +247,87 @@ def _print_banner() -> None:
 _log_handles: dict[str, any] = {}
 
 
+def _verify_wire_scheduler_alive(timeout_seconds: int = 60) -> bool:
+    """Block until at least one enabled wire_source has a `last_fetch_attempt`
+    fresher than the Arena's boot stamp, OR the timeout elapses.
+
+    Returns True only if the Wire scheduler actually attempted a fetch
+    within the window. The scheduler ticks all enabled sources on its
+    first iteration, so this should fire within a few seconds of boot.
+
+    Failure means the intelligence layer is dead: the Arena would be
+    running with empty `wire_events`, severity-5 hooks would never fire,
+    Scout `recent_signals` would always be empty, and the Wire dashboard
+    would show stale or no data. The Arena MUST refuse to enter the
+    monitor loop in that state, same risk class as the DMS preflight.
+
+    Implementation note: we rely on `wire_source_health.last_fetch_attempt`
+    rather than `wire_events` count because (1) it updates on every fetch
+    attempt regardless of whether the source returned items, and (2) it
+    does not depend on Haiku digestion succeeding — the scheduler may be
+    fetching healthily even when ANTHROPIC_API_KEY is rejected, and we
+    want to verify the scheduler, not the digester.
+
+    Tz handling: `wire_source_health.last_fetch_attempt` is TIMESTAMPTZ
+    while `system_state.last_arena_boot_at` is TIMESTAMP (naive) for
+    historical schema reasons. Postgres returns one tz-aware and one
+    tz-naive; comparing them directly raises TypeError. We normalize
+    both to naive UTC before the comparison.
+    """
+    try:
+        from datetime import timezone
+        from sqlalchemy import create_engine, text
+        from src.common.config import config
+    except Exception as exc:
+        log.error("wire_scheduler_verify_import_failed", error=str(exc))
+        return False
+
+    def _to_naive_utc(dt):
+        """Coerce any datetime to naive UTC for comparison."""
+        if dt is None:
+            return None
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+
+    deadline = time.time() + timeout_seconds
+    poll_seconds = 2.0
+
+    while time.time() < deadline:
+        try:
+            engine = create_engine(config.database_url, pool_pre_ping=True)
+            with engine.connect() as conn:
+                row = conn.execute(text(
+                    "SELECT MAX(h.last_fetch_attempt) AS latest_attempt, "
+                    "       (SELECT last_arena_boot_at FROM system_state LIMIT 1) AS boot_at "
+                    "FROM wire_source_health h "
+                    "JOIN wire_sources s ON s.id = h.source_id "
+                    "WHERE s.enabled = TRUE"
+                )).fetchone()
+            engine.dispose()
+        except Exception as exc:
+            log.warning("wire_scheduler_verify_db_failed", error=str(exc))
+            time.sleep(poll_seconds)
+            continue
+
+        if row is None:
+            time.sleep(poll_seconds)
+            continue
+
+        latest_attempt = _to_naive_utc(row[0])
+        boot_at = _to_naive_utc(row[1])
+        if latest_attempt is not None and boot_at is not None and latest_attempt >= boot_at:
+            log.info(
+                "wire_scheduler_alive",
+                latest_fetch_attempt=str(latest_attempt),
+                boot_at=str(boot_at),
+            )
+            return True
+        time.sleep(poll_seconds)
+
+    return False
+
+
 def _verify_dead_mans_switch_alive(timeout_seconds: int = 60) -> bool:
     """Block until system_state.last_heartbeat_at is fresher than the Arena's
     boot stamp, OR the timeout elapses.
@@ -393,6 +486,27 @@ def main() -> None:
                 proc.terminate()
         sys.exit(2)
 
+    # Hard verification: the Wire scheduler must produce at least one fetch
+    # attempt within 60 seconds of boot. If it doesn't, the intelligence
+    # layer is dead — wire_events stay empty, Scout recent_signals is
+    # always empty, severity-5 hooks never fire. Refuse to enter monitor
+    # loop. Same wiring contract as DMS / Warden / TradeExecutionService:
+    # construct, verify, abort if verification fails. Closes
+    # WIRING_AUDIT_REPORT.md subsystem U.
+    if not _verify_wire_scheduler_alive(timeout_seconds=60):
+        log.error(
+            "wire_scheduler_did_not_fetch",
+            message="No enabled Wire source produced a fetch_attempt within "
+                    "60s of Arena boot. Refusing to enter monitor loop. "
+                    "Investigate src/wire/cli.py run-scheduler logs and "
+                    "wire_source_health.",
+        )
+        for name, proc in _children.items():
+            if proc.poll() is None:
+                log.info("aborting_terminate", name=name, pid=proc.pid)
+                proc.terminate()
+        sys.exit(2)
+
     # Monitor loop
     try:
         while _running:
@@ -422,7 +536,7 @@ def main() -> None:
 
     # Graceful shutdown — reverse order of criticality
     log.info("arena_shutting_down")
-    shutdown_order = ["genesis", "agents", "trading", "dashboard", "heartbeat", "warden"]
+    shutdown_order = ["genesis", "agents", "trading", "wire_scheduler", "dashboard", "heartbeat", "warden"]
     for name in shutdown_order:
         proc = _children.get(name)
         if proc and proc.poll() is None:
