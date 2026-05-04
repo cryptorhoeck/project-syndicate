@@ -55,20 +55,29 @@ PRESTIGE_MILESTONES = {
 # given call type, the engine emits CRITICAL + a system-alert post.
 # Counter resets on the first success of that call type.
 #
-# Derivation: 3 consecutive failures = 3 evaluation cycles where the
-# same call type (track_api_call OR update_fitness) failed end-to-end.
-# Long enough to absorb transient DB blips and event-loop contention;
-# short enough that a structural break (schema drift, cross-thread
-# session corruption, etc.) escalates within a single Genesis 5-min
-# cycle's evaluation batch instead of going unnoticed for hours.
+# Derivation (HONEST — Critic iteration 2 Finding 2 chose Option B):
+# Threshold of 3 matches regime review's K=3
+# (`REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD` in `src/genesis/genesis.py`)
+# for consistency across async-bridge users. The eval-engine cadence
+# does NOT cleanly map to "K consecutive cycles = N minutes" the way
+# regime review's per-cycle SELECT does — `EvaluationEngine` is
+# instantiated FRESH at the top of each Genesis evaluation pass
+# (see `genesis.py:858`), so the counter starts at 0 each cycle and
+# 3 consecutive failures means "3 same-call-type failures in a row
+# within ONE evaluation batch", not "3 cycles". The actual operational
+# meaning therefore depends on batch size and per-agent call shape;
+# fabricating a time-window derivation would be dishonest.
 #
-# CONTRACT: consecutive-only. Same shape as
-# `REGIME_REVIEW_QUERY_FAILURE_ALERT_THRESHOLD`. An intermittent
-# pattern (fail, success, fail, fail) does NOT escalate — see the
-# negative test in test_eval_engine_failure_escalation. A
-# cumulative-window detector is tracked in DEFERRED_ITEMS_TRACKER.md
-# under "Regime review escalation: cumulative-window failure
-# detection" — when that lands, the eval engine adopts it too.
+# Tunable if operational experience reveals a different appropriate
+# value. The contract is consecutive-only failures; threshold value
+# can move without changing the contract.
+#
+# CONTRACT: consecutive-only. An intermittent pattern (fail, success,
+# fail, fail) does NOT escalate — see the negative test in
+# `test_eval_engine_failure_escalation`. A cumulative-window detector
+# is tracked in DEFERRED_ITEMS_TRACKER.md under "Regime review
+# escalation: cumulative-window failure detection" — when that lands,
+# the eval engine adopts it too.
 ASYNC_FAILURE_ESCALATION_THRESHOLD = 3
 
 
@@ -152,17 +161,37 @@ class EvaluationEngine:
     def _emit_async_failure_alert(
         self, call_type: str, exc: Optional[Exception], count: int,
     ) -> None:
-        """Emit CRITICAL log + best-effort Agora system-alert when a
-        per-call-type counter hits the consecutive-failure threshold.
+        """Emit a consecutive-failure escalation alert.
 
-        The Agora post is best-effort: if the running event loop
-        accepts a fire-and-forget task we use that, otherwise we
-        attempt asyncio.run, otherwise we silently skip the post and
-        let the CRITICAL log carry the alert. The CRITICAL log is the
-        load-bearing signal — Agora is the cross-process mirror.
+        Contract (locked, Critic iteration 2 Finding 1):
+          - The CRITICAL log is the alert-emission contract. It MUST
+            fire FIRST, before the Agora post is even attempted. Once
+            the CRITICAL line lands, the contract is satisfied — the
+            failure is observable in stdout/log infrastructure that
+            does not depend on Agora.
+          - The Agora system-alerts post is a BEST-EFFORT secondary
+            channel that may fail silently if Agora itself is
+            unavailable. On Agora failure we log a single WARNING
+            with the structured `agora_alert_emit_failed` field and
+            return — we do NOT propagate the exception, do NOT
+            increment any counter, and do NOT recursively re-escalate
+            an alert-emit failure (alert-about-alert-about-alert is a
+            maintenance trap; if Agora is down the colony will
+            generate its own independent system-alerts elsewhere).
+
+        Why not fire-and-forget the Agora post: that's exactly the
+        anti-pattern subsystem P fixes. Outcomes from fire-and-forget
+        coroutines are silently lost. Routing the post through
+        `run_async_safely` blocks the calling sync frame for the
+        Agora roundtrip (~5-50ms typical), but in exchange every
+        Agora-emit failure is an observable WARNING with structured
+        diagnostic fields rather than a black hole.
         """
         exc_type_name = type(exc).__name__ if exc is not None else "Unknown"
         exc_str = str(exc) if exc is not None else ""
+
+        # 1. CRITICAL log — load-bearing signal. Fires FIRST so the
+        # alert-emission contract is satisfied even if Agora is down.
         logger.critical(
             "eval_engine_async_failure_escalated",
             extra={
@@ -174,6 +203,7 @@ class EvaluationEngine:
             },
         )
 
+        # 2. Agora system-alerts post — best-effort secondary channel.
         if self.agora is None:
             return
 
@@ -201,21 +231,33 @@ class EvaluationEngine:
                 },
             ))
 
-        try:
-            try:
-                loop = asyncio.get_running_loop()
-                # Fire-and-forget: schedule on the running loop. Will
-                # execute when control returns to the loop after the
-                # current sync frame completes.
-                loop.create_task(_post_alert())
-                return
-            except RuntimeError:
-                pass
-            # No running loop — fall back to a fresh asyncio.run.
-            asyncio.run(_post_alert())
-        except Exception:
-            # Best-effort. The CRITICAL log already fired.
-            logger.exception("eval_engine_async_alert_post_failed")
+        # Route through run_async_safely (NOT fire-and-forget) so the
+        # outcome is observable. If the post raises, the helper
+        # already logs an `async_bridge_failure` WARNING; we add a
+        # second narrow WARNING tagged `agora_alert_emit_failed=True`
+        # so dashboards can distinguish "Agora alert emit failed" from
+        # generic async-bridge failures elsewhere in the engine. We
+        # deliberately do NOT call `_record_async_outcome` here — that
+        # would create the recursive alert-about-alert trap.
+        post_success, post_exc = run_async_safely(
+            _post_alert(), logger=logger,
+        )
+        if not post_success:
+            logger.warning(
+                "agora_alert_emit_failed",
+                extra={
+                    "agora_alert_emit_failed": True,
+                    "call_type": call_type,
+                    "underlying_failure_count": count,
+                    "agora_exception_type": (
+                        type(post_exc).__name__
+                        if post_exc is not None else "Unknown"
+                    ),
+                    "agora_exception_str": (
+                        str(post_exc) if post_exc is not None else ""
+                    ),
+                },
+            )
 
     async def evaluate_batch(
         self, session: Session, agents: list[Agent],

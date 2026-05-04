@@ -2,6 +2,51 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-04 - Eval engine async bridge (subsystem P) — Critic iteration 2
+
+Two MEDIUM blocking findings from iteration 1 Critic review.
+
+### Finding 1 — Alert-emit path no longer uses the anti-pattern P fixes
+`_emit_async_failure_alert` previously routed the Agora system-alerts
+post via `loop.create_task(...)` — fire-and-forget, the same anti-
+pattern subsystem P removes elsewhere. Refactored to:
+  - CRITICAL log fires FIRST (load-bearing alert-emission contract).
+  - Agora post routed through `run_async_safely(_post_alert())` —
+    NOT fire-and-forget, outcome is observable.
+  - On Agora-post failure: log a single WARNING tagged
+    `agora_alert_emit_failed=True` with structured fields
+    (`call_type`, `underlying_failure_count`, `agora_exception_type`,
+    `agora_exception_str`). Does NOT propagate. Does NOT increment
+    any counter. Does NOT recursively re-escalate (alert-about-
+    alert-about-alert is a maintenance trap).
+  - Docstring documents the contract: "CRITICAL log is the alert-
+    emission contract. Agora system-alerts post is a best-effort
+    secondary channel that may fail silently if Agora itself is
+    unavailable."
+
+Tests:
+  - `test_emit_async_failure_alert_critical_log_fires_even_if_agora_post_raises`
+    — Agora.post_message mocked to raise; asserts CRITICAL fires,
+    WARNING with `agora_alert_emit_failed=True` fires, no exception
+    propagates, counters unchanged.
+  - `test_emit_async_failure_alert_critical_fires_before_agora_attempt`
+    — pathological Agora that raises on attribute access; asserts
+    CRITICAL still fires (ordering guard).
+
+### Finding 2 — Honest threshold derivation
+The iteration-1 derivation comment fabricated a "3 cycles = 15 min"
+operational basis. That's wrong for the eval engine: `EvaluationEngine`
+is instantiated FRESH each Genesis evaluation pass (`genesis.py:858`),
+so the counter starts at 0 each cycle and 3 consecutive failures means
+"3 same-call-type failures in a row WITHIN ONE evaluation batch", not
+"3 cycles". Replaced with Option B (honest pattern-match):
+  - Threshold of 3 matches regime review's K=3 for consistency
+    across async-bridge users.
+  - Operational meaning depends on batch size and per-agent call
+    shape; fabricating a time-window derivation would be dishonest.
+  - Tunable; the contract is consecutive-only failures; threshold
+    value can move without changing the contract.
+
 ## [Hotfix] - 2026-05-04 - Eval engine async bridge (subsystem P)
 
 Closes WIRING_AUDIT_REPORT.md subsystem P. Four sites in

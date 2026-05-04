@@ -459,3 +459,154 @@ def test_eval_engine_no_longer_uses_fragile_pattern():
     # Each refactored site must call through the bridge + record outcome.
     assert "run_async_safely" in code_only
     assert "_record_async_outcome" in code_only
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 2 Finding 1: alert-emit ordering + Agora isolation
+# ---------------------------------------------------------------------------
+
+
+def test_emit_async_failure_alert_critical_log_fires_even_if_agora_post_raises(
+    db_factory,
+):
+    """Contract proof: when Agora.post_message raises, the
+    `_emit_async_failure_alert` path must:
+      1. Have ALREADY fired the CRITICAL log (before attempting the
+         post — log is the load-bearing alert-emission contract).
+      2. Log a single WARNING tagged `agora_alert_emit_failed=True`
+         describing the Agora failure.
+      3. NOT propagate any exception to the caller.
+      4. NOT recursively re-escalate by calling
+         `_record_async_outcome` for the alert path itself.
+
+    This locks in the iteration-2 fix for the meta-anti-pattern: the
+    alert-emit must not itself use the fire-and-forget shape that
+    subsystem P removed elsewhere.
+    """
+    import logging as _logging
+
+    # Build an Agora double whose `post_message` raises. The eval
+    # engine calls `await self.agora.post_message(...)` inside a
+    # coroutine handed to `run_async_safely`; the helper offloads to
+    # a worker thread which awaits the coroutine and catches the
+    # raise.
+    agora = MagicMock()
+    agora.post_message = AsyncMock(
+        side_effect=RuntimeError("synthetic agora failure"),
+    )
+    eng = EvaluationEngine(db_session_factory=db_factory, agora_service=agora)
+
+    # Capture log records from the eval_engine logger.
+    records: list[_logging.LogRecord] = []
+
+    class _Capture(_logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Capture(level=_logging.WARNING)
+    eval_logger = _logging.getLogger("src.genesis.evaluation_engine")
+    eval_logger.addHandler(handler)
+    try:
+        # Drive the alert-emit path. This must not raise even though
+        # the Agora post inside will raise.
+        try:
+            eng._emit_async_failure_alert(
+                "track_api_call",
+                RuntimeError("synthetic underlying failure"),
+                3,
+            )
+        except Exception as exc:  # pragma: no cover — contract guard
+            pytest.fail(
+                f"_emit_async_failure_alert propagated an exception: "
+                f"{exc!r}. The Agora post must be wrapped in its own "
+                f"try/except and not surface failures to the caller."
+            )
+    finally:
+        eval_logger.removeHandler(handler)
+
+    # 1. CRITICAL log fired (before the Agora attempt).
+    critical_records = [
+        r for r in records
+        if r.levelname == "CRITICAL"
+        and "eval_engine_async_failure_escalated" in r.getMessage()
+    ]
+    assert critical_records, (
+        f"CRITICAL escalation log did not fire. Records: "
+        f"{[(r.levelname, r.getMessage()) for r in records]!r}"
+    )
+    assert getattr(critical_records[0], "call_type", None) == "track_api_call"
+
+    # 2. WARNING log with structured agora_alert_emit_failed=True.
+    agora_failures = [
+        r for r in records
+        if r.levelname == "WARNING"
+        and getattr(r, "agora_alert_emit_failed", None) is True
+    ]
+    assert agora_failures, (
+        f"Expected a WARNING with agora_alert_emit_failed=True after "
+        f"Agora.post_message raised. Records: "
+        f"{[(r.levelname, r.getMessage(), getattr(r, 'agora_alert_emit_failed', None)) for r in records]!r}"
+    )
+    rec = agora_failures[0]
+    assert getattr(rec, "call_type", None) == "track_api_call"
+    assert getattr(rec, "underlying_failure_count", None) == 3
+    assert getattr(rec, "agora_exception_type", None) == "RuntimeError"
+    assert "synthetic agora failure" in (
+        getattr(rec, "agora_exception_str", None) or ""
+    )
+
+    # 3. Counters NOT incremented by the alert-emit path (no
+    # recursion). This is the meta-anti-pattern guard: if
+    # `_emit_async_failure_alert` had called `_record_async_outcome`
+    # for its own Agora failure, the counter would have ticked.
+    # Counter is still 0 because we didn't drive any
+    # `_record_async_outcome` from this test — the Agora-emit failure
+    # must not change it.
+    assert eng._track_api_call_failure_count == 0
+    assert eng._update_fitness_failure_count == 0
+
+
+def test_emit_async_failure_alert_critical_fires_before_agora_attempt(
+    db_factory,
+):
+    """Stricter ordering guard: the CRITICAL log must fire even if
+    the Agora reference itself raises on attribute access (i.e.,
+    pathological agora object). The CRITICAL line must land first;
+    any Agora-side weirdness happens after."""
+    import logging as _logging
+
+    class _ExplodingAgora:
+        @property
+        def post_message(self):  # pragma: no cover — pathology probe
+            raise RuntimeError("agora attribute access exploded")
+
+    eng = EvaluationEngine(
+        db_session_factory=db_factory,
+        agora_service=_ExplodingAgora(),
+    )
+
+    records: list[_logging.LogRecord] = []
+
+    class _Capture(_logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Capture(level=_logging.CRITICAL)
+    eval_logger = _logging.getLogger("src.genesis.evaluation_engine")
+    eval_logger.addHandler(handler)
+    try:
+        eng._emit_async_failure_alert(
+            "update_fitness", RuntimeError("underlying"), 3,
+        )
+    finally:
+        eval_logger.removeHandler(handler)
+
+    critical_records = [
+        r for r in records
+        if r.levelname == "CRITICAL"
+        and "eval_engine_async_failure_escalated" in r.getMessage()
+    ]
+    assert critical_records, (
+        "CRITICAL log did not fire even though it must precede any "
+        "Agora attempt. The contract is broken."
+    )
