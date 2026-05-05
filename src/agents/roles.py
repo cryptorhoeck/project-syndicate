@@ -193,6 +193,18 @@ STRATEGIST_ACTIONS = {
             "urgency": "str — low/medium/high",
         },
     },
+    "query_archive": {
+        "description": (
+            "Query the Wire Archive for historical events. "
+            "Returns results on next cycle. Each call charges your "
+            "thinking budget."
+        ),
+        "params": {
+            "query": "str — describe what you're looking for (audit trail)",
+            "lookback_hours": "int — how far back to search (default 24)",
+            "max_results": "int — max events to return (1-50, default 10)",
+        },
+    },
     "go_idle": {
         "description": "No actionable plan right now. Save your budget.",
         "params": {
@@ -243,6 +255,19 @@ CRITIC_ACTIONS = {
             "argument": "str — why it's unfair or miscalibrated",
             "proposed_change": "str — how it should be adjusted",
             "evidence": "str — data supporting your argument",
+        },
+    },
+    "query_archive": {
+        "description": (
+            "Query the Wire Archive for historical events. "
+            "Returns results on next cycle. First 3 queries per "
+            "critique cycle are free; subsequent calls charge your "
+            "thinking budget."
+        ),
+        "params": {
+            "query": "str — describe what you're looking for (audit trail)",
+            "lookback_hours": "int — how far back to search (default 24)",
+            "max_results": "int — max events to return (1-50, default 10)",
         },
     },
     "go_idle": {

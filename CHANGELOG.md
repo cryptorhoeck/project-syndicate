@@ -2,6 +2,103 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-04 - Strategist/Critic Archive helpers (subsystems F + G)
+
+Closes WIRING_AUDIT_REPORT.md F (`build_strategist_archive_helper`)
+and G (`build_critic_archive_helper`). Both helpers existed and
+were tested in isolation but were NEVER constructed in production.
+Strategists made plan decisions on a subset of available
+intelligence (Scout-pushed content only); Critics reviewed plans
+without macro/funding-rate context. Missed-opportunity bugs.
+
+### Hybrid model
+**Pre-fetch slice** (free, baseline) — at every Strategist and
+Critic cycle, ContextAssembler injects the 5 most recent
+severity-3+ Wire events from the last 24h into priority context,
+filtered to `agent.watched_markets` + macro events (no coin
+attribution). System-initiated read does NOT consume the Critic's
+free_budget=3 counter.
+
+**Deep-dive `query_archive` action** (charged) — new agent action
+in STRATEGIST_ACTIONS and CRITIC_ACTIONS. Params:
+`{query: str, lookback_hours: int = 24, max_results: int = 10}`.
+Strategists charged on every call. Critics get 3 free per
+critique cycle, charged thereafter. Result delivered on the NEXT
+cycle (DB-as-queue mirrors subsystem H regime-review consumption).
+
+### Added
+- `alembic/versions/phase_10_wire_007_archive_query_results.py`:
+  new `archive_query_results` table — id, requesting_agent_id,
+  query_text, lookback_hours, max_results, result_payload (JSON),
+  status (`'pending'|'delivered'|'failed'`), attempt_count,
+  last_error, requested_at, delivered_at. Indexes on
+  (requesting_agent_id, status) and (status, requested_at).
+- `src/wire/models.py`: `ArchiveQueryResult` ORM model matching
+  the migration.
+- `src/wire/integration/agent_context.py`: extended both helpers
+  with a `.prefetch(watched_markets, ...)` attribute. Backwards-
+  compatible — existing tests calling `helper(...)` directly are
+  unchanged. Prefetch is system-initiated (`is_free=True`) and
+  goes around the Critic's free_budget counter.
+- `_system_prefetch()` shared implementation: broad Archive query
+  over-fetched 4× (capped 50), post-filtered in Python to
+  `watched_markets` ∪ macro, top-N trimmed.
+- `query_archive` entry in `STRATEGIST_ACTIONS` and `CRITIC_ACTIONS`
+  in `src/agents/roles.py`.
+- `ActionExecutor._handle_query_archive` in
+  `src/agents/action_executor.py`: defense-in-depth role check,
+  param validation, helper invocation, writes
+  `archive_query_results` row with `status='pending'` (or
+  `'failed'` on helper exception).
+- `ActionExecutor.archive_helper` attribute, set per-cycle by
+  ThinkingCycle.
+- `ContextAssembler._build_archive_pre_fetch_slice` and
+  `_consume_pending_archive_results` methods.
+- `ContextAssembler._build_archive_directive` for the role-prompt
+  guidance text shown to Strategists/Critics.
+- `tests/test_strategist_critic_archive_wiring.py` — 18 tests:
+  - 5 prefetch / charging tests (Strategist + Critic).
+  - 1 prefetch-doesn't-consume-Critic-free-budget test.
+  - 4 Critic free_budget mechanics tests (3 free, 4th charged,
+    per-cycle reset).
+  - 2 pending-row consumption tests (delivered transition,
+    failed-row exclusion).
+  - 1 validator role-rejection test (Scout/Operator).
+  - 4 LOAD-BEARING production-path tests
+    (`test_*_actually_*_in_production_path`).
+  - 1 full producer-to-consumer lifecycle test.
+  - 2 source-inspection guards (action dispatch table + ThinkingCycle
+    helper sharing).
+- `scripts/validate_archive_helpers_e2e.py`: 5-phase e2e against
+  real Postgres. Output captured in commit message.
+
+### Changed
+- `src/agents/output_validator.py`: param validation for
+  `query_archive` (non-empty query, positive lookback_hours,
+  max_results in [1, 50]). Action-space gate already rejects for
+  Scout/Operator since query_archive is only in
+  STRATEGIST/CRITIC_ACTIONS.
+- `src/agents/thinking_cycle.py:run`: builds the appropriate
+  Archive helper ONCE per cycle for Strategist + Critic, sets it
+  on both `context_assembler.archive_helper` and
+  `action_executor.archive_helper` so the prefetch (system-
+  initiated, free) and any agent query (charged or counted toward
+  free_budget) share the same closure state.
+- `src/agents/context_assembler.py:_build_priority_context` now
+  branches on agent.type in ("strategist", "critic") to inject
+  the prefetch slice and consume any pending deep-dive results.
+
+### Constraints honored
+- Helpers extended additively via `.prefetch` attribute — existing
+  tests pass unchanged.
+- `query_archive` added ONLY to STRATEGIST_ACTIONS and
+  CRITIC_ACTIONS; not in SCOUT_ACTIONS or OPERATOR_ACTIONS.
+- Pre-fetch slice for Critics does NOT consume the free_budget=3
+  counter (locked by `test_pre_fetch_does_not_consume_critic_free_budget`).
+- DB-as-queue pattern mirrors fix H (race-safe end-of-cycle UPDATE
+  by id IN (consumed_ids)).
+- 1-cycle latency on deep-dive is intentional, not a bug.
+
 ## [Hotfix] - 2026-05-04 - Maintenance run_all wiring (subsystem T-subset) — Critic iteration 3
 
 One MEDIUM blocking finding + two LOWs accepted as-is.

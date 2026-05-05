@@ -278,6 +278,8 @@ dumps. Talk like a sharp trader, not a report generator."""
         if agent.type == "scout":
             scout_directive = self._build_scout_directive(agent)
 
+        archive_directive = self._build_archive_directive(agent)
+
         return f"""{identity}
 Cycle: {agent.cycle_count} | Budget remaining today: ${budget_remaining:.4f}
 
@@ -285,7 +287,7 @@ YOUR ROLE: {role_def.description}
 
 {survival_reality}
 {comm_style}
-{scout_directive}
+{scout_directive}{archive_directive}
 AVAILABLE ACTIONS:
 {action_list}
 
@@ -349,6 +351,37 @@ Respond ONLY in valid JSON matching this schema — no other text:
             pass
 
         return "\n\n".join(parts)
+
+    def _build_archive_directive(self, agent: Agent) -> str:
+        """Subsystems F+G: instruct Strategist/Critic on Wire Archive
+        access. Empty string for other roles. Returns a leading
+        newline + paragraph so it slots cleanly into the role-prompt
+        template above the AVAILABLE ACTIONS block.
+        """
+        if agent.type == "strategist":
+            return (
+                "\n"
+                "WIRE ARCHIVE: Your priority context already includes the "
+                "5 most recent severity-3+ events from the last 24h "
+                "(filtered to your watched markets + macro events). If "
+                "you need deeper or older context (e.g. funding rate "
+                "trends over a week, TVL history for a specific "
+                "protocol), use the `query_archive` action. Each call "
+                "charges your thinking budget; results arrive on the "
+                "next cycle.\n"
+            )
+        if agent.type == "critic":
+            return (
+                "\n"
+                "WIRE ARCHIVE: Your priority context already includes the "
+                "5 most recent severity-3+ events from the last 24h "
+                "(filtered to your watched markets + macro events). If "
+                "you need deeper or older context for plan review, use "
+                "the `query_archive` action. The first 3 queries per "
+                "critique cycle are free; subsequent calls charge your "
+                "thinking budget. Results arrive on the next cycle.\n"
+            )
+        return ""
 
     def _build_reflection_system_prompt(
         self, agent: Agent, prestige: str, budget_remaining: float, survival_directive: str
@@ -534,6 +567,24 @@ Watched markets: {agent.watched_markets or []}""" + self._build_cold_start_notic
             wire_text = self._build_wire_recent_signals(agent)
             if wire_text:
                 sections.append(wire_text)
+
+        # Wire Archive integration for Strategist + Critic (subsystems
+        # F+G fix). Two pieces, both system-initiated and free:
+        #   1. Pre-fetch slice — 5 most recent severity-3+ events from
+        #      last 24h, filtered to agent.watched_markets + macro.
+        #      Uses helper.prefetch() which does NOT consume the
+        #      Critic's free_budget.
+        #   2. Pending deep-dive results from prior cycles — read
+        #      archive_query_results rows with status='pending' for
+        #      this agent_id, render into context, mark 'delivered'.
+        #      Same DB-as-queue pattern as subsystem H regime review.
+        if agent.type in ("strategist", "critic"):
+            archive_text = self._build_archive_pre_fetch_slice(agent)
+            if archive_text:
+                sections.append(archive_text)
+            consumed_text = self._consume_pending_archive_results(agent)
+            if consumed_text:
+                sections.append(consumed_text)
 
         # Recent cycle history (last 5 cycles with outcomes)
         recent_cycles = (
@@ -889,6 +940,222 @@ Review your recent performance and produce a reflection."""
                 lines.append(f"S{sev} [{coin}] {etype}: {summary}")
         lines.append("=== END WIRE ===")
         return "\n".join(lines)
+
+    def _build_archive_pre_fetch_slice(self, agent: Agent) -> str:
+        """Subsystems F+G prefetch: 5 most recent severity-3+ Wire
+        events from last 24h, filtered to agent.watched_markets +
+        macro events. System-initiated (free). Strategist and Critic
+        only.
+
+        The helper for this prefetch is shared with ActionExecutor
+        via `self.archive_helper` (set by ThinkingCycle once per
+        cycle). For Critic the shared helper means the prefetch does
+        NOT decrement the free_budget=3 counter (it uses the
+        ``.prefetch()`` attribute, which goes around the
+        free_budget logic).
+
+        Returns "" on any failure — never break OODA on a Wire
+        sub-component fault. The agent simply sees no Archive slice
+        on the failed cycle; the next cycle gets a fresh attempt.
+        """
+        try:
+            from src.wire.integration.agent_context import (
+                build_strategist_archive_helper,
+                build_critic_archive_helper,
+            )
+        except Exception:  # pragma: no cover
+            return ""
+
+        helper = getattr(self, "archive_helper", None)
+        if helper is None:
+            # Standalone construction (test path or context-only
+            # usage where ThinkingCycle didn't attach a helper).
+            try:
+                if agent.type == "strategist":
+                    helper = build_strategist_archive_helper(
+                        self.db, agent_id=int(agent.id),
+                    )
+                elif agent.type == "critic":
+                    helper = build_critic_archive_helper(
+                        self.db, agent_id=int(agent.id), free_budget=3,
+                    )
+                else:
+                    return ""
+            except Exception as exc:
+                logger.warning(
+                    "archive_helper_construct_failed",
+                    extra={"agent_id": agent.id, "error": str(exc)},
+                )
+                return ""
+
+        if not hasattr(helper, "prefetch"):
+            # Future-proof: existing tests / older callers may still
+            # pass a plain callable without the attribute. Treat as
+            # "no prefetch available" — pending-results path still works.
+            return ""
+
+        try:
+            watched = list(agent.watched_markets or [])
+            result = helper.prefetch(
+                watched_markets=watched, lookback_hours=24,
+                min_severity=3, limit=5,
+            )
+        except Exception as exc:
+            logger.warning(
+                "archive_prefetch_failed",
+                extra={"agent_id": agent.id, "error": str(exc)},
+            )
+            return ""
+
+        events = list(result.events)
+        lines = ["=== RECENT WIRE EVENTS (last 24h, severity 3+) ==="]
+        if not events:
+            lines.append("(no severity-3+ events for your watched markets)")
+        else:
+            now = datetime.now(timezone.utc)
+            for e in events:
+                sev = e.get("severity", "?")
+                coin = e.get("coin") or "macro"
+                etype = e.get("event_type") or "?"
+                summary = (e.get("summary") or "")[:160]
+                age_str = "?"
+                occ_iso = e.get("occurred_at")
+                if occ_iso:
+                    try:
+                        from datetime import datetime as _dt
+                        occ = _dt.fromisoformat(str(occ_iso))
+                        if occ.tzinfo is None:
+                            occ = occ.replace(tzinfo=timezone.utc)
+                        delta = now - occ
+                        hours = int(delta.total_seconds() // 3600)
+                        if hours <= 0:
+                            mins = max(1, int(delta.total_seconds() // 60))
+                            age_str = f"{mins}m ago"
+                        else:
+                            age_str = f"{hours}h ago"
+                    except Exception:
+                        pass
+                lines.append(f"- [{age_str}] S{sev} [{coin}] {etype}: {summary}")
+        lines.append(
+            "(For deeper or older context use the `query_archive` "
+            "action — Strategists pay per query, Critics get 3 free "
+            "per critique cycle.)"
+        )
+        lines.append("=== END WIRE ARCHIVE ===")
+        return "\n".join(lines)
+
+    def _consume_pending_archive_results(self, agent: Agent) -> str:
+        """Subsystems F+G consumer half. Reads archive_query_results
+        rows with status='pending' for this agent_id, formats them
+        into priority context, marks them 'delivered'.
+
+        Mirrors the subsystem H regime-review consumption pattern:
+          - SELECT pending rows for this agent
+          - Render each into the priority context
+          - Mark each 'delivered' (`delivered_at = NOW()`) in a
+            single UPDATE filtered by id IN (consumed_ids)
+          - Per-row try/except so a bad row doesn't poison the batch
+          - 'failed' rows are NOT consumed (they stay in the table
+            as a historical record)
+
+        Returns "" if no pending rows or on any error — never break
+        OODA on consumer fault. Failed rows that previously had
+        attempt_count cap fired stay 'failed' and are not shown.
+        """
+        from src.wire.models import ArchiveQueryResult as _AQR
+
+        try:
+            rows = (
+                self.db.query(_AQR)
+                .filter(
+                    _AQR.requesting_agent_id == int(agent.id),
+                    _AQR.status == "pending",
+                )
+                .order_by(desc(_AQR.requested_at))
+                .limit(10)
+                .all()
+            )
+        except Exception as exc:
+            logger.warning(
+                "archive_pending_query_failed",
+                extra={"agent_id": agent.id, "error": str(exc)},
+            )
+            return ""
+
+        if not rows:
+            return ""
+
+        delivered_ids: list[int] = []
+        sections: list[str] = []
+        for row in rows:
+            try:
+                payload = row.result_payload or {}
+                events = payload.get("events") or []
+                lines = [
+                    f"--- query: {row.query_text[:200]} "
+                    f"(lookback {row.lookback_hours}h, max {row.max_results})"
+                ]
+                if not events:
+                    lines.append("    (no events matched)")
+                else:
+                    for e in events[: row.max_results]:
+                        sev = e.get("severity", "?")
+                        coin = e.get("coin") or "macro"
+                        etype = e.get("event_type") or "?"
+                        summary = (e.get("summary") or "")[:200]
+                        lines.append(
+                            f"    S{sev} [{coin}] {etype}: {summary}"
+                        )
+                sections.append("\n".join(lines))
+                delivered_ids.append(int(row.id))
+            except Exception as exc:
+                logger.warning(
+                    "archive_pending_row_render_failed",
+                    extra={
+                        "agent_id": agent.id,
+                        "row_id": getattr(row, "id", None),
+                        "error": str(exc),
+                    },
+                )
+
+        if not sections:
+            return ""
+
+        # Batch-mark delivered. Filter by id IN (delivered_ids) only —
+        # NOT also by status='pending', mirroring subsystem H finding
+        # 2 (race-safe; delivered_ids were just SELECTed, the
+        # consumed-IDs list is the contract).
+        try:
+            self.db.execute(
+                _AQR.__table__.update()
+                .where(_AQR.id.in_(delivered_ids))
+                .values(
+                    status="delivered",
+                    delivered_at=datetime.now(timezone.utc),
+                )
+            )
+            self.db.commit()
+        except Exception as exc:
+            logger.warning(
+                "archive_pending_mark_delivered_failed",
+                extra={
+                    "agent_id": agent.id,
+                    "delivered_ids": delivered_ids,
+                    "error": str(exc),
+                },
+            )
+            # Do NOT include the un-marked rows in returned text — if
+            # the mark fails, the agent will see them again next cycle
+            # (at-least-once). Returning the text now would deliver
+            # without the DB transition committing.
+            return ""
+
+        body = "\n\n".join(sections)
+        return (
+            "=== PRIOR ARCHIVE QUERY RESULTS (delivered this cycle) ===\n"
+            f"{body}\n"
+            "=== END PRIOR ARCHIVE RESULTS ==="
+        )
 
     def _build_pipeline_context(self, agent: Agent) -> str:
         """Build pipeline context: active opportunities and plans relevant to this agent's role."""

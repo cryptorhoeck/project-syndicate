@@ -183,6 +183,38 @@ class ThinkingCycle:
             },
         )
 
+        # ── Wire Archive helper (subsystems F+G) ──
+        # Build ONCE per cycle for Strategist + Critic, then share
+        # the same instance with both context_assembler (for prefetch)
+        # and action_executor (for query_archive). Sharing matters for
+        # the Critic's free_budget=3 counter — prefetch goes around
+        # it via .prefetch(); agent-initiated queries decrement it.
+        # Stored as attributes on each subsystem rather than a
+        # constructor change to keep the wiring blast radius small.
+        archive_helper = None
+        try:
+            if agent.type == "strategist":
+                from src.wire.integration.agent_context import (
+                    build_strategist_archive_helper,
+                )
+                archive_helper = build_strategist_archive_helper(
+                    self.db, agent_id=int(agent.id),
+                )
+            elif agent.type == "critic":
+                from src.wire.integration.agent_context import (
+                    build_critic_archive_helper,
+                )
+                archive_helper = build_critic_archive_helper(
+                    self.db, agent_id=int(agent.id), free_budget=3,
+                )
+        except Exception as exc:
+            logger.warning(
+                f"archive_helper_construct_failed for {agent.name}: {exc}"
+            )
+            archive_helper = None
+        self.context_assembler.archive_helper = archive_helper
+        self.action_executor.archive_helper = archive_helper
+
         # ── Phase 1: Observe (Context Assembly) ──
         try:
             context = self.context_assembler.assemble(
