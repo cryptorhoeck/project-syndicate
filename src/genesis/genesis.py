@@ -1512,6 +1512,38 @@ class GenesisAgent(BaseAgent):
         except Exception as exc:
             self.log.warning("rejection_tracker_maintenance_failed", error=str(exc))
 
+        # Hourly-safe maintenance (subsystem T-subset fix). Runs every
+        # hour: expire stale opportunities, clean up stuck plans,
+        # prune Redis memory for terminated agents. The Arena's
+        # 3-day stale-opportunities backlog was direct evidence this
+        # block had no replacement before — only the daily-gated
+        # budget reset below was wired, so the other three
+        # MaintenanceService methods never ran.
+        #
+        # Deliberately separate from the daily-gated block below.
+        # `run_all()` does NOT call `reset_daily_budgets` — running
+        # that hourly would let agents consume 24x their intended
+        # daily thinking budget. The cadence asymmetry is by design.
+        #
+        # WARNING-only failure handling is intentional. Unlike H
+        # (regime review) and P (eval engine async), T-subset
+        # maintenance failures have bounded downstream impact:
+        # log-spam alone is the appropriate signal. See
+        # DEFERRED_ITEMS_TRACKER.md entry "T-subset escalation
+        # policy" for the design rationale.
+        try:
+            from src.agents.maintenance import MaintenanceService
+            hourly_maint = MaintenanceService(self.db_session_factory)
+            counts = await hourly_maint.run_all(redis_client=self.redis_client)
+            self.log.info(
+                "hourly_maintenance_completed",
+                opportunities_expired=counts.get("opportunities_expired", 0),
+                plans_cleaned=counts.get("plans_cleaned", 0),
+                memory_pruned=counts.get("memory_pruned", 0),
+            )
+        except Exception as exc:
+            self.log.warning("hourly_maintenance_failed", error=str(exc))
+
         # Daily budget reset (once per calendar day UTC)
         today = now.date()
         if self._last_budget_reset_date != today:

@@ -184,6 +184,14 @@
   - Action when picked up: implement an M-failures-within-N-cycles rolling-window detector — `collections.deque(maxlen=N)` on `GenesisAgent` keyed on cycle index, escalate when >= M entries in the deque are failures. Distinct alert event class so dashboards can distinguish consecutive vs cumulative escalations. Negative test on the consecutive-only contract should be updated or removed depending on whether both detectors run in parallel.
   - Trigger to pick up: if observability dashboards show patterns of intermittent regime-review query failures the consecutive-only counter misses; OR when Phase 11 (Wire reliability hardening) is being designed; OR when the Arena run produces a real intermittent failure pattern that the consecutive counter under-reports.
 
+- [ ] **T-subset escalation policy (intentional design)**
+  - Surfaced during: hotfix/maintenance-run-all-wiring iteration 2 Critic review
+  - Decision: T-subset maintenance operations (`expire_stale_opportunities`, `cleanup_stale_plans`, `prune_terminated_agent_memory`) use WARNING-only failure handling. NO escalation counter, NO CRITICAL log, NO Agora alert. This is asymmetric with H (regime review) and P (eval engine async) which both implement K=3 consecutive-failure escalation.
+  - Rationale: H's regime review failures and P's eval engine async failures are safety-adjacent (regime shifts missed → trade gates may not retighten; Darwinian mechanism corrupts → selection pressure unreliable). T-subset failures have bounded downstream impact: stale opportunities pollute Strategist context (annoying, bounded — Strategists filter their own input), uncleaned plans accumulate (bounded — capped by Critic timeouts elsewhere), Redis keys go un-pruned (eventually problematic but on the timescale of weeks). Hygiene-class concern, not safety-class. Log spam is the appropriate signal.
+  - If this turns out wrong: add per-task consecutive-failure counters with K=3 threshold mirroring the H/P pattern.
+  - Data we'd want before reversing the decision: WARNING log frequency over a multi-week observation window. If we see one task failing >3 times consecutively in observation logs, the bounded-impact assumption is wrong and we add escalation.
+  - Trigger to revisit: any incident where stale opportunities, uncleaned plans, or unpruned Redis state caused a measurable colony problem (e.g. Strategists overwhelmed by stale opportunity backlog, plan-status drift causing operator confusion, Memurai memory pressure from accumulated terminated-agent keys).
+
 ---
 
 ## TOOLING — CRITIC (Identified 2026-05-03)

@@ -2,6 +2,196 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-04 - Maintenance run_all wiring (subsystem T-subset) — Critic iteration 3
+
+One MEDIUM blocking finding + two LOWs accepted as-is.
+
+### Finding 1 (MEDIUM) — Hourly gate runtime invariant
+Both Critics independently flagged the same gap: every existing
+test sets `_last_hourly_maintenance = None` (or equivalent) to
+bypass the gate, leaving the gate enforcement untested. A future
+refactor that removes the gate body — turning hourly maintenance
+into per-cycle maintenance — would not have broken any test.
+
+New test
+`test_run_all_only_called_when_hourly_gate_open` mirrors the
+iteration-2
+`test_reset_daily_budgets_only_called_inside_daily_gate` for the
+inverse axis (hourly cadence rather than daily). Patches
+`MaintenanceService.run_all`, drives `_maybe_run_hourly_maintenance`
+across the gate boundary:
+  - gate CLOSED (`_last_hourly_maintenance = now`): two invocations
+    → mock called 0 times, field UNCHANGED (early-return preserved
+    the timestamp).
+  - gate OPEN (`_last_hourly_maintenance = now - 2h`): one
+    invocation → mock called 1 time AND field refreshed past the
+    open-anchor (proves the gate-update line at `genesis.py:1478`
+    actually runs).
+
+The "field unchanged on closed-gate" check is the strict guard:
+if a future refactor moved the field-update above the early-return
+or turned the gate into a no-op, the timestamp would refresh on
+every call and effectively turn hourly into per-cycle. The test
+catches both removal patterns.
+
+### Finding 2 (LOW, accepted) — Constructor failure handling
+Script Critic noted `MaintenanceService.__init__` failures are
+caught as WARNING (not CRITICAL). Accept: the WARNING-only policy
+covers constructor failures too. Rationale:
+`db_session_factory` is set at GenesisAgent construction time and
+is the same factory used everywhere else in the colony. If it's
+None or otherwise broken, the colony has far bigger problems —
+that misconfig surfaces in a hundred other places before this
+maintenance call. Treating it as WARNING here is consistent with
+the bounded-impact rationale documented in
+DEFERRED_ITEMS_TRACKER.md "T-subset escalation policy".
+
+### Finding 3 (LOW, accepted) — E2E gate-open coverage
+Script Critic explicitly said "acceptable for current scope, the
+unit tests cover the gate." Acknowledge: the e2e validation
+(`scripts/validate_maintenance_run_all_e2e.py`) only exercises the
+gate-OPEN path against real Postgres; the gate-CLOSED path is
+unit-tested via the new
+`test_run_all_only_called_when_hourly_gate_open` plus
+`test_reset_daily_budgets_only_called_inside_daily_gate`.
+
+## [Hotfix] - 2026-05-04 - Maintenance run_all wiring (subsystem T-subset) — Critic iteration 2
+
+Three blocking findings + one LOW from iteration 1 review.
+
+### Finding 1 (MEDIUM) — Document escalation choice (no counter)
+War Room called: WARNING-only is intentional for T-subset.
+- Comment block above the `run_all()` block in `genesis.py` cites
+  the deferred-tracker entry as the design rationale.
+- New entry in `DEFERRED_ITEMS_TRACKER.md`: **"T-subset escalation
+  policy (intentional design)"** — documents the asymmetry with H/P
+  (regime review and eval engine async are safety-adjacent;
+  T-subset is hygiene-class), the data we'd want before reversing
+  the decision (multi-week WARNING log frequency), and the trigger
+  to revisit (any incident where stale state caused a measurable
+  problem).
+
+### Finding 2 (MEDIUM) — AST guard for the call-site wiring
+New test `test_run_cycle_invokes_maybe_run_hourly_maintenance`.
+Parses the AST of `GenesisAgent.run_cycle` (after `textwrap.dedent`),
+walks the body looking for an `Await(Call(Attribute(Name='self'),
+'_maybe_run_hourly_maintenance')))` node. AST-level (not substring)
+so a commented-out call cannot satisfy the test. Without this guard
+the entire T-subset fix could be silently disabled by a future
+refactor that drops the call site without removing the method.
+
+### Finding 3 (LOW) — Runtime daily-gate test
+Replaces dependency on the iteration-1 text-distance heuristic.
+New test `test_reset_daily_budgets_only_called_inside_daily_gate`:
+patches `MaintenanceService.reset_daily_budgets`, drives
+`_maybe_run_hourly_maintenance` three times across the daily-gate
+boundary (closed → closed → open), asserts the mock was invoked
+exactly when the daily gate was open and never when it was closed.
+Proves the gate gates correctly without text-distance heuristics.
+The text-based inspection guard remains as defense-in-depth.
+
+### Finding 4 (LOW) — E2E empty-DB guard
+`scripts/validate_maintenance_run_all_e2e.py` previously fell back
+to `genesis_row` (id=0) if no scout/strategist existed; if Genesis
+was also missing, it would silently use None as a foreign key.
+Now: if all three are missing, the script raises with a clear
+"E2E requires at least one agent in the DB" message. Does NOT
+auto-create rows — a truly empty DB is a real signal that the
+colony has no agents to maintain, and masking it would defeat
+the validation.
+
+### War Room verification (closed by inspection)
+Iteration 1 chat-Critic concern about hourly-gate placement was
+verified at `genesis.py:1473-1478`: `_last_hourly_maintenance` field
+declared at line 140, the gate check (`if (now - self._last_hourly_maintenance) < timedelta(hours=1): return`)
+sits at lines 1473-1474, and the field update happens at line 1478.
+The hourly cadence is correctly enforced. No code change required.
+
+## [Hotfix] - 2026-05-04 - Maintenance run_all wiring (subsystem T-subset)
+
+Closes WIRING_AUDIT_REPORT.md subsystem T-subset. Three of
+`MaintenanceService`'s four methods were never invoked in production:
+`expire_stale_opportunities`, `cleanup_stale_plans`, and
+`prune_terminated_agent_memory`. The Arena's 3-day backlog of stale
+opportunities (22 rows all `status='new'` for 3 days) was direct
+evidence. Only `reset_daily_budgets` was wired, under a daily gate.
+
+### Verification stop before build (no code yet)
+The original directive's literal replacement
+(`await maint.run_all()` with no daily gate) would have triggered
+budget reset every hour, letting agents consume up to 24× their
+intended daily thinking budget. Stopped before any code change and
+surfaced the dollar-impact bug to War Room. War Room confirmed
+**Option B**: `run_all()` invokes ONLY the three hourly-safe
+methods; `reset_daily_budgets` stays at its existing daily-gated
+call site.
+
+### Changed
+- `src/agents/maintenance.py:run_all` — signature now
+  `async def run_all(self, redis_client=None) -> dict`. Calls
+  `expire_stale_opportunities`, `cleanup_stale_plans`, and
+  `prune_terminated_agent_memory` only — does NOT call
+  `reset_daily_budgets`. Each task wrapped in its own try/except
+  with WARNING log on failure (task name in structured fields).
+  Returns `{opportunities_expired, plans_cleaned, memory_pruned}`.
+- `src/genesis/genesis.py:_maybe_run_hourly_maintenance` — new
+  hourly block (placed just above the existing daily-gated budget-
+  reset block) that constructs `MaintenanceService` and awaits
+  `run_all(redis_client=self.redis_client)`. Logs structured
+  `hourly_maintenance_completed` with all three counts. The existing
+  daily-gated `reset_daily_budgets()` call is **unchanged**.
+
+### Constraints honored (Option B)
+- `run_all()` runs THREE methods, NOT four. `reset_daily_budgets`
+  is not in the `run_all` body.
+- The existing daily-gate block in `genesis.py` is preserved
+  exactly. No refactor.
+- The new run_all call site is OUTSIDE the daily gate — runs every
+  hour, but only invokes hourly-safe methods.
+- The CRITICAL test
+  `test_thinking_budget_used_today_unchanged_by_run_all_path`
+  locks in the cadence asymmetry: a future refactor that pulls
+  `reset_daily_budgets` back into `run_all` will fail the test.
+
+### Tests — 12 in `tests/test_maintenance_run_all_wiring.py`
+- 5 unit tests on `run_all`: invokes the three methods,
+  does NOT call `reset_daily_budgets`, per-task try/except,
+  per-task counts, redis_client threaded through.
+- 3 Genesis wiring tests: hourly cadence independent of daily gate;
+  daily gate fires alongside hourly without double-firing budget
+  reset; source-inspection guard that `reset_daily_budgets` is
+  called at exactly ONE site inside the daily-gate `if`.
+- 3 production-path "actually-runs" tests: insert 5 stale + 5
+  fresh opportunities → invoke production path → assert 5 stale
+  flipped to 'expired', 5 fresh stayed 'new'. Same shape for
+  plans (draft / submitted) and Redis keys.
+- 1 LOAD-BEARING budget-cadence guard:
+  `test_thinking_budget_used_today_unchanged_by_run_all_path` —
+  invokes hourly path TWICE on a same-UTC-day boundary, asserts
+  agents' `thinking_budget_used_today` unchanged.
+
+### E2E validation (`scripts/validate_maintenance_run_all_e2e.py`)
+Three phases against the dev Postgres. Output:
+```
+PHASE 1 — PRE-STATE
+  stale opportunities (synthetic, status=new): 5
+  stale plans         (synthetic, status=submitted): 3
+  terminated-agent Redis key exists:  True
+  sample agent budgets: id=0:0.0, id=1:0.4887, id=2:0.5372,
+                        id=3:0.4882, id=4:0.4857
+
+PHASE 2 — INVOKE genesis._maybe_run_hourly_maintenance()
+  hourly_maintenance_completed memory_pruned=1
+                              opportunities_expired=5 plans_cleaned=3
+
+PHASE 3 — POST-STATE + DELTAS
+  OK   all 5 synthetic stale opportunities flipped to 'expired'
+  OK   all 3 synthetic stale plans flipped to 'draft'
+  OK   terminated-agent Redis key was pruned
+  OK   thinking_budget_used_today UNCHANGED (Option B contract)
+  Overall: GREEN — subsystem T-subset wired end-to-end
+```
+
 ## [Hotfix] - 2026-05-04 - Eval engine async bridge (subsystem P) — Critic iteration 3
 
 One MEDIUM blocking finding from iteration 2 review.

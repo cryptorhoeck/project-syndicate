@@ -160,9 +160,27 @@ class TestPruneTerminatedMemory:
 
 class TestRunAll:
     @pytest.mark.asyncio
-    async def test_runs_all_tasks(self, db_factory):
+    async def test_runs_hourly_safe_tasks(self, db_factory):
+        """Option B contract (subsystem T-subset hotfix, 2026-05-04):
+        run_all runs the THREE hourly-safe maintenance tasks. It does
+        NOT call reset_daily_budgets — that one stays at its
+        existing daily-gated call site in
+        Genesis._maybe_run_hourly_maintenance because resetting the
+        thinking budget hourly would let agents consume up to 24x
+        their intended daily cap. The dict keys reflect the new
+        contract: opportunities_expired, plans_cleaned, memory_pruned.
+        For exhaustive coverage of the new contract see
+        tests/test_maintenance_run_all_wiring.py.
+        """
         svc = MaintenanceService(db_factory)
         results = await svc.run_all()
-        assert "expired_opportunities" in results
-        assert "stale_plans" in results
-        assert "budget_resets" in results
+        assert set(results.keys()) == {
+            "opportunities_expired",
+            "plans_cleaned",
+            "memory_pruned",
+        }
+        # And the budget-reset key MUST NOT appear — its presence
+        # would mean reset_daily_budgets was wrongly invoked.
+        assert "budget_resets" not in results
+        assert "expired_opportunities" not in results  # old key shape
+        assert "stale_plans" not in results  # old key shape
