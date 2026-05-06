@@ -50,6 +50,15 @@ class ActionExecutor:
         self.agora = agora_service
         self.warden = warden
         self.trading = trading_service
+        # Set per-cycle by ThinkingCycle for Strategist and Critic agents
+        # (subsystems F+G hotfix). The same helper instance is shared
+        # with ContextAssembler so the Critic's free_budget counter is
+        # consistent across the cycle's prefetch (system, free, does
+        # not consume free_budget) and any agent-initiated query_archive
+        # action (charged or free depending on prior consumption).
+        # None for non-Strategist/Critic agents — query_archive is not
+        # in their action space, so the handler is unreachable.
+        self.archive_helper = None
 
     async def execute(self, agent: Agent, parsed_output: dict) -> ActionResult:
         """Execute a validated action.
@@ -94,6 +103,8 @@ class ActionExecutor:
             "reject_plan": self._handle_critic_verdict,
             "request_revision": self._handle_critic_verdict,
             "flag_risk": self._handle_flag_risk,
+            # Strategist + Critic — Wire Archive deep-dive (subsystems F+G)
+            "query_archive": self._handle_query_archive,
             # Operator — routes through TradeExecutionService (Phase 3C)
             "execute_trade": self._handle_execute_trade,
             "adjust_position": self._handle_adjust_position,
@@ -250,6 +261,149 @@ class ActionExecutor:
             success=True,
             action_type=action_type,
             details=f"Plan #{plan_id}: {verdict}",
+        )
+
+    async def _handle_query_archive(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Strategist/Critic Wire Archive deep-dive (subsystems F+G).
+
+        Routing:
+          - Defense-in-depth role check (validator should reject Scout
+            and Operator first via the action-space gate).
+          - Invokes the per-cycle archive_helper attached by
+            ThinkingCycle. For Strategists every call charges; for
+            Critics the helper's free_budget=3 counter handles the
+            "first 3 free" semantics. Helper construction happens
+            ONCE per cycle in ThinkingCycle so the counter persists
+            across multiple invocations within the same cycle (only
+            relevant if a future revision allows multiple actions
+            per cycle — production today is one-action-per-cycle).
+          - Writes an archive_query_results row with status='pending'
+            for next-cycle delivery via ContextAssembler. On helper
+            failure, writes status='failed' with last_error.
+        """
+        # Defense-in-depth role check. The action-space gate at
+        # OutputValidator step 3 rejects this for Scout/Operator
+        # before we reach here, but a hand-built or test-injected
+        # action could bypass the validator.
+        if agent.type not in ("strategist", "critic"):
+            return ActionResult(
+                success=False, action_type=action_type,
+                details=(
+                    f"query_archive is only available to Strategist "
+                    f"and Critic agents; refused for type={agent.type!r}"
+                ),
+            )
+
+        # Param validation (defense-in-depth — validator runs the
+        # canonical check; this catches anything that slips past).
+        query_text = params.get("query")
+        if not isinstance(query_text, str) or not query_text.strip():
+            return ActionResult(
+                success=False, action_type=action_type,
+                details="query_archive requires non-empty 'query' param",
+            )
+        try:
+            lookback_hours = int(params.get("lookback_hours", 24))
+        except (TypeError, ValueError):
+            return ActionResult(
+                success=False, action_type=action_type,
+                details="query_archive 'lookback_hours' must be an integer",
+            )
+        try:
+            max_results = int(params.get("max_results", 10))
+        except (TypeError, ValueError):
+            return ActionResult(
+                success=False, action_type=action_type,
+                details="query_archive 'max_results' must be an integer",
+            )
+        if lookback_hours <= 0:
+            return ActionResult(
+                success=False, action_type=action_type,
+                details="query_archive 'lookback_hours' must be positive",
+            )
+        if not (1 <= max_results <= 50):
+            return ActionResult(
+                success=False, action_type=action_type,
+                details="query_archive 'max_results' must be in [1, 50]",
+            )
+
+        helper = self.archive_helper
+        if helper is None:
+            # ThinkingCycle didn't attach a helper — this is a wiring
+            # bug, not an agent fault. Log loudly and return failure.
+            logger.error(
+                "query_archive_helper_missing",
+                extra={
+                    "agent_id": agent.id, "agent_type": agent.type,
+                    "query": query_text[:200],
+                },
+            )
+            return ActionResult(
+                success=False, action_type=action_type,
+                details=(
+                    "query_archive helper not wired by ThinkingCycle — "
+                    "this is a wiring bug, not an agent fault"
+                ),
+            )
+
+        from src.wire.models import ArchiveQueryResult as ArchiveQueryResultRow
+
+        result_payload: dict | None = None
+        status = "pending"
+        last_error: str | None = None
+        try:
+            archive_result = helper(
+                lookback_hours=lookback_hours,
+                limit=max_results,
+            )
+            result_payload = {
+                "events": archive_result.events,
+                "token_cost": archive_result.token_cost,
+                "free_query": archive_result.free_query,
+                "metadata": dict(archive_result.metadata or {}),
+            }
+        except Exception as exc:
+            status = "failed"
+            last_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "query_archive_helper_failed",
+                extra={
+                    "agent_id": agent.id, "query": query_text[:200],
+                    "error": last_error,
+                },
+            )
+
+        row = ArchiveQueryResultRow(
+            requesting_agent_id=int(agent.id),
+            query_text=query_text[:2000],
+            lookback_hours=lookback_hours,
+            max_results=max_results,
+            result_payload=result_payload,
+            status=status,
+            attempt_count=0,
+            last_error=last_error,
+        )
+        self.db.add(row)
+        self.db.commit()
+
+        if status == "failed":
+            return ActionResult(
+                success=False, action_type=action_type,
+                details=f"Archive query failed: {last_error}",
+            )
+
+        events_count = len(result_payload["events"]) if result_payload else 0
+        cost = float(result_payload.get("token_cost", 0)) if result_payload else 0.0
+        return ActionResult(
+            success=True, action_type=action_type,
+            details=(
+                f"Archive query queued for next-cycle delivery "
+                f"({events_count} events, "
+                f"{'free' if result_payload and result_payload.get('free_query') else f'charged {int(cost)} tokens'})"
+            ),
+            cost=cost,
         )
 
     async def _handle_broadcast(

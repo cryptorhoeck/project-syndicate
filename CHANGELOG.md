@@ -2,6 +2,238 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-05 - Strategist/Critic Archive helpers (subsystems F + G) — Critic iteration 3
+
+One MEDIUM blocking finding + two truncation-artifact closures.
+
+### Finding 1 (MEDIUM) — `agora_service` was dead-code getattr on ContextAssembler
+The iteration-2 implementation of `_record_prefetch_failure` used
+`getattr(self, "agora_service", None)` for the Agora system-alert
+post — but `ContextAssembler.__init__` never accepted or stored
+`agora_service`. So in production the Agora-post escalation path
+silently skipped on every threshold. The CRITICAL log fired (the
+contract held) but the cross-process mirror was silently dead.
+
+Fix:
+- `ContextAssembler.__init__` accepts an optional `agora_service`
+  parameter and stores it as `self.agora_service` (default None
+  for backwards compat).
+- `_record_prefetch_failure` reads `self.agora_service` directly
+  (no more `getattr`).
+- `ThinkingCycle.run` sets `self.context_assembler.agora_service =
+  self.agora` alongside the existing archive_helper assignments.
+- AST guard test now asserts the agora_service wiring line in
+  `ThinkingCycle.run` source — a future refactor that drops it
+  fails the test.
+
+Tests:
+  - `test_prefetch_escalation_actually_posts_to_agora_when_service_present`
+    — production-path proof. Mock Agora, three consecutive
+    prefetch failures, asserts post_message called exactly once
+    on the third failure with `channel="system-alerts"`,
+    `importance=2`, "ARCHIVE PREFETCH" content, AND CRITICAL log
+    fires BEFORE the Agora post (timestamp comparison via
+    `time.monotonic`).
+  - `test_prefetch_escalation_critical_log_fires_when_agora_service_none`
+    — contract proof for the explicit `None` case. Three failures
+    must NOT raise; CRITICAL escalation log fires regardless;
+    no AttributeError propagates.
+
+### Closed by War Room verification
+- Script HIGH on archive_helper wiring: lines 219-220 of
+  `thinking_cycle.py` prove the assignments exist. Closed.
+- Script MEDIUM on production-path tests being aspirational: tests
+  instantiate real `ActionExecutor` at 8 sites and AST-guard the
+  exact assignment strings in `ThinkingCycle.run`. Closed.
+
+## [Hotfix] - 2026-05-05 - Strategist/Critic Archive helpers (subsystems F + G) — Critic iteration 2
+
+Three HIGH/MEDIUM blocking + two LOW from iteration 1 review.
+
+### Finding 1 (HIGH) — Queue lifecycle (fix-H pattern parity)
+`_consume_pending_archive_results` now mirrors fix H iteration 3
+end-state for poison-pill safety:
+  - **PRE-FLIP PASS** SELECTs pending rows where
+    `attempt_count >= MAX_ATTEMPTS_ARCHIVE_QUERY`, flips them to
+    'failed' with `last_error` populated. attempt_count NOT
+    incremented during flip — at the time of the flip
+    `attempt_count == MAX` exactly (no off-by-one).
+  - **CONSUME PASS** SELECTs pending rows where
+    `attempt_count < MAX_ATTEMPTS_ARCHIVE_QUERY` (defensive
+    exclusion in case a refactor drops the pre-flip pass).
+  - **PER-ROW** attempt_count incremented BEFORE rendering. On
+    render exception: `last_error` stamps THIS row only (not
+    batch-stamped); other rows keep `last_error=NULL`. Row stays
+    'pending' for next-cycle retry until cap fires.
+  - `MAX_ATTEMPTS_ARCHIVE_QUERY = 3` constant added to
+    `src/wire/constants.py` with derivation comment (matches K=3
+    across async-bridge users H/P).
+Tests:
+  - `test_archive_query_attempt_count_exact_at_failure_cap` —
+    deterministically-failing row, attempt_count == MAX at the
+    flip (NOT MAX+1)
+  - `test_archive_query_failed_row_excluded_from_consumption` —
+    failed row is not re-incremented
+  - `test_archive_query_per_row_error_attribution` — batch of 5,
+    one bad row, last_error stamps only the offender; other 4
+    delivered cleanly
+
+### Finding 2 (HIGH) — Validator action-space gate verified + tested
+Verified the validator's step-3 action-space gate consults
+`get_action_names(agent_type)` which builds from
+`ROLE_DEFINITIONS[role].available_actions`. Since `query_archive`
+is in `STRATEGIST_ACTIONS` and `CRITIC_ACTIONS` only (not
+`SCOUT_ACTIONS` or `OPERATOR_ACTIONS`, neither in
+`SURVIVAL_ACTIONS`), the gate correctly rejects it for Scout and
+Operator with `INVALID_ACTION` and `retryable=False`. No code
+change needed — gap was a tests gap.
+Tests:
+  - `test_validator_rejects_query_archive_for_scout`
+  - `test_validator_rejects_query_archive_for_operator`
+  - `test_validator_accepts_query_archive_for_strategist`
+  - `test_validator_accepts_query_archive_for_critic`
+
+### Finding 3 (HIGH) — Prefetch failure path is no longer Library reflection bug shape
+On any prefetch exception, `_build_archive_pre_fetch_slice` now:
+  1. Returns a **visible degradation marker** as the slice content
+     (`"=== RECENT WIRE EVENTS ===\n(Wire Archive temporarily
+     unavailable — running with reduced situational awareness)\n
+     === END WIRE ARCHIVE ==="`). Agent and prompt logs see the
+     degradation explicitly — no more silent empty-string return.
+  2. Increments `_archive_prefetch_failure_count` instance
+     counter on `ContextAssembler`.
+  3. After `ARCHIVE_PREFETCH_ESCALATION_THRESHOLD = 3` consecutive
+     failures, fires CRITICAL log
+     (`archive_prefetch_failure_escalated` with structured
+     `archive_prefetch_failure_escalated=True` field) + best-
+     effort Agora system-alert via the same `run_async_safely`
+     path fix P locked in.
+  4. Counter resets to 0 on first successful prefetch.
+Tests:
+  - `test_prefetch_failure_returns_visible_degradation_marker`
+  - `test_prefetch_failure_increments_counter`
+  - `test_prefetch_failure_three_consecutive_escalates`
+  - `test_prefetch_failure_counter_resets_on_first_success`
+  - `test_prefetch_failure_does_not_crash_agent_cycle`
+
+### Finding 4 (MEDIUM) — Constant derivation comments
+All four iteration-1 magic numbers are now constants in
+`src/wire/constants.py` with derivation comments:
+`PRE_FETCH_SLICE_SIZE`, `PRE_FETCH_SEVERITY_FLOOR`,
+`PRE_FETCH_LOOKBACK_HOURS`, `CRITIC_FREE_QUERIES_PER_CRITIQUE`
+(plus the new F1/F3 constants). Existing hardcoded values in
+`context_assembler.py` and `thinking_cycle.py` swapped out.
+
+### Finding 5 (MEDIUM) — E2E cleanup by agent_id
+`scripts/validate_archive_helpers_e2e.py` cleanup now also issues
+`DELETE FROM archive_query_results WHERE requesting_agent_id =
+ANY(:seeded_agent_ids)` after the tracked-id pass. Catches any
+prefetch-driven or future-implementation rows the test didn't
+explicitly track, preventing FK orphans in subsequent runs.
+
+### Finding 6 (LOW, closed) — Production-path tests verified
+War Room directly verified the four
+`test_*_actually_*_in_production_path` tests exist in
+`tests/test_strategist_critic_archive_wiring.py`. No code change
+required.
+
+## [Hotfix] - 2026-05-04 - Strategist/Critic Archive helpers (subsystems F + G)
+
+Closes WIRING_AUDIT_REPORT.md F (`build_strategist_archive_helper`)
+and G (`build_critic_archive_helper`). Both helpers existed and
+were tested in isolation but were NEVER constructed in production.
+Strategists made plan decisions on a subset of available
+intelligence (Scout-pushed content only); Critics reviewed plans
+without macro/funding-rate context. Missed-opportunity bugs.
+
+### Hybrid model
+**Pre-fetch slice** (free, baseline) — at every Strategist and
+Critic cycle, ContextAssembler injects the 5 most recent
+severity-3+ Wire events from the last 24h into priority context,
+filtered to `agent.watched_markets` + macro events (no coin
+attribution). System-initiated read does NOT consume the Critic's
+free_budget=3 counter.
+
+**Deep-dive `query_archive` action** (charged) — new agent action
+in STRATEGIST_ACTIONS and CRITIC_ACTIONS. Params:
+`{query: str, lookback_hours: int = 24, max_results: int = 10}`.
+Strategists charged on every call. Critics get 3 free per
+critique cycle, charged thereafter. Result delivered on the NEXT
+cycle (DB-as-queue mirrors subsystem H regime-review consumption).
+
+### Added
+- `alembic/versions/phase_10_wire_007_archive_query_results.py`:
+  new `archive_query_results` table — id, requesting_agent_id,
+  query_text, lookback_hours, max_results, result_payload (JSON),
+  status (`'pending'|'delivered'|'failed'`), attempt_count,
+  last_error, requested_at, delivered_at. Indexes on
+  (requesting_agent_id, status) and (status, requested_at).
+- `src/wire/models.py`: `ArchiveQueryResult` ORM model matching
+  the migration.
+- `src/wire/integration/agent_context.py`: extended both helpers
+  with a `.prefetch(watched_markets, ...)` attribute. Backwards-
+  compatible — existing tests calling `helper(...)` directly are
+  unchanged. Prefetch is system-initiated (`is_free=True`) and
+  goes around the Critic's free_budget counter.
+- `_system_prefetch()` shared implementation: broad Archive query
+  over-fetched 4× (capped 50), post-filtered in Python to
+  `watched_markets` ∪ macro, top-N trimmed.
+- `query_archive` entry in `STRATEGIST_ACTIONS` and `CRITIC_ACTIONS`
+  in `src/agents/roles.py`.
+- `ActionExecutor._handle_query_archive` in
+  `src/agents/action_executor.py`: defense-in-depth role check,
+  param validation, helper invocation, writes
+  `archive_query_results` row with `status='pending'` (or
+  `'failed'` on helper exception).
+- `ActionExecutor.archive_helper` attribute, set per-cycle by
+  ThinkingCycle.
+- `ContextAssembler._build_archive_pre_fetch_slice` and
+  `_consume_pending_archive_results` methods.
+- `ContextAssembler._build_archive_directive` for the role-prompt
+  guidance text shown to Strategists/Critics.
+- `tests/test_strategist_critic_archive_wiring.py` — 18 tests:
+  - 5 prefetch / charging tests (Strategist + Critic).
+  - 1 prefetch-doesn't-consume-Critic-free-budget test.
+  - 4 Critic free_budget mechanics tests (3 free, 4th charged,
+    per-cycle reset).
+  - 2 pending-row consumption tests (delivered transition,
+    failed-row exclusion).
+  - 1 validator role-rejection test (Scout/Operator).
+  - 4 LOAD-BEARING production-path tests
+    (`test_*_actually_*_in_production_path`).
+  - 1 full producer-to-consumer lifecycle test.
+  - 2 source-inspection guards (action dispatch table + ThinkingCycle
+    helper sharing).
+- `scripts/validate_archive_helpers_e2e.py`: 5-phase e2e against
+  real Postgres. Output captured in commit message.
+
+### Changed
+- `src/agents/output_validator.py`: param validation for
+  `query_archive` (non-empty query, positive lookback_hours,
+  max_results in [1, 50]). Action-space gate already rejects for
+  Scout/Operator since query_archive is only in
+  STRATEGIST/CRITIC_ACTIONS.
+- `src/agents/thinking_cycle.py:run`: builds the appropriate
+  Archive helper ONCE per cycle for Strategist + Critic, sets it
+  on both `context_assembler.archive_helper` and
+  `action_executor.archive_helper` so the prefetch (system-
+  initiated, free) and any agent query (charged or counted toward
+  free_budget) share the same closure state.
+- `src/agents/context_assembler.py:_build_priority_context` now
+  branches on agent.type in ("strategist", "critic") to inject
+  the prefetch slice and consume any pending deep-dive results.
+
+### Constraints honored
+- Helpers extended additively via `.prefetch` attribute — existing
+  tests pass unchanged.
+- `query_archive` added ONLY to STRATEGIST_ACTIONS and
+  CRITIC_ACTIONS; not in SCOUT_ACTIONS or OPERATOR_ACTIONS.
+- Pre-fetch slice for Critics does NOT consume the free_budget=3
+  counter (locked by `test_pre_fetch_does_not_consume_critic_free_budget`).
+- DB-as-queue pattern mirrors fix H (race-safe end-of-cycle UPDATE
+  by id IN (consumed_ids)).
+- 1-cycle latency on deep-dive is intentional, not a bug.
+
 ## [Hotfix] - 2026-05-04 - Maintenance run_all wiring (subsystem T-subset) — Critic iteration 3
 
 One MEDIUM blocking finding + two LOWs accepted as-is.

@@ -265,3 +265,65 @@ class WireTreasuryLedger(Base):
     incurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+# ---------------------------------------------------------------------------
+# archive_query_results — subsystems F + G queue for deep-dive Archive
+# queries. Producer: agent emits `query_archive` action -> handler writes
+# row with status='pending'. Consumer: ContextAssembler on the agent's
+# next cycle reads pending rows for that agent_id, formats into priority
+# context, marks 'delivered'. DB-as-queue mirrors subsystem H regime
+# review consumption (at-least-once + attempt_count cap).
+# ---------------------------------------------------------------------------
+
+
+class ArchiveQueryResult(Base):
+    """Pending/delivered/failed row for an agent-initiated Archive query.
+
+    Schema mirrors `phase_10_wire_007_archive_query_results.py`. Status
+    transitions: 'pending' -> 'delivered' (consumer rendered into
+    priority context) OR 'pending' -> 'failed' (attempt_count hits cap).
+    Failed rows stay in the table as a historical record but are NOT
+    re-delivered to the agent.
+    """
+    __tablename__ = "archive_query_results"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'delivered', 'failed')",
+            name="ck_archive_query_results_status",
+        ),
+        Index(
+            "ix_archive_query_results_agent_status",
+            "requesting_agent_id", "status",
+        ),
+        Index(
+            "ix_archive_query_results_status_requested",
+            "status", "requested_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
+    requesting_agent_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("agents.id"), nullable=False,
+    )
+    query_text: Mapped[str] = mapped_column(Text, nullable=False)
+    lookback_hours: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=24, server_default="24",
+    )
+    max_results: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=10, server_default="10",
+    )
+    result_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending",
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0",
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )

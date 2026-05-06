@@ -186,6 +186,27 @@ class OutputValidator:
         if conf is not None and not (1 <= conf <= 10):
             return f"Confidence score {conf} out of range [1, 10]"
 
+        # query_archive (subsystems F+G hotfix). Action-space gate at
+        # step 3 already rejects this for Scout/Operator. Per-param
+        # validation here is defense-in-depth: catch malformed
+        # lookback_hours / max_results before the action handler runs.
+        if action_type == "query_archive":
+            query_text = params.get("query")
+            if not isinstance(query_text, str) or not query_text.strip():
+                return "query_archive 'query' must be a non-empty string"
+            lookback = params.get("lookback_hours", 24)
+            if not isinstance(lookback, int) or isinstance(lookback, bool) or lookback <= 0:
+                return (
+                    "query_archive 'lookback_hours' must be a positive integer"
+                )
+            max_results = params.get("max_results", 10)
+            if (
+                not isinstance(max_results, int)
+                or isinstance(max_results, bool)
+                or not (1 <= max_results <= 50)
+            ):
+                return "query_archive 'max_results' must be an integer in [1, 50]"
+
         return None
 
     def build_repair_prompt(self, raw_output: str, failure_detail: str) -> str:
