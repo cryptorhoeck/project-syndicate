@@ -218,6 +218,14 @@ class ThinkingCycle:
             archive_helper = None
         self.context_assembler.archive_helper = archive_helper
         self.action_executor.archive_helper = archive_helper
+        # Critic iteration 3 Finding 1: wire the Agora handle so the
+        # ContextAssembler's prefetch-failure escalation can actually
+        # post to system-alerts. The iteration-2 implementation used
+        # a `getattr` for this on the assembler, but the constructor
+        # never accepted/stored agora_service — so the Agora-post
+        # path was silently dead in production. Now wired explicitly
+        # alongside archive_helper.
+        self.context_assembler.agora_service = self.agora
 
         # ── Phase 1: Observe (Context Assembly) ──
         try:

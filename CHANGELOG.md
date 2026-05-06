@@ -2,6 +2,50 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-05 - Strategist/Critic Archive helpers (subsystems F + G) — Critic iteration 3
+
+One MEDIUM blocking finding + two truncation-artifact closures.
+
+### Finding 1 (MEDIUM) — `agora_service` was dead-code getattr on ContextAssembler
+The iteration-2 implementation of `_record_prefetch_failure` used
+`getattr(self, "agora_service", None)` for the Agora system-alert
+post — but `ContextAssembler.__init__` never accepted or stored
+`agora_service`. So in production the Agora-post escalation path
+silently skipped on every threshold. The CRITICAL log fired (the
+contract held) but the cross-process mirror was silently dead.
+
+Fix:
+- `ContextAssembler.__init__` accepts an optional `agora_service`
+  parameter and stores it as `self.agora_service` (default None
+  for backwards compat).
+- `_record_prefetch_failure` reads `self.agora_service` directly
+  (no more `getattr`).
+- `ThinkingCycle.run` sets `self.context_assembler.agora_service =
+  self.agora` alongside the existing archive_helper assignments.
+- AST guard test now asserts the agora_service wiring line in
+  `ThinkingCycle.run` source — a future refactor that drops it
+  fails the test.
+
+Tests:
+  - `test_prefetch_escalation_actually_posts_to_agora_when_service_present`
+    — production-path proof. Mock Agora, three consecutive
+    prefetch failures, asserts post_message called exactly once
+    on the third failure with `channel="system-alerts"`,
+    `importance=2`, "ARCHIVE PREFETCH" content, AND CRITICAL log
+    fires BEFORE the Agora post (timestamp comparison via
+    `time.monotonic`).
+  - `test_prefetch_escalation_critical_log_fires_when_agora_service_none`
+    — contract proof for the explicit `None` case. Three failures
+    must NOT raise; CRITICAL escalation log fires regardless;
+    no AttributeError propagates.
+
+### Closed by War Room verification
+- Script HIGH on archive_helper wiring: lines 219-220 of
+  `thinking_cycle.py` prove the assignments exist. Closed.
+- Script MEDIUM on production-path tests being aspirational: tests
+  instantiate real `ActionExecutor` at 8 sites and AST-guard the
+  exact assignment strings in `ThinkingCycle.run`. Closed.
+
 ## [Hotfix] - 2026-05-05 - Strategist/Critic Archive helpers (subsystems F + G) — Critic iteration 2
 
 Three HIGH/MEDIUM blocking + two LOW from iteration 1 review.

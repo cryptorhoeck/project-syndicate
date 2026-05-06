@@ -821,6 +821,12 @@ def test_archive_helpers_share_same_instance_in_thinking_cycle():
     # Both sides must be set, in the same scope, to the same name.
     assert "self.context_assembler.archive_helper = archive_helper" in src
     assert "self.action_executor.archive_helper = archive_helper" in src
+    # Critic iteration 3 Finding 1: agora_service must be wired to
+    # the assembler alongside archive_helper. Without this, the
+    # prefetch-escalation Agora-post path silently skips in
+    # production (the iteration-2 bug). Source-inspection guard
+    # against re-introducing the dead-code shape.
+    assert "self.context_assembler.agora_service = self.agora" in src
 
 
 # ---------------------------------------------------------------------------
@@ -1223,3 +1229,173 @@ def test_prefetch_failure_does_not_crash_agent_cycle(
         f"Priority context did not include the degradation marker. "
         f"head:\n{text[:600]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 3 Finding 1: agora_service is a real constructor slot
+# (was a dead-code getattr in iteration 2)
+# ---------------------------------------------------------------------------
+
+
+def test_prefetch_escalation_actually_posts_to_agora_when_service_present(
+    session, seeded_world,
+):
+    """Production-path proof for the iteration-2 fix's Agora-post
+    branch: with a real (mock) agora_service on the assembler, three
+    consecutive prefetch failures invoke `agora_service.post_message`
+    exactly once on the third failure, AFTER the CRITICAL log fires.
+
+    This is the test that catches the iteration-2 regression where
+    the Agora handle was a dead-code `getattr` on the assembler
+    (constructor never accepted/stored it). Without this test the
+    silent-skip went unnoticed."""
+    import logging as _logging
+    import time
+
+    strategist = session.get(Agent, seeded_world["strategist"])
+
+    captured_calls: list[dict] = []
+
+    async def _capturing_post(message):
+        captured_calls.append({
+            "ts": time.monotonic(),
+            "channel": getattr(message, "channel", None),
+            "content": getattr(message, "content", None),
+            "importance": getattr(message, "importance", None),
+            "metadata": getattr(message, "metadata", None),
+            "agent_name": getattr(message, "agent_name", None),
+        })
+
+    agora = MagicMock()
+    agora.post_message = AsyncMock(side_effect=_capturing_post)
+
+    # Constructor accepts agora_service (the iteration-3 fix).
+    assembler = ContextAssembler(session, token_budget=3000, agora_service=agora)
+
+    class _BoomHelper:
+        def __call__(self, **kwargs):
+            return None
+        def prefetch(self, **kwargs):
+            raise RuntimeError("prefetch boom")
+
+    assembler.archive_helper = _BoomHelper()
+
+    log_records: list[_logging.LogRecord] = []
+
+    class _Capture(_logging.Handler):
+        def emit(self, record):
+            log_records.append({
+                "ts": time.monotonic(),
+                "levelname": record.levelname,
+                "message": record.getMessage(),
+                "extra": record.__dict__,
+            })
+
+    handler = _Capture(level=_logging.CRITICAL)
+    ca_logger = _logging.getLogger("src.agents.context_assembler")
+    ca_logger.addHandler(handler)
+    try:
+        # 1st and 2nd failures: counter increments, no escalation.
+        assembler._build_archive_pre_fetch_slice(strategist)
+        assembler._build_archive_pre_fetch_slice(strategist)
+        assert agora.post_message.call_count == 0, (
+            f"Agora invoked before threshold reached: "
+            f"{agora.post_message.call_count}"
+        )
+        critical_so_far = [
+            r for r in log_records if r["levelname"] == "CRITICAL"
+        ]
+        assert len(critical_so_far) == 0
+
+        # 3rd failure: CRITICAL log fires, then Agora post fires.
+        assembler._build_archive_pre_fetch_slice(strategist)
+    finally:
+        ca_logger.removeHandler(handler)
+
+    assert agora.post_message.call_count == 1, (
+        f"Agora.post_message expected exactly 1 call on threshold; "
+        f"got {agora.post_message.call_count}. The iteration-2 bug "
+        f"(getattr returning None when constructor never set it) is "
+        f"back."
+    )
+    assert len(captured_calls) == 1
+    call = captured_calls[0]
+    assert call["channel"] == "system-alerts"
+    assert call["importance"] == 2  # critical
+    assert "ARCHIVE PREFETCH" in (call["content"] or "")
+
+    # Ordering: CRITICAL log fires BEFORE the Agora post.
+    crit_records = [
+        r for r in log_records
+        if r["levelname"] == "CRITICAL"
+        and "archive_prefetch_failure_escalated" in r["message"]
+    ]
+    assert len(crit_records) == 1
+    assert crit_records[0]["ts"] < call["ts"], (
+        "CRITICAL log fired AFTER Agora post — alert-emission "
+        "ordering contract broken (CRITICAL is the load-bearing "
+        "channel, must fire first)."
+    )
+
+
+def test_prefetch_escalation_critical_log_fires_when_agora_service_none(
+    session, seeded_world,
+):
+    """Contract proof: even with `agora_service=None` (the previous
+    default behavior), the CRITICAL log still fires on the threshold
+    and no AttributeError or other exception propagates. CRITICAL
+    log is the load-bearing alert-emission channel; Agora is a
+    best-effort secondary."""
+    import logging as _logging
+
+    strategist = session.get(Agent, seeded_world["strategist"])
+
+    # Explicit None — the constructor's default but stated for clarity.
+    assembler = ContextAssembler(
+        session, token_budget=3000, agora_service=None,
+    )
+
+    class _BoomHelper:
+        def __call__(self, **kwargs):
+            return None
+        def prefetch(self, **kwargs):
+            raise RuntimeError("boom")
+
+    assembler.archive_helper = _BoomHelper()
+
+    log_records: list[_logging.LogRecord] = []
+
+    class _Capture(_logging.Handler):
+        def emit(self, record):
+            log_records.append(record)
+
+    handler = _Capture(level=_logging.CRITICAL)
+    ca_logger = _logging.getLogger("src.agents.context_assembler")
+    ca_logger.addHandler(handler)
+    try:
+        # Three failures — must NOT raise.
+        for _ in range(3):
+            try:
+                assembler._build_archive_pre_fetch_slice(strategist)
+            except Exception as exc:  # pragma: no cover — contract guard
+                pytest.fail(
+                    f"Exception propagated from prefetch path with "
+                    f"agora_service=None: {exc!r}. The contract is "
+                    f"non-propagation."
+                )
+    finally:
+        ca_logger.removeHandler(handler)
+
+    escalations = [
+        r for r in log_records
+        if r.levelname == "CRITICAL"
+        and "archive_prefetch_failure_escalated" in r.getMessage()
+    ]
+    assert escalations, (
+        f"CRITICAL escalation log did not fire when "
+        f"agora_service=None. The contract is CRITICAL-as-load-"
+        f"bearing — Agora is best-effort. records: "
+        f"{[(r.levelname, r.getMessage()) for r in log_records]!r}"
+    )
+    rec = escalations[0]
+    assert getattr(rec, "archive_prefetch_failure_escalated", None) is True

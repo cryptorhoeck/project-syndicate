@@ -83,9 +83,23 @@ class ContextAssembler:
     and packing data into a token-budgeted context window.
     """
 
-    def __init__(self, db_session: Session, token_budget: int = 3000):
+    def __init__(
+        self, db_session: Session, token_budget: int = 3000,
+        agora_service=None,
+    ):
         self.db = db_session
         self.token_budget = token_budget
+
+        # Optional Agora handle for prefetch-failure-escalation
+        # alerts (subsystems F+G fix, Critic iteration 3 Finding 1
+        # — the iteration-2 implementation used a `getattr` here
+        # without a constructor slot, so production silently skipped
+        # the Agora-post path). Now an explicit parameter; stored
+        # eagerly so the production path actually runs. ThinkingCycle
+        # sets this alongside `archive_helper` for the standalone
+        # construction path; tests can pass via the constructor or
+        # via attribute assignment.
+        self.agora_service = agora_service
 
         # Wire Archive prefetch failure latch (subsystems F+G fix,
         # Critic iteration 2 Finding 3). Counts consecutive cycles
@@ -1013,7 +1027,11 @@ Review your recent performance and produce a reflection."""
         # WARNING `agora_alert_emit_failed` and DO NOT propagate
         # (no recursive escalation — that's the alert-about-alert
         # trap fix P documented).
-        agora = getattr(self, "agora_service", None)
+        # Critic iteration 3 Finding 1 fix: agora_service is now an
+        # explicit constructor parameter (was a stale `getattr`).
+        # Production path: ThinkingCycle sets it on the assembler
+        # instance alongside archive_helper.
+        agora = self.agora_service
         if agora is None:
             return
         try:
