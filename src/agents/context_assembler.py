@@ -1237,7 +1237,10 @@ Review your recent performance and produce a reflection."""
         Returns "" if no rows successfully rendered or on any path
         failure — never break OODA on consumer fault.
         """
-        from src.wire.constants import MAX_ATTEMPTS_ARCHIVE_QUERY
+        from src.wire.constants import (
+            MAX_ATTEMPTS_ARCHIVE_QUERY,
+            MAX_PENDING_ARCHIVE_RESULTS_PER_CYCLE,
+        )
         from src.wire.models import ArchiveQueryResult as _AQR
 
         # ── PRE-FLIP PASS ──
@@ -1285,7 +1288,7 @@ Review your recent performance and produce a reflection."""
                     _AQR.attempt_count < MAX_ATTEMPTS_ARCHIVE_QUERY,
                 )
                 .order_by(desc(_AQR.requested_at))
-                .limit(10)
+                .limit(MAX_PENDING_ARCHIVE_RESULTS_PER_CYCLE)
                 .all()
             )
         except Exception as exc:

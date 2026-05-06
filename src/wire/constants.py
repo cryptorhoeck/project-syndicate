@@ -185,6 +185,16 @@ ARCHIVE_PREFETCH_ESCALATION_THRESHOLD: Final[int] = 3
 # Critic iteration 2 Finding 3 — Library reflection bug shape). Same
 # K=3 derivation as the row-level cap above.
 
+MAX_PENDING_ARCHIVE_RESULTS_PER_CYCLE: Final[int] = 10
+# Bounds the number of pending archive_query_results consumed in a
+# single ContextAssembler.assemble call. Larger values risk
+# overwhelming the agent's priority context budget; smaller values
+# risk old results getting silently aged out if a Strategist issues
+# many queries faster than they're consumed. 10 chosen by inspection —
+# matches the `.limit(10)` used elsewhere in ContextAssembler for
+# similar context-bounding purposes (e.g. lines 871, 907, 1288).
+# Tunable if operational experience shows different appropriate value.
+
 # ---------------------------------------------------------------------------
 # Source names (canonical)
 # ---------------------------------------------------------------------------
