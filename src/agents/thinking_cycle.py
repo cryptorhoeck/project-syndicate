@@ -201,11 +201,15 @@ class ThinkingCycle:
                     self.db, agent_id=int(agent.id),
                 )
             elif agent.type == "critic":
+                from src.wire.constants import (
+                    CRITIC_FREE_QUERIES_PER_CRITIQUE,
+                )
                 from src.wire.integration.agent_context import (
                     build_critic_archive_helper,
                 )
                 archive_helper = build_critic_archive_helper(
-                    self.db, agent_id=int(agent.id), free_budget=3,
+                    self.db, agent_id=int(agent.id),
+                    free_budget=CRITIC_FREE_QUERIES_PER_CRITIQUE,
                 )
         except Exception as exc:
             logger.warning(

@@ -2,6 +2,97 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Hotfix] - 2026-05-05 - Strategist/Critic Archive helpers (subsystems F + G) — Critic iteration 2
+
+Three HIGH/MEDIUM blocking + two LOW from iteration 1 review.
+
+### Finding 1 (HIGH) — Queue lifecycle (fix-H pattern parity)
+`_consume_pending_archive_results` now mirrors fix H iteration 3
+end-state for poison-pill safety:
+  - **PRE-FLIP PASS** SELECTs pending rows where
+    `attempt_count >= MAX_ATTEMPTS_ARCHIVE_QUERY`, flips them to
+    'failed' with `last_error` populated. attempt_count NOT
+    incremented during flip — at the time of the flip
+    `attempt_count == MAX` exactly (no off-by-one).
+  - **CONSUME PASS** SELECTs pending rows where
+    `attempt_count < MAX_ATTEMPTS_ARCHIVE_QUERY` (defensive
+    exclusion in case a refactor drops the pre-flip pass).
+  - **PER-ROW** attempt_count incremented BEFORE rendering. On
+    render exception: `last_error` stamps THIS row only (not
+    batch-stamped); other rows keep `last_error=NULL`. Row stays
+    'pending' for next-cycle retry until cap fires.
+  - `MAX_ATTEMPTS_ARCHIVE_QUERY = 3` constant added to
+    `src/wire/constants.py` with derivation comment (matches K=3
+    across async-bridge users H/P).
+Tests:
+  - `test_archive_query_attempt_count_exact_at_failure_cap` —
+    deterministically-failing row, attempt_count == MAX at the
+    flip (NOT MAX+1)
+  - `test_archive_query_failed_row_excluded_from_consumption` —
+    failed row is not re-incremented
+  - `test_archive_query_per_row_error_attribution` — batch of 5,
+    one bad row, last_error stamps only the offender; other 4
+    delivered cleanly
+
+### Finding 2 (HIGH) — Validator action-space gate verified + tested
+Verified the validator's step-3 action-space gate consults
+`get_action_names(agent_type)` which builds from
+`ROLE_DEFINITIONS[role].available_actions`. Since `query_archive`
+is in `STRATEGIST_ACTIONS` and `CRITIC_ACTIONS` only (not
+`SCOUT_ACTIONS` or `OPERATOR_ACTIONS`, neither in
+`SURVIVAL_ACTIONS`), the gate correctly rejects it for Scout and
+Operator with `INVALID_ACTION` and `retryable=False`. No code
+change needed — gap was a tests gap.
+Tests:
+  - `test_validator_rejects_query_archive_for_scout`
+  - `test_validator_rejects_query_archive_for_operator`
+  - `test_validator_accepts_query_archive_for_strategist`
+  - `test_validator_accepts_query_archive_for_critic`
+
+### Finding 3 (HIGH) — Prefetch failure path is no longer Library reflection bug shape
+On any prefetch exception, `_build_archive_pre_fetch_slice` now:
+  1. Returns a **visible degradation marker** as the slice content
+     (`"=== RECENT WIRE EVENTS ===\n(Wire Archive temporarily
+     unavailable — running with reduced situational awareness)\n
+     === END WIRE ARCHIVE ==="`). Agent and prompt logs see the
+     degradation explicitly — no more silent empty-string return.
+  2. Increments `_archive_prefetch_failure_count` instance
+     counter on `ContextAssembler`.
+  3. After `ARCHIVE_PREFETCH_ESCALATION_THRESHOLD = 3` consecutive
+     failures, fires CRITICAL log
+     (`archive_prefetch_failure_escalated` with structured
+     `archive_prefetch_failure_escalated=True` field) + best-
+     effort Agora system-alert via the same `run_async_safely`
+     path fix P locked in.
+  4. Counter resets to 0 on first successful prefetch.
+Tests:
+  - `test_prefetch_failure_returns_visible_degradation_marker`
+  - `test_prefetch_failure_increments_counter`
+  - `test_prefetch_failure_three_consecutive_escalates`
+  - `test_prefetch_failure_counter_resets_on_first_success`
+  - `test_prefetch_failure_does_not_crash_agent_cycle`
+
+### Finding 4 (MEDIUM) — Constant derivation comments
+All four iteration-1 magic numbers are now constants in
+`src/wire/constants.py` with derivation comments:
+`PRE_FETCH_SLICE_SIZE`, `PRE_FETCH_SEVERITY_FLOOR`,
+`PRE_FETCH_LOOKBACK_HOURS`, `CRITIC_FREE_QUERIES_PER_CRITIQUE`
+(plus the new F1/F3 constants). Existing hardcoded values in
+`context_assembler.py` and `thinking_cycle.py` swapped out.
+
+### Finding 5 (MEDIUM) — E2E cleanup by agent_id
+`scripts/validate_archive_helpers_e2e.py` cleanup now also issues
+`DELETE FROM archive_query_results WHERE requesting_agent_id =
+ANY(:seeded_agent_ids)` after the tracked-id pass. Catches any
+prefetch-driven or future-implementation rows the test didn't
+explicitly track, preventing FK orphans in subsequent runs.
+
+### Finding 6 (LOW, closed) — Production-path tests verified
+War Room directly verified the four
+`test_*_actually_*_in_production_path` tests exist in
+`tests/test_strategist_critic_archive_wiring.py`. No code change
+required.
+
 ## [Hotfix] - 2026-05-04 - Strategist/Critic Archive helpers (subsystems F + G)
 
 Closes WIRING_AUDIT_REPORT.md F (`build_strategist_archive_helper`)

@@ -821,3 +821,405 @@ def test_archive_helpers_share_same_instance_in_thinking_cycle():
     # Both sides must be set, in the same scope, to the same name.
     assert "self.context_assembler.archive_helper = archive_helper" in src
     assert "self.action_executor.archive_helper = archive_helper" in src
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 2 Finding 1: queue lifecycle (cap + per-row attribution)
+# ---------------------------------------------------------------------------
+
+
+def test_archive_query_attempt_count_exact_at_failure_cap(
+    session, seeded_world,
+):
+    """Run consumption cycles until status='failed'. attempt_count
+    at the time of the flip must equal MAX_ATTEMPTS_ARCHIVE_QUERY
+    (NOT MAX+1). Mirrors fix H's
+    test_regime_review_exact_attempt_count_at_failure_cap."""
+    from src.wire.constants import MAX_ATTEMPTS_ARCHIVE_QUERY
+    assert MAX_ATTEMPTS_ARCHIVE_QUERY == 3
+
+    strategist = session.get(Agent, seeded_world["strategist"])
+    # Seed a row with a deliberately-malformed payload so render
+    # raises every cycle. result_payload is JSON-typed; using a
+    # non-dict value (a string) makes ``payload.get("events")``
+    # raise.
+    row = ArchiveQueryResultRow(
+        requesting_agent_id=int(strategist.id),
+        query_text="poison-pill query",
+        lookback_hours=24, max_results=5,
+        result_payload="this-is-not-a-dict",  # render will explode
+        status="pending", attempt_count=0,
+    )
+    session.add(row)
+    session.commit()
+    row_id = row.id
+
+    assembler = ContextAssembler(session, token_budget=3000)
+
+    # Cycles 1..MAX: row stays pending, attempt_count increments.
+    for cycle in range(MAX_ATTEMPTS_ARCHIVE_QUERY):
+        assembler._consume_pending_archive_results(strategist)
+        session.expire_all()
+        cur = session.get(ArchiveQueryResultRow, row_id)
+        assert cur.status == "pending", (
+            f"row flipped to {cur.status!r} on cycle {cycle+1}/"
+            f"{MAX_ATTEMPTS_ARCHIVE_QUERY} — premature failure"
+        )
+        assert cur.attempt_count == cycle + 1, (
+            f"cycle {cycle+1}: attempt_count={cur.attempt_count}, "
+            f"expected {cycle+1}"
+        )
+
+    # Cycle MAX+1: pre-flip pass should fire. attempt_count stays
+    # at the cap exactly — NO further increment past MAX.
+    assembler._consume_pending_archive_results(strategist)
+    session.expire_all()
+    final = session.get(ArchiveQueryResultRow, row_id)
+    assert final.status == "failed", (
+        f"row not flipped after {MAX_ATTEMPTS_ARCHIVE_QUERY} attempts. "
+        f"status={final.status!r}"
+    )
+    assert final.attempt_count == MAX_ATTEMPTS_ARCHIVE_QUERY, (
+        f"Off-by-one bug: at the time of the flip, attempt_count "
+        f"should equal MAX ({MAX_ATTEMPTS_ARCHIVE_QUERY}), got "
+        f"{final.attempt_count}. The cap must NOT allow an extra "
+        f"attempt past the limit."
+    )
+    assert final.last_error is not None, (
+        "row at the cap must carry a non-empty last_error"
+    )
+    # last_error is either the most-recent per-row render error
+    # (preserved by the cap path's `if not last_error:` guard) OR
+    # the generic "exceeded max" message (if no per-row stamp ever
+    # happened). Both are valid terminal states.
+    msg = final.last_error.lower()
+    assert ("exceeded max" in msg) or ("attributeerror" in msg) or ("error" in msg), (
+        f"last_error not informative on terminal flip: "
+        f"{final.last_error!r}"
+    )
+
+
+def test_archive_query_failed_row_excluded_from_consumption(
+    session, seeded_world,
+):
+    """A row at status='failed' with attempt_count=MAX must not be
+    selected by the consume pass — its attempt_count must NOT
+    increment further."""
+    from src.wire.constants import MAX_ATTEMPTS_ARCHIVE_QUERY
+
+    strategist = session.get(Agent, seeded_world["strategist"])
+    row = ArchiveQueryResultRow(
+        requesting_agent_id=int(strategist.id),
+        query_text="already-failed query",
+        lookback_hours=24, max_results=5,
+        result_payload=None,
+        status="failed", attempt_count=MAX_ATTEMPTS_ARCHIVE_QUERY,
+        last_error="terminal — exceeded retry cap",
+    )
+    session.add(row)
+    session.commit()
+    row_id = row.id
+
+    assembler = ContextAssembler(session, token_budget=3000)
+    assembler._consume_pending_archive_results(strategist)
+
+    session.expire_all()
+    after = session.get(ArchiveQueryResultRow, row_id)
+    assert after.status == "failed"
+    assert after.attempt_count == MAX_ATTEMPTS_ARCHIVE_QUERY, (
+        f"'failed' row was re-incremented to "
+        f"{after.attempt_count}; consume SELECT must exclude it."
+    )
+
+
+def test_archive_query_per_row_error_attribution(session, seeded_world):
+    """Batch of 5 pending rows; ONE has a malformed payload. Per-row
+    try/except inside the consume loop must stamp last_error on
+    THAT row only — the other 4 keep last_error=NULL."""
+    strategist = session.get(Agent, seeded_world["strategist"])
+
+    bad_row_id: Optional[int] = None
+    good_row_ids: list[int] = []
+    for i in range(5):
+        if i == 2:
+            payload = "not-a-dict"  # render explodes
+        else:
+            payload = {
+                "events": [], "token_cost": 0,
+                "free_query": False, "metadata": {},
+            }
+        row = ArchiveQueryResultRow(
+            requesting_agent_id=int(strategist.id),
+            query_text=f"per-row-{i}",
+            lookback_hours=24, max_results=5,
+            result_payload=payload,
+            status="pending", attempt_count=0,
+        )
+        session.add(row)
+        session.flush()
+        if i == 2:
+            bad_row_id = row.id
+        else:
+            good_row_ids.append(row.id)
+    session.commit()
+
+    assembler = ContextAssembler(session, token_budget=3000)
+    rendered = assembler._consume_pending_archive_results(strategist)
+
+    session.expire_all()
+    bad = session.get(ArchiveQueryResultRow, bad_row_id)
+    assert bad.last_error is not None, (
+        "offending row did not receive a last_error stamp"
+    )
+    assert bad.status == "pending", (
+        f"offending row flipped prematurely to {bad.status!r}"
+    )
+
+    for gid in good_row_ids:
+        good = session.get(ArchiveQueryResultRow, gid)
+        assert good.last_error is None, (
+            f"innocent row {gid} got a last_error stamp: "
+            f"{good.last_error!r}"
+        )
+        assert good.status == "delivered", (
+            f"innocent row {gid} not delivered: {good.status!r}"
+        )
+
+    # The 4 successful rows must appear in the rendered output.
+    for i in (0, 1, 3, 4):
+        assert f"per-row-{i}" in rendered
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 2 Finding 2: validator role-rejection (explicit per-role)
+# ---------------------------------------------------------------------------
+
+
+def _query_archive_validator_input() -> str:
+    return json.dumps({
+        "situation": "test",
+        "confidence": {"score": 5, "reasoning": "test"},
+        "recent_pattern": "test",
+        "action": {
+            "type": "query_archive",
+            "params": {
+                "query": "test", "lookback_hours": 24, "max_results": 5,
+            },
+        },
+        "reasoning": "test",
+        "self_note": "test",
+    })
+
+
+def test_validator_rejects_query_archive_for_scout():
+    """Validator step-3 action-space gate consults SCOUT_ACTIONS;
+    query_archive is NOT in that set → INVALID_ACTION with
+    retryable=False."""
+    validator = OutputValidator()
+    result = validator.validate("scout", _query_archive_validator_input())
+    assert result.passed is False
+    assert result.failure_type == ValidationFailure.INVALID_ACTION
+    assert result.retryable is False
+    # Rejection must come from the validator (action-space check),
+    # NOT from any executor-level defense check.
+    assert "query_archive" in (result.failure_detail or "")
+    assert "scout action space" in (result.failure_detail or "").lower()
+
+
+def test_validator_rejects_query_archive_for_operator():
+    """Same shape for Operator."""
+    validator = OutputValidator()
+    result = validator.validate("operator", _query_archive_validator_input())
+    assert result.passed is False
+    assert result.failure_type == ValidationFailure.INVALID_ACTION
+    assert result.retryable is False
+    assert "operator action space" in (result.failure_detail or "").lower()
+
+
+def test_validator_accepts_query_archive_for_strategist():
+    """Strategist's action-space includes query_archive → validation
+    passes (no INVALID_ACTION)."""
+    validator = OutputValidator()
+    result = validator.validate(
+        "strategist", _query_archive_validator_input(),
+    )
+    assert result.passed is True, (
+        f"validator rejected query_archive for strategist: "
+        f"{result.failure_type} {result.failure_detail!r}"
+    )
+
+
+def test_validator_accepts_query_archive_for_critic():
+    """Same shape for Critic."""
+    validator = OutputValidator()
+    result = validator.validate("critic", _query_archive_validator_input())
+    assert result.passed is True
+
+
+# ---------------------------------------------------------------------------
+# Critic iteration 2 Finding 3: prefetch failure path (Library reflection
+# bug shape — visible degradation marker + escalation counter)
+# ---------------------------------------------------------------------------
+
+
+def test_prefetch_failure_returns_visible_degradation_marker(
+    session, seeded_world,
+):
+    """Mock the helper's prefetch to raise. The slice MUST contain
+    a visible "Wire Archive temporarily unavailable" marker so the
+    agent sees it's running with degraded context — NOT an empty
+    string (Library reflection bug shape)."""
+    strategist = session.get(Agent, seeded_world["strategist"])
+
+    class _BoomHelper:
+        def __call__(self, **kwargs):
+            return None
+        def prefetch(self, **kwargs):
+            raise RuntimeError("synthetic prefetch failure")
+
+    assembler = ContextAssembler(session, token_budget=3000)
+    assembler.archive_helper = _BoomHelper()
+    text = assembler._build_archive_pre_fetch_slice(strategist)
+
+    assert text != ""
+    assert "Wire Archive temporarily unavailable" in text, (
+        f"Degradation marker missing — agent would silently run "
+        f"with reduced context. Got: {text!r}"
+    )
+
+
+def test_prefetch_failure_increments_counter(session, seeded_world):
+    """Single failure increments the consecutive-failure counter."""
+    strategist = session.get(Agent, seeded_world["strategist"])
+
+    class _BoomHelper:
+        def __call__(self, **kwargs):
+            return None
+        def prefetch(self, **kwargs):
+            raise RuntimeError("boom")
+
+    assembler = ContextAssembler(session, token_budget=3000)
+    assembler.archive_helper = _BoomHelper()
+
+    assert assembler._archive_prefetch_failure_count == 0
+    assembler._build_archive_pre_fetch_slice(strategist)
+    assert assembler._archive_prefetch_failure_count == 1
+
+
+def test_prefetch_failure_three_consecutive_escalates(
+    session, seeded_world, capsys,
+):
+    """Three consecutive failures → CRITICAL escalation log fires
+    on the third with structured field
+    `archive_prefetch_failure_escalated`."""
+    import logging as _logging
+    from src.wire.constants import ARCHIVE_PREFETCH_ESCALATION_THRESHOLD
+    assert ARCHIVE_PREFETCH_ESCALATION_THRESHOLD == 3
+
+    strategist = session.get(Agent, seeded_world["strategist"])
+
+    class _BoomHelper:
+        def __call__(self, **kwargs):
+            return None
+        def prefetch(self, **kwargs):
+            raise RuntimeError("boom")
+
+    log_records: list[_logging.LogRecord] = []
+
+    class _Capture(_logging.Handler):
+        def emit(self, record):
+            log_records.append(record)
+
+    handler = _Capture(level=_logging.CRITICAL)
+    ca_logger = _logging.getLogger("src.agents.context_assembler")
+    ca_logger.addHandler(handler)
+
+    try:
+        assembler = ContextAssembler(session, token_budget=3000)
+        assembler.archive_helper = _BoomHelper()
+        for _ in range(ARCHIVE_PREFETCH_ESCALATION_THRESHOLD):
+            assembler._build_archive_pre_fetch_slice(strategist)
+    finally:
+        ca_logger.removeHandler(handler)
+
+    escalations = [
+        r for r in log_records
+        if r.levelname == "CRITICAL"
+        and "archive_prefetch_failure_escalated" in r.getMessage()
+    ]
+    assert escalations, (
+        f"No CRITICAL escalation log after "
+        f"{ARCHIVE_PREFETCH_ESCALATION_THRESHOLD} failures. records: "
+        f"{[(r.levelname, r.getMessage()) for r in log_records]!r}"
+    )
+    rec = escalations[0]
+    assert getattr(rec, "archive_prefetch_failure_escalated", None) is True
+    assert getattr(rec, "consecutive_failures", None) == 3
+    assert (
+        getattr(rec, "threshold", None)
+        == ARCHIVE_PREFETCH_ESCALATION_THRESHOLD
+    )
+
+
+def test_prefetch_failure_counter_resets_on_first_success(
+    session, seeded_world,
+):
+    """Two failures, then a success → counter resets to 0."""
+    fixed_now = datetime.now(timezone.utc)
+    _seed_wire_events(session, fixed_now=fixed_now)
+
+    strategist = session.get(Agent, seeded_world["strategist"])
+
+    state = {"mode": "boom"}
+
+    class _ToggleHelper:
+        def __init__(self, sess, agent_id):
+            self._real = build_strategist_archive_helper(
+                sess, agent_id=agent_id,
+            )
+        def __call__(self, **kwargs):
+            return self._real(**kwargs)
+        def prefetch(self, **kwargs):
+            if state["mode"] == "boom":
+                raise RuntimeError("boom")
+            return self._real.prefetch(**kwargs)
+
+    assembler = ContextAssembler(session, token_budget=3000)
+    assembler.archive_helper = _ToggleHelper(
+        session, int(strategist.id),
+    )
+
+    assembler._build_archive_pre_fetch_slice(strategist)
+    assembler._build_archive_pre_fetch_slice(strategist)
+    assert assembler._archive_prefetch_failure_count == 2
+
+    state["mode"] = "ok"
+    assembler._build_archive_pre_fetch_slice(strategist)
+    assert assembler._archive_prefetch_failure_count == 0, (
+        f"Counter did not reset on first successful prefetch: "
+        f"{assembler._archive_prefetch_failure_count}"
+    )
+
+
+def test_prefetch_failure_does_not_crash_agent_cycle(
+    session, seeded_world,
+):
+    """Assembly must complete even when the prefetch raises. The
+    agent receives the degradation marker; no exception
+    propagates."""
+    strategist = session.get(Agent, seeded_world["strategist"])
+
+    class _BoomHelper:
+        def __call__(self, **kwargs):
+            return None
+        def prefetch(self, **kwargs):
+            raise RuntimeError("boom")
+
+    assembler = ContextAssembler(session, token_budget=3000)
+    assembler.archive_helper = _BoomHelper()
+
+    text = assembler._build_priority_context(strategist, token_budget=3000)
+    assert "Wire Archive temporarily unavailable" in text, (
+        f"Priority context did not include the degradation marker. "
+        f"head:\n{text[:600]}"
+    )

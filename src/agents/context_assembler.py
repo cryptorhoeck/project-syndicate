@@ -87,6 +87,17 @@ class ContextAssembler:
         self.db = db_session
         self.token_budget = token_budget
 
+        # Wire Archive prefetch failure latch (subsystems F+G fix,
+        # Critic iteration 2 Finding 3). Counts consecutive cycles
+        # where the prefetch path raised. Reset to 0 on first
+        # successful prefetch. At
+        # `ARCHIVE_PREFETCH_ESCALATION_THRESHOLD`, escalates to
+        # CRITICAL log + best-effort Agora system-alert. The CRITICAL
+        # log is the load-bearing signal; the Agora post is a mirror
+        # that may fail silently if Agora is itself unavailable
+        # (mirrors fix P's eval-engine alert pattern).
+        self._archive_prefetch_failure_count: int = 0
+
     def determine_mode(self, agent: Agent, budget_status: BudgetStatus) -> ContextMode:
         """Determine the context assembly mode based on agent state."""
         if budget_status == BudgetStatus.SURVIVAL_MODE:
@@ -941,6 +952,122 @@ Review your recent performance and produce a reflection."""
         lines.append("=== END WIRE ===")
         return "\n".join(lines)
 
+    def _archive_prefetch_degradation_marker(self) -> str:
+        """Visible degradation marker shown to the agent when the
+        Wire Archive prefetch path raises. Non-empty by design — a
+        silent empty string would be the Library reflection bug
+        shape (agent runs with degraded context but doesn't know).
+        """
+        return (
+            "=== RECENT WIRE EVENTS ===\n"
+            "(Wire Archive temporarily unavailable — running with "
+            "reduced situational awareness)\n"
+            "=== END WIRE ARCHIVE ==="
+        )
+
+    def _record_prefetch_failure(self, agent: Agent, exc: Exception) -> None:
+        """Track a prefetch failure: log WARNING, increment the
+        consecutive-failure counter, and on threshold escalate to
+        CRITICAL + best-effort Agora system-alert.
+
+        Mirrors fix P's eval-engine alert pattern: CRITICAL log
+        fires FIRST (the load-bearing alert-emission contract);
+        Agora post is a best-effort secondary channel that may fail
+        silently if Agora is itself unavailable.
+        """
+        from src.wire.constants import ARCHIVE_PREFETCH_ESCALATION_THRESHOLD
+
+        logger.warning(
+            "archive_prefetch_failed",
+            extra={
+                "agent_id": agent.id,
+                "agent_type": agent.type,
+                "exception_type": type(exc).__name__,
+                "exception_str": str(exc),
+            },
+        )
+        self._archive_prefetch_failure_count += 1
+        if (
+            self._archive_prefetch_failure_count
+            < ARCHIVE_PREFETCH_ESCALATION_THRESHOLD
+        ):
+            return
+
+        # Threshold reached — escalate. CRITICAL log FIRST.
+        logger.critical(
+            "archive_prefetch_failure_escalated",
+            extra={
+                "archive_prefetch_failure_escalated": True,
+                "agent_id": agent.id,
+                "agent_type": agent.type,
+                "consecutive_failures": self._archive_prefetch_failure_count,
+                "threshold": ARCHIVE_PREFETCH_ESCALATION_THRESHOLD,
+                "exception_type": type(exc).__name__,
+                "exception_str": str(exc),
+            },
+        )
+
+        # Best-effort Agora system-alert. Mirrors fix P's contract:
+        # CRITICAL log is the load-bearing channel; Agora is the
+        # cross-process mirror. If the Agora post raises we log
+        # WARNING `agora_alert_emit_failed` and DO NOT propagate
+        # (no recursive escalation — that's the alert-about-alert
+        # trap fix P documented).
+        agora = getattr(self, "agora_service", None)
+        if agora is None:
+            return
+        try:
+            from src.agora.schemas import AgoraMessage, MessageType
+            from src.common.async_bridge import run_async_safely
+
+            async def _post_alert() -> None:
+                await agora.post_message(AgoraMessage(
+                    agent_id=int(agent.id),
+                    agent_name="ContextAssembler",
+                    channel="system-alerts",
+                    content=(
+                        f"[ARCHIVE PREFETCH] {agent.type} "
+                        f"prefetch failed "
+                        f"{self._archive_prefetch_failure_count} "
+                        f"consecutive cycles "
+                        f"(threshold {ARCHIVE_PREFETCH_ESCALATION_THRESHOLD}). "
+                        f"Last error: {type(exc).__name__}: {exc}"
+                    ),
+                    message_type=MessageType.ALERT,
+                    importance=2,
+                    metadata={
+                        "event_class": "archive.prefetch_failure_escalated",
+                        "agent_id": int(agent.id),
+                        "agent_type": agent.type,
+                        "consecutive_failures": self._archive_prefetch_failure_count,
+                        "threshold": ARCHIVE_PREFETCH_ESCALATION_THRESHOLD,
+                        "exception_type": type(exc).__name__,
+                        "exception_str": str(exc),
+                    },
+                ))
+
+            post_success, post_exc = run_async_safely(
+                _post_alert(), logger=logger,
+            )
+            if not post_success:
+                logger.warning(
+                    "agora_alert_emit_failed",
+                    extra={
+                        "agora_alert_emit_failed": True,
+                        "alert_class": "archive.prefetch_failure_escalated",
+                        "agora_exception_type": (
+                            type(post_exc).__name__
+                            if post_exc is not None else "Unknown"
+                        ),
+                        "agora_exception_str": (
+                            str(post_exc) if post_exc is not None else ""
+                        ),
+                    },
+                )
+        except Exception:
+            # Best-effort. The CRITICAL log already fired.
+            logger.exception("archive_prefetch_alert_post_failed")
+
     def _build_archive_pre_fetch_slice(self, agent: Agent) -> str:
         """Subsystems F+G prefetch: 5 most recent severity-3+ Wire
         events from last 24h, filtered to agent.watched_markets +
@@ -950,21 +1077,36 @@ Review your recent performance and produce a reflection."""
         The helper for this prefetch is shared with ActionExecutor
         via `self.archive_helper` (set by ThinkingCycle once per
         cycle). For Critic the shared helper means the prefetch does
-        NOT decrement the free_budget=3 counter (it uses the
+        NOT decrement the free_budget counter (it uses the
         ``.prefetch()`` attribute, which goes around the
         free_budget logic).
 
-        Returns "" on any failure — never break OODA on a Wire
-        sub-component fault. The agent simply sees no Archive slice
-        on the failed cycle; the next cycle gets a fresh attempt.
+        FAILURE PATH (Critic iteration 2 Finding 3 — Library
+        reflection bug shape). On any prefetch exception we DO NOT
+        return "" — that would silently run the agent with degraded
+        context. Instead:
+          - return a visible degradation marker as the slice content
+            so the agent (and prompt logs) explicitly see "Archive
+            unavailable"
+          - increment `_archive_prefetch_failure_count`
+          - on `ARCHIVE_PREFETCH_ESCALATION_THRESHOLD` consecutive
+            failures, fire CRITICAL log + best-effort Agora alert
+          - reset counter to 0 on the first successful prefetch
         """
+        from src.wire.constants import (
+            PRE_FETCH_LOOKBACK_HOURS,
+            PRE_FETCH_SEVERITY_FLOOR,
+            PRE_FETCH_SLICE_SIZE,
+            CRITIC_FREE_QUERIES_PER_CRITIQUE,
+        )
+
         try:
             from src.wire.integration.agent_context import (
                 build_strategist_archive_helper,
                 build_critic_archive_helper,
             )
         except Exception:  # pragma: no cover
-            return ""
+            return self._archive_prefetch_degradation_marker()
 
         helper = getattr(self, "archive_helper", None)
         if helper is None:
@@ -977,35 +1119,37 @@ Review your recent performance and produce a reflection."""
                     )
                 elif agent.type == "critic":
                     helper = build_critic_archive_helper(
-                        self.db, agent_id=int(agent.id), free_budget=3,
+                        self.db, agent_id=int(agent.id),
+                        free_budget=CRITIC_FREE_QUERIES_PER_CRITIQUE,
                     )
                 else:
                     return ""
             except Exception as exc:
-                logger.warning(
-                    "archive_helper_construct_failed",
-                    extra={"agent_id": agent.id, "error": str(exc)},
-                )
-                return ""
+                self._record_prefetch_failure(agent, exc)
+                return self._archive_prefetch_degradation_marker()
 
         if not hasattr(helper, "prefetch"):
-            # Future-proof: existing tests / older callers may still
-            # pass a plain callable without the attribute. Treat as
-            # "no prefetch available" — pending-results path still works.
+            # Old-style plain callable without .prefetch — not a
+            # failure of the Wire (the helper is fine), just no
+            # baseline slice available. Don't increment the
+            # failure counter; the path is structurally degraded
+            # rather than transiently broken.
             return ""
 
         try:
             watched = list(agent.watched_markets or [])
             result = helper.prefetch(
-                watched_markets=watched, lookback_hours=24,
-                min_severity=3, limit=5,
+                watched_markets=watched,
+                lookback_hours=PRE_FETCH_LOOKBACK_HOURS,
+                min_severity=PRE_FETCH_SEVERITY_FLOOR,
+                limit=PRE_FETCH_SLICE_SIZE,
             )
         except Exception as exc:
-            logger.warning(
-                "archive_prefetch_failed",
-                extra={"agent_id": agent.id, "error": str(exc)},
-            )
-            return ""
+            self._record_prefetch_failure(agent, exc)
+            return self._archive_prefetch_degradation_marker()
+
+        # Success — reset the consecutive-failure counter.
+        self._archive_prefetch_failure_count = 0
 
         events = list(result.events)
         lines = ["=== RECENT WIRE EVENTS (last 24h, severity 3+) ==="]
@@ -1045,31 +1189,82 @@ Review your recent performance and produce a reflection."""
         return "\n".join(lines)
 
     def _consume_pending_archive_results(self, agent: Agent) -> str:
-        """Subsystems F+G consumer half. Reads archive_query_results
-        rows with status='pending' for this agent_id, formats them
-        into priority context, marks them 'delivered'.
+        """Subsystems F+G consumer half. Mirrors fix H iterations 2-3
+        end-state for poison-pill safety:
 
-        Mirrors the subsystem H regime-review consumption pattern:
-          - SELECT pending rows for this agent
-          - Render each into the priority context
-          - Mark each 'delivered' (`delivered_at = NOW()`) in a
-            single UPDATE filtered by id IN (consumed_ids)
-          - Per-row try/except so a bad row doesn't poison the batch
-          - 'failed' rows are NOT consumed (they stay in the table
-            as a historical record)
+          PRE-FLIP PASS — SELECT pending rows where
+            attempt_count >= MAX_ATTEMPTS_ARCHIVE_QUERY. Flip each to
+            'failed' with last_error populated. Defensive even
+            though the consume SELECT below also excludes capped
+            rows: a row at the cap MUST eventually become terminal
+            (otherwise it sits 'pending' forever, invisible).
 
-        Returns "" if no pending rows or on any error — never break
-        OODA on consumer fault. Failed rows that previously had
-        attempt_count cap fired stay 'failed' and are not shown.
+          CONSUME PASS — SELECT pending rows where
+            attempt_count < MAX_ATTEMPTS_ARCHIVE_QUERY. Per-row:
+              1. Increment attempt_count BEFORE rendering, so a
+                 crash during render still records the attempt.
+              2. Try to render. On failure, stamp last_error on
+                 THIS row only (not batch-stamped) and SKIP — row
+                 stays 'pending' with attempt_count++ for next
+                 cycle, until the cap fires.
+              3. On success, append to delivered_ids.
+            Single COMMIT inside the consume pass session.
+
+          MARK-DELIVERED — UPDATE id IN (delivered_ids) → status
+            'delivered'. Race-safe per fix H Finding 2: filter by
+            id IN (consumed_ids) only, NOT also by status='pending'
+            (we promised these IDs delivery; status drift shouldn't
+            break the contract).
+
+        Returns "" if no rows successfully rendered or on any path
+        failure — never break OODA on consumer fault.
         """
+        from src.wire.constants import MAX_ATTEMPTS_ARCHIVE_QUERY
         from src.wire.models import ArchiveQueryResult as _AQR
 
+        # ── PRE-FLIP PASS ──
+        try:
+            cap_rows = (
+                self.db.query(_AQR)
+                .filter(
+                    _AQR.requesting_agent_id == int(agent.id),
+                    _AQR.status == "pending",
+                    _AQR.attempt_count >= MAX_ATTEMPTS_ARCHIVE_QUERY,
+                )
+                .all()
+            )
+            for cap_row in cap_rows:
+                cap_row.status = "failed"
+                if not cap_row.last_error:
+                    cap_row.last_error = (
+                        f"exceeded max archive-result render attempts "
+                        f"({MAX_ATTEMPTS_ARCHIVE_QUERY}) without "
+                        f"successful delivery"
+                    )
+                logger.critical(
+                    "archive_query_result_poison_pill",
+                    extra={
+                        "agent_id": agent.id, "row_id": cap_row.id,
+                        "attempt_count": cap_row.attempt_count,
+                        "last_error": cap_row.last_error,
+                    },
+                )
+            if cap_rows:
+                self.db.commit()
+        except Exception as exc:
+            logger.warning(
+                "archive_pre_flip_failed",
+                extra={"agent_id": agent.id, "error": str(exc)},
+            )
+
+        # ── CONSUME PASS ──
         try:
             rows = (
                 self.db.query(_AQR)
                 .filter(
                     _AQR.requesting_agent_id == int(agent.id),
                     _AQR.status == "pending",
+                    _AQR.attempt_count < MAX_ATTEMPTS_ARCHIVE_QUERY,
                 )
                 .order_by(desc(_AQR.requested_at))
                 .limit(10)
@@ -1088,6 +1283,10 @@ Review your recent performance and produce a reflection."""
         delivered_ids: list[int] = []
         sections: list[str] = []
         for row in rows:
+            # Increment BEFORE rendering — H iteration-3 follow-up 1
+            # (cap fires deterministically even if helper raises
+            # during attribute access).
+            row.attempt_count = row.attempt_count + 1
             try:
                 payload = row.result_payload or {}
                 events = payload.get("events") or []
@@ -1109,6 +1308,10 @@ Review your recent performance and produce a reflection."""
                 sections.append("\n".join(lines))
                 delivered_ids.append(int(row.id))
             except Exception as exc:
+                # Per-row last_error attribution (H iteration-3
+                # Finding 2). last_error stamps THIS row only;
+                # other rows in the batch stay clean.
+                row.last_error = f"{type(exc).__name__}: {exc}"
                 logger.warning(
                     "archive_pending_row_render_failed",
                     extra={
@@ -1117,6 +1320,18 @@ Review your recent performance and produce a reflection."""
                         "error": str(exc),
                     },
                 )
+
+        # Commit attempt_count increments + any per-row last_error
+        # stamps from the consume pass. Mark-delivered runs as a
+        # separate transaction so it can't roll back the increments.
+        try:
+            self.db.commit()
+        except Exception as exc:
+            logger.warning(
+                "archive_consume_pass_commit_failed",
+                extra={"agent_id": agent.id, "error": str(exc)},
+            )
+            return ""
 
         if not sections:
             return ""

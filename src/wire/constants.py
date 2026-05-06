@@ -144,7 +144,46 @@ ARCHIVE_QUERY_BASE_TOKENS: Final[int] = 50
 ARCHIVE_QUERY_PER_RESULT_TOKENS: Final[int] = 10
 ARCHIVE_QUERY_LOOKBACK_PENALTY_TOKENS: Final[int] = 20
 ARCHIVE_QUERY_LOOKBACK_PENALTY_THRESHOLD_HOURS: Final[int] = 24
+
+# Subsystems F + G constants (hotfix 2026-05-04, Critic iteration 2
+# Finding 4: derivation comments). Centralized here so the
+# Strategist/Critic Archive integration uses the same numbers
+# everywhere — context_assembler, thinking_cycle, and tests.
+
+PRE_FETCH_SLICE_SIZE: Final[int] = 5
+# Matches Scout's recent_signals slice size for consistency across roles.
+# The Scout recent_signals block established this convention. Tunable if
+# Strategist/Critic operational data shows different appropriate value.
+
+PRE_FETCH_SEVERITY_FLOOR: Final[int] = 3
+# Matches Scout's recent_signals severity filter. Severity 1-2 are noise
+# tier; severity 3+ are events worth showing the agent without it being
+# asked.
+
+PRE_FETCH_LOOKBACK_HOURS: Final[int] = 24
+# Matches Scout's recent_signals lookback. Daily window captures
+# relevant events without accumulating stale context.
+
 CRITIC_FREE_QUERIES_PER_CRITIQUE: Final[int] = 3
+# Matches K=3 across async-bridge users (subsystem H regime review
+# threshold, subsystem P eval engine escalation threshold). Tunable if
+# Critic operational data shows different appropriate value. The
+# mechanism is "free quota per critique cycle"; the value can move
+# without changing the mechanism.
+
+MAX_ATTEMPTS_ARCHIVE_QUERY: Final[int] = 3
+# Per-row consume-side retry cap for archive_query_results (subsystem
+# F+G fix, Critic iteration 2 Finding 1). Threshold matches K=3 across
+# async-bridge users (regime review fix H, eval engine fix P). Tunable
+# if operational experience shows different appropriate value. The
+# contract is consecutive-failure-only; threshold value can move
+# without changing the contract.
+
+ARCHIVE_PREFETCH_ESCALATION_THRESHOLD: Final[int] = 3
+# Consecutive-prefetch-failure cap on ContextAssembler before
+# escalating to CRITICAL log + Agora system-alert (subsystem F+G fix,
+# Critic iteration 2 Finding 3 — Library reflection bug shape). Same
+# K=3 derivation as the row-level cap above.
 
 # ---------------------------------------------------------------------------
 # Source names (canonical)

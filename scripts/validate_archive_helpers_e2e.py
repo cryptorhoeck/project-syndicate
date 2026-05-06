@@ -326,6 +326,19 @@ async def main() -> int:
         # CLEANUP — remove synthetic rows. Order matters: queries
         # FK-reference agents, query-log rows reference agents, so
         # synthetic agents go LAST.
+        #
+        # Critic iteration 2 Finding 5: archive_query_results rows
+        # are deleted by `requesting_agent_id` reference, NOT by the
+        # tracked `synthetic_query_ids` list. Phase 2's
+        # ContextAssembler invocation can land deeper rows the test
+        # didn't explicitly track (e.g., a future ContextAssembler
+        # write); deleting by agent FK catches all orphaned rows
+        # whose agent is about to be deleted. Two passes:
+        #   (1) seeded_query_ids — for orphans whose agent is real
+        #       (existing-Critic case), delete by tracked id.
+        #   (2) synthetic-agent FKs — for synthetic agents, delete
+        #       all rows referencing them, including any not in the
+        #       tracked list.
         if seeded_event_ids or synthetic_query_ids or seeded_agent_ids:
             with engine.connect() as c:
                 with c.begin():
@@ -342,6 +355,17 @@ async def main() -> int:
                             {"ids": seeded_event_ids},
                         )
                     if seeded_agent_ids:
+                        # Catch any rows the test didn't explicitly
+                        # track but whose agent is about to be
+                        # deleted — prevents FK orphans on subsequent
+                        # runs (Critic iteration 2 Finding 5).
+                        c.execute(
+                            sql_text(
+                                "DELETE FROM archive_query_results "
+                                "WHERE requesting_agent_id = ANY(:ids)"
+                            ),
+                            {"ids": seeded_agent_ids},
+                        )
                         # wire_query_log rows reference agents — must
                         # delete those first or FK constraint fires.
                         c.execute(
