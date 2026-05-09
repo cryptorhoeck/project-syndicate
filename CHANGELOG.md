@@ -2,6 +2,105 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Phase 9B Tier A] - 2026-05-09 - Parameter Registry Read Path (Proof of Concept)
+
+Closes the read-path gap surfaced by the Phase 9A audit
+(`PHASE_9A_INTEGRATION_AUDIT.md`). Parameter-modifying SIPs targeting
+`evaluation.probation_grace_cycles` now have operational effect — the
+evaluation engine reads from the registry instead of `config`, with
+fallback to the config default when the registry is unseeded.
+
+This is a proof-of-concept scope. One read site is migrated; the seed
+list and Tier B kickoff will sweep the remaining sites in a follow-up.
+
+### What changed
+
+- **New migration** `phase_9b_tier_a_001` — seeds five parameters into
+  `parameter_registry`:
+  - `evaluation.probation_grace_cycles` (Tier 1, default 3, range 1-10)
+  - `evaluation.first_eval_leniency` (Tier 1, default 1, range 0-1)
+  - `colony.min_spawn_capital` (Tier 2, default 50, range 25-200)
+  - `colony.max_agents` (Tier 2, default 8, range 3-20)
+  - `colony.darwin_pressure_enabled` (Tier 3 forbidden, rejection
+    target only — no consumer)
+
+- **Read-site migration** at `src/genesis/evaluation_engine.py`:
+  - `_execute_decision` (async, line 569) now reads
+    `evaluation.probation_grace_cycles` once via `get_param` with
+    `config.probation_grace_cycles` fallback, threads
+    `grace_cycles_default: int` kwarg into `_apply_probation`
+  - `_apply_probation` (sync, line 801) now accepts the keyword-only
+    `grace_cycles_default` argument and uses it instead of the direct
+    `config` read at the former line 807
+
+  This is the **hoist-up-one-level pattern** — read once async at the
+  nearest async caller, pass the value down as a keyword-only kwarg.
+  Tier B will use this pattern across the rest of the read sites
+  (`accountant.py`, other `genesis.py` reads, etc.).
+
+- **Documentation** (`docs/governance_read_pattern.md`) — canonical
+  guide to the registry read pattern: when to use `get_param`, hoist
+  pattern, schema constraints (Float-only), tier conventions, how to
+  add a new SIP-modifiable parameter. CLAUDE.md gets a one-line
+  pointer to this guide.
+
+### Tests
+
+`tests/test_phase_9b_param_reader_loop.py` — 6 new tests:
+
+- `test_probation_grace_cycles_default_when_registry_seeded` —
+  production-path proof that seeded value (3) flows through the
+  evaluation engine to the agent's probation grace count.
+- `test_probation_grace_cycles_changed_after_sip_implementation` —
+  production-path proof that `apply_change(5)` updates the runtime
+  read value.
+- `test_probation_grace_cycles_falls_back_to_config_when_unseeded` —
+  proves fresh DBs continue to function pre-seed via the
+  `config.probation_grace_cycles` fallback.
+- `test_full_sip_loop_changes_probation_behavior` — integration
+  end-to-end: SIP record in `implementing` state → `apply_change` →
+  registry update → `_execute_decision` → assert agent receives the
+  new value (5, not the config default 3).
+- `test_get_param_actually_called_in_evaluation_engine` — AST
+  regression guard parsing `evaluation_engine.py` for the literal
+  `get_param("evaluation.probation_grace_cycles", ...)` call. Future
+  refactors that revert to direct `config` reads break this test.
+- `test_tier_3_parameter_rejected_at_validation` —
+  `colony.darwin_pressure_enabled` SIPs must be rejected with a
+  Tier 3 / Forbidden reason. Prevents the seed list from accidentally
+  permitting termination-disabling.
+
+### Findings surfaced during this build (deferred to Tier B / follow-ups)
+
+- **Validator does not enforce parameter domain.** A boolean-shaped
+  parameter (`min=0, max=1`) currently accepts fractional proposals
+  like `0.5`. Tier B should add per-parameter validators or a
+  `domain` discriminator on `ParameterRegistryEntry`.
+- **`_validate_eval_weights` in `sip_lifecycle.py` is overly broad.**
+  Triggers for any `evaluation.*` parameter even though it only
+  checks `_weight` summation. Non-weight evaluation parameters
+  (like `probation_grace_cycles`) are auto-rejected at the
+  implementation step if no `_weight` params are seeded. The headline
+  integration test in this build routes around it by calling
+  `apply_change` directly. Tier B should either tighten the predicate
+  to `evaluation.%_weight` or add an early-return for empty weight sets.
+- **Audit assertion correction.** The Phase 9A audit claimed "no tests
+  for `parameter_registry`." Incorrect — `tests/test_sip_voting.py`
+  contains a `TestParameterRegistry` class with ~10 tests covering
+  `get_value`, `validate_proposed_change`, `apply_change`, drift
+  summary, etc. The `maturity_tracker` is similarly covered by a
+  `TestColonyMaturity` class. The audit's "test coverage retrofit"
+  P2 item should narrow to the lifecycle advancement loop, not the
+  registry / maturity layers.
+
+### Constraints honored
+
+- No changes to `parameter_registry.py` or `sip_lifecycle.py` core logic.
+- No changes to the Risk Desk layer (`src/risk/`).
+- The Tier 3 row exists only as a rejection target — no production
+  code reads it.
+- Fallback semantics preserve current behavior on unseeded databases.
+
 ## [Hotfix] - 2026-05-05 - Strategist/Critic Archive helpers (subsystems F + G) — Critic iteration 3
 
 One MEDIUM blocking finding + two truncation-artifact closures.
