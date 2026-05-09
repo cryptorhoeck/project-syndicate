@@ -1,25 +1,31 @@
 """
 Tests for Phase 9B Tier A: Parameter Registry Read Path proof of concept.
 
+Tier A scope: read-pattern wiring (registry -> consumer). Tier A does
+NOT prove the full production lifecycle path (propose -> debate -> vote
+-> tally -> implement -> consume). The headline integration test
+bypasses lifecycle.advance via direct apply_change() because
+_validate_eval_weights auto-rejects non-weight evaluation.* SIPs.
+Narrowing that validator is Tier B work
+(see DEFERRED_ITEMS_TRACKER.md, Phase 9B Tier B section).
+
 Validates that:
   - probation_grace_cycles is read from the parameter registry via get_param
   - the read site falls back to config when the registry has no row
-  - a SIP-driven apply_change propagates to runtime behavior
+  - a registry update via apply_change propagates to runtime behavior
   - the AST guard fires if the get_param call is reverted
   - Tier 3 parameter modifications are rejected at validation
+  - integer-semantic parameter reads truncate fractional registry values
+  - the seed migration is idempotent across re-runs
 
-The headline test (test_full_sip_loop_changes_probation_behavior) drives the
-implementation step of the SIP lifecycle directly via apply_change rather
-than running the full DEBATE -> VOTING -> TALLIED -> IMPLEMENTING state
-machine, because the lifecycle's _validate_eval_weights guard rejects
-non-weight evaluation.* parameters when no _weight params are seeded
-(pre-existing behavior, separate concern). The integration coverage of the
-state machine itself lives in test_sip_voting.py.
+The lifecycle state machine itself is covered in test_sip_voting.py.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 import ast
+import asyncio
+import importlib.util
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -35,6 +41,24 @@ from src.common.models import (
 from src.genesis.evaluation_engine import EvaluationEngine, EvaluationResult
 from src.genesis.evaluation_assembler import EvaluationPackage
 from src.governance.parameter_registry import ParameterRegistry
+
+
+@pytest.fixture(autouse=True)
+def _restore_event_loop_after_test():
+    """asyncio.run() (used implicitly by pytest-asyncio) closes the current
+    loop. Other tests in the suite still use the deprecated
+    `asyncio.get_event_loop()` pattern; restore a fresh loop after each
+    test so suite ordering doesn't matter.
+
+    Pattern copied from tests/test_eval_engine_async_bridge.py:25-35
+    and tests/test_genesis_regime_review_consumption.py:71-83 (subsystems
+    H and P fixes for the same event-loop pollution symptom).
+    """
+    yield
+    try:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+    except Exception:
+        pass
 
 
 # ── Fixtures ──────────────────────────────────────────────
@@ -228,6 +252,51 @@ class TestRegistryReadPath:
         assert agent.probation is True
         assert agent.probation_grace_cycles == config.probation_grace_cycles
 
+    @pytest.mark.asyncio
+    async def test_probation_grace_cycles_truncates_fractional_value(
+        self, db_session, engine
+    ):
+        """Truncation is current behavior. Domain enforcement to reject
+        fractional values for integer-semantic parameters is Tier B work
+        (see DEFERRED_ITEMS_TRACKER entry: 'Validator does not enforce
+        parameter domain').
+
+        Bypasses validate_proposed_change by inserting the fractional
+        value directly into the registry row. Asserts the consumer
+        truncates 4.7 -> 4 (int() default behavior, not round()).
+        """
+        # Insert raw 4.7 — bypasses validator that would have rejected it
+        # if domain enforcement existed.
+        entry = ParameterRegistryEntry(
+            parameter_key="evaluation.probation_grace_cycles",
+            display_name="Probation Grace Cycles",
+            description="Test fixture for truncation behavior.",
+            category="evaluation",
+            current_value=4.7,
+            default_value=3.0,
+            min_value=1.0,
+            max_value=10.0,
+            tier=1,
+            unit="cycles",
+        )
+        db_session.add(entry)
+        db_session.flush()
+
+        agent = _seed_probation_agent(db_session)
+        pkg, result = _make_probation_inputs(agent)
+
+        await engine._execute_decision(
+            db_session, result, pkg, regime="crab", alert_hours=0.0,
+        )
+
+        db_session.flush()
+        assert agent.probation is True
+        assert agent.probation_grace_cycles == 4, (
+            "Expected truncation (int(4.7) == 4), not rounding. If this "
+            "fails with 5, the consumer is using round() — re-evaluate "
+            "the truncation contract documented in this test."
+        )
+
 
 # ── Integration test ──────────────────────────────────────
 
@@ -237,11 +306,21 @@ class TestFullSIPLoop:
     async def test_full_sip_loop_changes_probation_behavior(
         self, db_session, engine, registry
     ):
-        """End-to-end: SIP implementation step -> registry update ->
-        _execute_decision picks up new value.
+        """Tier A integration test: PARTIAL end-to-end. Demonstrates the
+        read-pattern path (registry update -> consumer read), NOT the full
+        production lifecycle path.
 
-        Drives the implementation step (apply_change) directly rather than
-        the full state machine; see module docstring for rationale.
+        Production lifecycle (propose -> debate -> vote -> tally ->
+        _validate_eval_weights -> apply_change) is bypassed via direct
+        apply_change() call. This is because _validate_eval_weights
+        auto-rejects any evaluation.* SIP that doesn't have sibling
+        _weight rows summing to 1.0 — and probation_grace_cycles isn't
+        a weight.
+
+        Tier B will narrow the validator scope so non-weight evaluation.*
+        parameters can advance through the full lifecycle. Until then,
+        this test proves: when apply_change() runs, the next consumer
+        read sees the new value.
         """
         _seed_probation_param(db_session, current=3.0)
 
@@ -373,3 +452,59 @@ class TestRegressionGuards:
             f"Tier 3 rejection reason did not mention Tier 3 or Forbidden: "
             f"{result['reason']!r}"
         )
+
+
+# ── Migration idempotency ─────────────────────────────────
+
+class TestMigrationIdempotency:
+    """The seed migration must be safe to re-run.
+
+    A partial rollback + reapply is a realistic operational scenario.
+    Without an upsert, the second run crashes on the unique constraint
+    on parameter_key.
+    """
+
+    def _load_migration_module(self):
+        """Load the seed migration as a Python module via importlib.
+
+        alembic/versions/ files aren't a normal Python package; importlib
+        with a file path is the canonical way to import them in tests.
+        """
+        migration_path = (
+            Path(__file__).resolve().parent.parent / "alembic" / "versions"
+            / "phase_9b_tier_a_seed_parameter_registry.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "phase_9b_seed_migration", migration_path,
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_seed_migration_is_idempotent(self, db_engine):
+        """Running _emit_seed_inserts twice yields exactly 5 rows, no error."""
+        module = self._load_migration_module()
+
+        with db_engine.connect() as conn:
+            module._emit_seed_inserts(conn)
+            module._emit_seed_inserts(conn)
+            conn.commit()
+
+        with Session(db_engine) as session:
+            seed_keys = [row[0] for row in module.SEED_ROWS]
+            rows = session.execute(
+                select(ParameterRegistryEntry).where(
+                    ParameterRegistryEntry.parameter_key.in_(seed_keys)
+                )
+            ).scalars().all()
+
+            assert len(rows) == 5, (
+                f"Expected 5 seed rows after double-run, got {len(rows)}. "
+                f"Either the upsert is missing (rows == 10 if INSERT ran "
+                f"twice) or the second run crashed on the unique constraint."
+            )
+            actual_keys = {r.parameter_key for r in rows}
+            assert actual_keys == set(seed_keys), (
+                f"Seed key mismatch. Expected {set(seed_keys)}, "
+                f"got {actual_keys}."
+            )

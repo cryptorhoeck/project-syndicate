@@ -12,6 +12,24 @@ SIPs that vote on them will pass without affecting behavior.
 The audit that surfaced this requirement is in `PHASE_9A_INTEGRATION_AUDIT.md`.
 The Tier A proof of concept is in `PHASE_9B_TIER_A_KICKOFF.md`.
 
+## Tier A scope vs. Tier B scope
+
+- **Tier A demonstrates registry-to-consumer wiring (read pattern).** When
+  `parameter_registry.apply_change()` runs, the next consumer read sees the
+  new value. The hoist-up-one-level pattern, fallback semantics, AST
+  regression guard, and integration check all exercise this path.
+- **Tier A does NOT demonstrate full lifecycle-to-consumer wiring (production
+  path).** The production lifecycle (propose -> debate -> vote -> tally ->
+  `_validate_eval_weights` -> `apply_change`) is bypassed in Tier A's
+  integration test via direct `apply_change()`.
+- **The gap is `_validate_eval_weights`, which Tier B will narrow.** That
+  guard currently fires for any `evaluation.*` SIP and rejects unless the
+  registry contains `_weight` rows summing to 1.0. Non-weight parameters
+  like `probation_grace_cycles` cannot complete the full lifecycle until
+  the predicate is narrowed (e.g. to `evaluation.%_weight`) or the
+  empty-weight-set case is treated as a no-op. Tracked in
+  `DEFERRED_ITEMS_TRACKER.md`, Phase 9B Tier B section.
+
 ## When to use `get_param` vs direct `config`
 
 Use `get_param`:

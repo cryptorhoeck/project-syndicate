@@ -101,6 +101,65 @@ list and Tier B kickoff will sweep the remaining sites in a follow-up.
   code reads it.
 - Fallback semantics preserve current behavior on unseeded databases.
 
+### Iteration 3 corrections
+
+Three corrections from War Room + Critic iteration 3 review,
+consolidated with the iteration 2 carryover:
+
+- **Tier A is a read-pattern POC, not a full-loop POC.** Reframed test
+  docstring and module docstring to make this scope explicit: Tier A
+  demonstrates registry-to-consumer wiring; the production lifecycle
+  path (propose -> debate -> vote -> tally -> _validate_eval_weights ->
+  apply_change) is bypassed via direct apply_change() because
+  _validate_eval_weights auto-rejects non-weight evaluation.* SIPs.
+  Tier B narrows the validator scope. Until then, the integration test
+  proves: when apply_change() runs, the next consumer read sees the
+  new value.
+- **Flake regression fixed.** Branch produced 3 additional sandbox
+  flakes vs main (test_output_function, test_numpy_works,
+  test_data_api_functions_available) caused by asyncio event-loop
+  pollution from the @pytest.mark.asyncio tests. Same signature as
+  subsystems H and P fixed last session. Added autouse
+  `_restore_event_loop_after_test` fixture in
+  `tests/test_phase_9b_param_reader_loop.py`, copied verbatim from the
+  precedent files (`tests/test_eval_engine_async_bridge.py`,
+  `tests/test_genesis_regime_review_consumption.py`). After the
+  fixture, only `test_simple_math` remains as a flake — matching
+  parent commit (`bddf808`) and the existing pre-existing flake entry
+  in `DEFERRED_ITEMS_TRACKER.md:291`.
+- **Migration idempotency.** Refactored
+  `phase_9b_tier_a_seed_parameter_registry.py` to use a dialect-aware
+  upsert: `INSERT OR IGNORE` for SQLite, `INSERT ... ON CONFLICT
+  (parameter_key) DO NOTHING` for PostgreSQL. Unsupported dialects
+  raise `RuntimeError` rather than silently producing a non-idempotent
+  insert. New test `test_seed_migration_is_idempotent` runs
+  `_emit_seed_inserts` twice and asserts the registry has exactly 5
+  rows.
+- **Truncation behavior documented.** New test
+  `test_probation_grace_cycles_truncates_fractional_value` asserts
+  that `int(await get_param(...))` truncates 4.7 -> 4 (not rounds to
+  5). Documents intent. Domain enforcement to reject fractional
+  values for integer-semantic parameters is Tier B work (see
+  `DEFERRED_ITEMS_TRACKER.md` entry "Validator does not enforce
+  parameter domain").
+- **Two new entries added to `DEFERRED_ITEMS_TRACKER.md`** under a new
+  "Phase 9B Tier B — Parameter Registry Read Path Continuation"
+  section: `_validate_eval_weights` scope too broad, and validator
+  domain enforcement.
+
+### Manual smoke verification (Andrew's responsibility, after CC submits)
+
+Seed a Postgres dev DB with the new migration, propose a SIP via direct
+DB write, then call `parameter_registry.apply_change()` directly. The
+full lifecycle path is blocked by `_validate_eval_weights` for
+non-weight `evaluation.*` parameters; narrowing that validator is
+Tier B work.
+
+Observe the registry row update, then observe the next
+`_execute_decision` call reading the new value. CC does NOT do this —
+REPL-based smoke tests don't replay cleanly. CC's responsibility ends
+with the test suite passing.
+
 ## [Hotfix] - 2026-05-05 - Strategist/Critic Archive helpers (subsystems F + G) — Critic iteration 3
 
 One MEDIUM blocking finding + two truncation-artifact closures.

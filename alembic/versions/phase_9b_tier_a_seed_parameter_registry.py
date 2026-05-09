@@ -110,8 +110,48 @@ SEED_ROWS = [
 ]
 
 
-def upgrade() -> None:
-    bind = op.get_bind()
+def _emit_seed_inserts(bind) -> None:
+    """Insert (or skip on conflict) the seed rows.
+
+    Idempotent: safe to call multiple times. Uses dialect-specific upsert
+    so a partial rollback + reapply does not crash on duplicate keys.
+    Exposed as a module-level helper so the idempotency test can exercise
+    the same code path the migration runs.
+    """
+    dialect = bind.dialect.name
+    if dialect == "sqlite":
+        insert_sql = """
+            INSERT OR IGNORE INTO parameter_registry (
+                parameter_key, display_name, description, category,
+                current_value, default_value, min_value, max_value,
+                tier, unit
+            )
+            VALUES (
+                :parameter_key, :display_name, :description, :category,
+                :current_value, :default_value, :min_value, :max_value,
+                :tier, :unit
+            )
+        """
+    elif dialect == "postgresql":
+        insert_sql = """
+            INSERT INTO parameter_registry (
+                parameter_key, display_name, description, category,
+                current_value, default_value, min_value, max_value,
+                tier, unit
+            )
+            VALUES (
+                :parameter_key, :display_name, :description, :category,
+                :current_value, :default_value, :min_value, :max_value,
+                :tier, :unit
+            )
+            ON CONFLICT (parameter_key) DO NOTHING
+        """
+    else:
+        raise RuntimeError(
+            f"Unsupported dialect for idempotent seed migration: {dialect}. "
+            f"Expected 'sqlite' or 'postgresql'."
+        )
+
     for (
         parameter_key,
         display_name,
@@ -124,20 +164,7 @@ def upgrade() -> None:
         unit,
     ) in SEED_ROWS:
         bind.execute(
-            sa.text(
-                """
-                INSERT INTO parameter_registry (
-                    parameter_key, display_name, description, category,
-                    current_value, default_value, min_value, max_value,
-                    tier, unit
-                )
-                VALUES (
-                    :parameter_key, :display_name, :description, :category,
-                    :current_value, :default_value, :min_value, :max_value,
-                    :tier, :unit
-                )
-                """
-            ),
+            sa.text(insert_sql),
             {
                 "parameter_key": parameter_key,
                 "display_name": display_name,
@@ -151,6 +178,10 @@ def upgrade() -> None:
                 "unit": unit,
             },
         )
+
+
+def upgrade() -> None:
+    _emit_seed_inserts(op.get_bind())
 
 
 def downgrade() -> None:
