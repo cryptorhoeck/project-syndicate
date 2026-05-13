@@ -256,14 +256,18 @@ class TestRegistryReadPath:
     async def test_probation_grace_cycles_truncates_fractional_value(
         self, db_session, engine
     ):
-        """Truncation is current behavior. Domain enforcement to reject
-        fractional values for integer-semantic parameters is Tier B work
-        (see DEFERRED_ITEMS_TRACKER entry: 'Validator does not enforce
-        parameter domain').
+        """Truncation is current behavior, intentional. int() applied to a
+        Float-typed registry value rounds toward zero (4.7 -> 4, not 5).
 
-        Bypasses validate_proposed_change by inserting the fractional
-        value directly into the registry row. Asserts the consumer
-        truncates 4.7 -> 4 (int() default behavior, not round()).
+        Domain enforcement to reject fractional values for integer-semantic
+        parameters is Tier B work (see DEFERRED_ITEMS_TRACKER entry:
+        'Validator does not enforce parameter domain').
+
+        Fail-loud behavior on schema violations (e.g., registry value is a
+        string instead of float) is intentional. int('4.7') raising
+        ValueError is preferred over silent coercion because schema
+        corruption SHOULD crash loud rather than silently produce wrong
+        values. Trust the schema; crash on schema violations.
         """
         # Insert raw 4.7 — bypasses validator that would have rejected it
         # if domain enforcement existed.
@@ -482,7 +486,22 @@ class TestMigrationIdempotency:
         return module
 
     def test_seed_migration_is_idempotent(self, db_engine):
-        """Running _emit_seed_inserts twice yields exactly 5 rows, no error."""
+        """Running _emit_seed_inserts twice yields exactly 5 rows, no error.
+
+        This test exercises _emit_seed_inserts via db_engine.connect()
+        rather than the production path which uses op.get_bind() from
+        inside alembic's upgrade() context. These are equivalent for
+        idempotency purposes because:
+          - Both return a Connection bound to the same engine
+          - Both honor the same dialect (sqlite or postgresql)
+          - The INSERT OR IGNORE / ON CONFLICT DO NOTHING clauses operate
+            at the SQL dialect level, not at the connection-management
+            level
+
+        The production path is verified manually via 'alembic upgrade
+        head' run twice on the dev Postgres DB; see CHANGELOG.md Phase
+        9B Tier A manual verification.
+        """
         module = self._load_migration_module()
 
         with db_engine.connect() as conn:
@@ -508,3 +527,47 @@ class TestMigrationIdempotency:
                 f"Seed key mismatch. Expected {set(seed_keys)}, "
                 f"got {actual_keys}."
             )
+
+    def test_seed_migration_aborts_on_partial_seed(self, db_engine):
+        """RuntimeError fires when post-insert count is less than expected.
+
+        Simulates a silent partial seed by wrapping the bind so one INSERT
+        is dropped. The post-insert SELECT COUNT(*) returns 4, the
+        verification block in _emit_seed_inserts raises RuntimeError.
+
+        Same fail-loud pattern as the dialect RuntimeError: refuse to
+        succeed in an unknown state rather than letting future SIPs hit
+        validation errors for missing parameters at runtime.
+        """
+        module = self._load_migration_module()
+
+        class _LossyBind:
+            """Wraps a real connection, silently drops the 3rd INSERT."""
+
+            def __init__(self, inner):
+                self._inner = inner
+                self._insert_count = 0
+
+            @property
+            def dialect(self):
+                return self._inner.dialect
+
+            def execute(self, *args, **kwargs):
+                sql_obj = args[0] if args else None
+                sql_text = ""
+                if hasattr(sql_obj, "text"):
+                    sql_text = sql_obj.text or ""
+                elif sql_obj is not None:
+                    sql_text = str(sql_obj)
+                is_insert = "INSERT" in sql_text.upper()
+                if is_insert:
+                    self._insert_count += 1
+                    if self._insert_count == 3:
+                        # Silently drop — simulate a silent partial seed.
+                        return None
+                return self._inner.execute(*args, **kwargs)
+
+        with db_engine.connect() as conn:
+            lossy = _LossyBind(conn)
+            with pytest.raises(RuntimeError, match=r"only 4/5"):
+                module._emit_seed_inserts(lossy)

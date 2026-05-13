@@ -179,6 +179,29 @@ def _emit_seed_inserts(bind) -> None:
             },
         )
 
+    # Fail-loud post-insert verification (Critic iteration 4 Finding 1).
+    # If bulk insert fails silently (wrong column name, type mismatch,
+    # dialect-specific edge case, swallowed by ON CONFLICT/INSERT OR
+    # IGNORE due to row-level corruption), the migration completes but
+    # rows are missing. Discoverable only when a future SIP is proposed
+    # and validation fails for a missing parameter. Same shape as the
+    # H pattern: raise on unknown states rather than passing silently.
+    seed_keys = [row[0] for row in SEED_ROWS]
+    expected = len(seed_keys)
+    count_result = bind.execute(
+        sa.text(
+            "SELECT COUNT(*) FROM parameter_registry "
+            "WHERE parameter_key IN :keys"
+        ).bindparams(sa.bindparam("keys", expanding=True)),
+        {"keys": seed_keys},
+    )
+    actual = count_result.scalar()
+    if actual != expected:
+        raise RuntimeError(
+            f"Seed migration completed but only {actual}/{expected} "
+            f"expected parameters present in parameter_registry. Aborting."
+        )
+
 
 def upgrade() -> None:
     _emit_seed_inserts(op.get_bind())
