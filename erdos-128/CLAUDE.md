@@ -112,8 +112,27 @@ python -m venv .venv
 ## Status
 
 - **Phase 0 — Setup and environment: COMPLETE.** Structure, venv, deps,
-  cross-platform boilerplate, smoke test (9/9 passing), docs, local commit.
-- **Phase 1 — NEXT (not yet started):** `src/graphs.py` (triangle-free family
-  generators), `src/verify.py` (triangle-free + density verifier),
-  `src/search_a.py` (min-edge-subset finder), `src/search_b.py` (family iterator),
-  `tests/test_known_graphs.py` (sanity-check known graphs are NOT counterexamples).
+  cross-platform boilerplate, smoke test, docs, local commit.
+- **Phase 1 — Generators, verifier, search cores: COMPLETE.**
+  - `src/graphs.py` — triangle-free family generators (Mycielski, Kneser,
+    generalized Petersen, blow-ups, Cayley/middle-third, complete bipartite).
+  - `src/verify.py` — triangle-free + density verifier. **Key reduction:** by the
+    monotonicity lemma, the condition "every >= floor(n/2) subgraph has > n^2/50
+    edges" is equivalent to the single check `f(floor(n/2)) > n^2/50`, where
+    `f(m)` is the minimum edge count over m-subsets.
+  - `src/search_a.py` — Strategy A: sparsest-m-subset finder (bruteforce / ILP /
+    local search). Exact methods PROVE; local search only DISQUALIFIES.
+  - `src/search_b.py` — Strategy B: iterate families and screen each candidate.
+    Run with `python -m src.search_b`.
+  - `tests/test_known_graphs.py` — sanity suite. **Whole suite: 29 passing.**
+  - First sweep: no counterexample (expected). C5 blow-ups land exactly at the
+    threshold — a lead for later phases.
+- **Phase 2 — NEXT (not yet started):** scale the search (larger n, more families,
+  perturbations of near-miss candidates like C5 blow-ups), tighten the ILP path,
+  and add result persistence/analysis beyond the run log.
+
+### How the pieces talk
+`graphs.py` builds candidates -> `verify.py` (uses `search_a.py`) decides ->
+`search_b.py` orchestrates the sweep and logs to `results/run_log.jsonl`.
+Import as a package from the project root (e.g. `from src.verify import ...`);
+run the driver as a module (`python -m src.search_b`).

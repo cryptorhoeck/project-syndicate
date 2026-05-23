@@ -7,6 +7,53 @@ Format: each entry is dated (YYYY-MM-DD) and grouped by phase.
 
 ---
 
+## [0.2.0] — 2026-05-23 — Phase 1: Generators, verifier, and search cores
+
+The mathematical engine. Phase 1 turns the empty scaffold into a working
+counterexample search: build triangle-free candidates, then rigorously test
+whether every half stays dense.
+
+### Added
+- `src/verify.py` (v0.1.0) — the verifier.
+  - **Monotonicity lemma** documented and relied upon: `f(k)` = min edges over
+    k-subsets is non-decreasing, so the density condition reduces to the single
+    exact check `f(floor(n/2)) > n^2/50`.
+  - `is_triangle_free` (common-neighbour test), `edge_threshold(n) = n^2/50`.
+  - `verify_counterexample(G, method=...)` — single-method verdict.
+  - `screen_candidate(G)` — two-phase: cheap local-search disqualify, then exact
+    ILP confirm. Returns a `VerificationResult` with an explicit status
+    (counterexample / not_counterexample / inconclusive / has_triangle).
+- `src/search_a.py` (v0.1.0) — Strategy A, the sparsest-subset finder.
+  - `min_edge_subset_bruteforce` (exact, tiny graphs), `min_edge_subset_ilp`
+    (exact, PuLP/CBC), `min_edge_subset_local_search` (heuristic upper bound).
+  - Exactness flag on every return so a heuristic guess is never mistaken for a
+    proof; `count_internal_edges` shared helper.
+- `src/graphs.py` (v0.1.0) — Strategy B generators: `petersen`, `kneser(n,k)`,
+  `mycielskian(k)`, `generalized_petersen(n,k)`, `complete_bipartite`,
+  `blowup`/`cycle_blowup`, `cayley_graph`/`middle_third_cayley`, plus
+  `is_sum_free_mod`. Each documents when its output is triangle-free.
+- `src/search_b.py` (v0.1.0) — Strategy B driver: `default_suite()`,
+  `run_search()`, CLI (`python -m src.search_b [--restarts N] [--ilp-time-limit S]`),
+  boilerplate prelude, per-candidate logging to `results/run_log.jsonl`.
+- `tests/test_known_graphs.py` — 20 sanity tests: triangle detection, ILP vs
+  bruteforce agreement, local-search validity as an upper bound, and that
+  Petersen / Kneser(5,2) / Grotzsch / K_{10,10} are correctly classified as
+  NON-counterexamples. **Full suite: 29 passed.**
+
+### Observed (research lead, not a result)
+- First `search_b` sweep over 17 candidates found **no counterexample** (expected).
+- Notable: **balanced C5 blow-ups land exactly AT the threshold** — the sparsest
+  floor(n/2)-subset has precisely n^2/50 edges (n=10 -> 2 vs 2.00; n=20 -> 8 vs
+  8.00; n=30 -> 18 vs 18.00), just failing the *strict* inequality. A natural
+  lead for later phases (perturb/augment C5 blow-ups to push the worst half above
+  the bar).
+
+### Notes
+- PuLP 3.3.1 emits a benign `LpVariable` deprecation warning (future 4.0 API);
+  functionality is unaffected.
+
+---
+
 ## [0.1.0] — 2026-05-23 — Phase 0: Setup and environment
 
 Initial scaffold of the Erdős-128 counterexample search project.
