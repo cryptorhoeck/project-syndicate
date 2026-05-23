@@ -1,0 +1,5 @@
+{"timestamp": "2026-05-23T18:22:17.301692+00:00", "event": "smoke_test_log_check", "boilerplate_version": "0.1.0", "details": {"phase": 0}}
+{"timestamp": "2026-05-23T18:22:17.303736+00:00", "event": "boilerplate_ok", "boilerplate_version": "0.1.0", "details": {"script": "smoke_end_to_end", "script_version": "0.0.1", "python": "3.11.15", "package_count": 4, "backup": null, "platform": "Linux 6.18.5"}}
+{"timestamp": "2026-05-23T18:22:28.775531+00:00", "event": "smoke_test_log_check", "boilerplate_version": "0.1.0", "details": {"phase": 0}}
+{"timestamp": "2026-05-23T18:22:28.777457+00:00", "event": "boilerplate_ok", "boilerplate_version": "0.1.0", "details": {"script": "smoke_end_to_end", "script_version": "0.0.1", "python": "3.11.15", "package_count": 4, "backup": null, "platform": "Linux 6.18.5"}}
+{"timestamp": "2026-05-23T18:22:29.061184+00:00", "event": "boilerplate_ok", "boilerplate_version": "0.1.0", "details": {"script": "boilerplate_selfcheck", "script_version": "0.1.0", "python": "3.11.15", "package_count": 4, "backup": null, "platform": "Linux 6.18.5"}}

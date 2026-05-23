@@ -1,0 +1,23 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# --- Virtual environment (never commit; recreate from requirements.txt) ---
+.venv/
+
+# --- Timestamped backups created by boilerplate.py before destructive ops ---
+# WHY ignore: these are local safety snapshots, not source. They can be large
+# and are specific to one machine/run. The directory itself is kept via .gitkeep.
+backups/*
+!backups/.gitkeep
+
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# NOTE: results/ is intentionally NOT ignored. The run log (results/run_log.jsonl)
+# is part of the project record and is committed.

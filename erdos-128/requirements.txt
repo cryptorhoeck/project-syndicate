@@ -1,0 +1,25 @@
+# Erdos-128 dependencies — pinned to the versions actually installed in Phase 0.
+# Install order matters for reproducibility (see CLAUDE.md / CHANGELOG.md Phase 0).
+#
+# WHY pin exact versions: a math search that runs for days must be reproducible.
+# If a future numpy/networkx release changes default behaviour, an unpinned
+# install could silently alter results. Pinning freezes the toolchain.
+
+# --- Strategy B: graph generation + general graph algorithms ---
+networkx==3.6.1
+
+# --- numerics (edge counting, density math, vectorised subset scoring) ---
+numpy==2.4.6
+
+# --- fast graph backend for large candidates ---
+# NOTE: the PyPI distribution is named "python-igraph" but it IMPORTS as `igraph`.
+# On this Linux container `pip install python-igraph` worked directly (no fallback
+# to bare `igraph` was needed). It pulls in `texttable` as a transitive dependency.
+python-igraph==1.0.0
+texttable==1.7.0
+
+# --- Strategy A: ILP for minimum-edge n/2-subset verification ---
+pulp==3.3.1
+
+# --- test runner (Phase 0 smoke test + later phases) ---
+pytest==9.0.3
