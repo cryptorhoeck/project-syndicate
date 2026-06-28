@@ -2,6 +2,25 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Weave] - 2026-06-28 - Step 2b-1: tool_consult_results queue (schema foundation)
+
+Additive schema for the `consult_tool` single-cycle round-trip (DB-as-queue,
+mirrors archive_query_results). Agent wiring (handler + context surfacing) lands
+in 2b-2.
+
+### What changed
+- **`ToolConsultResult` model** (`src/common/models.py`) — pending/delivered/failed
+  queue scoped to `requesting_agent_id`. Indexes on (agent, status) and
+  (status, requested_at) — the latter serves both delivered-row pruning and
+  stale-pending expiry (orphan handling: a dead agent's request can't linger).
+- **Migration `weave_2b_001`** (revises head `phase_9b_tier_a_001`) — additive-only
+  (one new table, zero ALTERs), single linear head, real tested `downgrade()`.
+
+### Validation
+- `alembic heads` → single head `weave_2b_001`. Migration up→down→up verified on
+  SQLite (table + 10 cols + 2 indexes created, dropped clean, recreated). Full
+  suite: **1337 passed, 0 failed**.
+
 ## [Weave] - 2026-06-28 - Step 2a: First-party tool rail + JJ tool + boundary invariants
 
 The reusable rail the whole tools/knowledge catalogue plugs into. No agent core

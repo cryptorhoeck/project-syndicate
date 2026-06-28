@@ -1747,3 +1747,51 @@ class SIPDebate(Base):
     argument: Mapped[str] = mapped_column(Text, nullable=False)
     agora_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     posted_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ToolConsultResult(Base):
+    """Single-cycle round-trip queue for first-party tool consultations.
+
+    Producer: an agent emits `consult_tool` -> the handler runs the first-party
+    tool and writes a row with status='pending'. Consumer: ContextAssembler on
+    that agent's NEXT cycle reads its pending rows, renders a "TOOL RESULTS YOU
+    REQUESTED" block, and marks them 'delivered' (surfaced once, then gone).
+
+    Orphan handling (agents die — that's the point of the colony): rows are
+    scoped to requesting_agent_id and only ever surfaced to that agent. Stale
+    'pending' rows (author terminated mid-handoff) and old 'delivered' rows are
+    pruned by age on the maintenance pass, so a dead agent's leftover request can
+    never linger or surface to a reborn/different agent.
+
+    Mirrors ArchiveQueryResult — the proven `query_archive` DB-as-queue pattern.
+    """
+    __tablename__ = "tool_consult_results"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'delivered', 'failed')",
+            name="ck_tool_consult_results_status",
+        ),
+        Index("ix_tool_consult_results_agent_status", "requesting_agent_id", "status"),
+        Index("ix_tool_consult_results_status_requested", "status", "requested_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    requesting_agent_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("agents.id"), nullable=False
+    )
+    tool_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    market: Mapped[str] = mapped_column(String(32), nullable=False)
+    result_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending"
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
