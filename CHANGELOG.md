@@ -26,9 +26,17 @@ Warden, no agent wiring yet — that comes in later steps.
 - **New tests** `tests/test_jj_signals.py` (23 tests) — first-principles
   validation incl. a hand-computed Wilder RSI (=87.5) and an explicit test
   documenting the intentional divergence from jj-bot's broken no-op behaviour.
+- **Parity tests** `tests/test_jj_vwap_parity.py` (150 tests) — assert the ported
+  VWAP is byte-for-byte equivalent to the original across 15 OHLCV scenarios x
+  every strategy x regime (identical arrays + identical signal decisions). The
+  original is frozen verbatim in `tests/_reference/jj_vwap_calculator_original.py`
+  (blob 6ccba93). This guards against silent port drift — a port needs parity
+  validation, not just first-principles "reasonableness".
+- **`.gitattributes`** (`* text=auto`) — normalise line endings, silence CRLF noise.
 
 ### Validation
-- 23/23 new tests pass. Full suite: **1138 passed, 0 failed** (no regressions).
+- 173/173 new tests pass (23 first-principles + 150 parity). Full suite:
+  **1288 passed, 0 failed** (no regressions).
 
 ## [Phase 9B Tier A] - 2026-05-09 - Parameter Registry Read Path (Proof of Concept)
 
