@@ -2,6 +2,35 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Weave] - 2026-06-28 - Step 2b-2b: consumer surfacing + prune (round-trip closed)
+
+JJ is now live in agents' reasoning: a consulted result is surfaced in the
+agent's NEXT prompt, exactly once. Closes the single-cycle round-trip.
+
+### What changed
+- **`ContextAssembler._consume_pending_consult_results`** — atomic consume-once
+  (mirrors `_consume_pending_archive_results`): render pending rows → mark
+  'delivered' in a separate committed transaction → return the block ONLY after
+  that commit. A crash between render and mark-delivered cannot double-surface
+  (rows stay 'pending', re-surface next cycle: at-least-once, used once). Injected
+  for ALL roles in `_build_priority_context` as `=== TOOL RESULTS YOU REQUESTED ===`.
+- **`attempt_count`/`failed` decision** — kept as a DEFENSIVE poison-pill (caps a
+  malformed/oversized payload so it can't sit 'pending' forever), documented as
+  effectively-never-fires for a deterministic in-tree tool. Not an inherited mystery.
+- **`MaintenanceService.prune_tool_consult_results`** (wired into `run_all`) —
+  deletes terminal (delivered/failed) rows older than TTL (bounded by count) and
+  expires stale 'pending' orphans by age → 'failed' (a terminated agent's request
+  can't linger or surface).
+- **Public accessors** `SandboxDataAPI.get_price_history` / `get_market_regime`;
+  the handler no longer reaches into private `_get_*`.
+- Updated two `run_all` tests for the new `consult_rows_pruned` task key.
+
+### Validation
+- `tests/test_consult_round_trip.py` (4): surfaced-once-then-consumed, **no
+  double-surface across a mark-delivered failure**, poison-pill cap, prune
+  (delete terminal + expire stale-pending orphan). Full suite: **1347 passed, 0
+  failed**.
+
 ## [Weave] - 2026-06-28 - Step 2b-2a: consult_tool action + handler (the wall)
 
 The agent-facing pull tool. Agents *choose* to consult; the handler writes a

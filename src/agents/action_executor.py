@@ -1230,14 +1230,14 @@ class ActionExecutor:
         watchlist = agent.watched_markets if getattr(agent, "watched_markets", None) else []
         data_api = SandboxDataAPI(agent.id, watchlist)
         await data_api.prefetch_all(self.db)
-        candles = data_api._get_price_history(market, "1h", 200)
+        candles = data_api.get_price_history(market, "1h", 200)
         if not candles:
             return ActionResult(
                 success=False,
                 action_type=action_type,
                 details=f"No price history available for {market}",
             )
-        regime = (data_api._get_market_regime() or {}).get("regime", "neutral")
+        regime = (data_api.get_market_regime() or {}).get("regime", "neutral")
 
         view = MarketView.from_ohlcv(candles, symbol=market, regime=regime)
         result_payload = run_first_party_tool(tool_name, view)

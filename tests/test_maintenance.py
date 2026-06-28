@@ -178,6 +178,7 @@ class TestRunAll:
             "opportunities_expired",
             "plans_cleaned",
             "memory_pruned",
+            "consult_rows_pruned",
         }
         # And the budget-reset key MUST NOT appear — its presence
         # would mean reset_daily_budgets was wrongly invoked.
