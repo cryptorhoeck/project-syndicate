@@ -61,6 +61,11 @@ async def test_handler_never_touches_trading_or_warden(db_session_factory, patch
     trading, warden = MagicMock(), MagicMock()
     ex = ActionExecutor(session, agora_service=None, warden=warden, trading_service=trading)
 
+    # Non-vacuity: the mocks must BE the handles a handler would call, otherwise
+    # `mock_calls == []` could pass while a real/None handle slipped past them.
+    assert ex.trading is trading
+    assert ex.warden is warden
+
     res = await ex._handle_consult_tool(
         agent, "consult_tool", {"tool_name": "jj_signals", "market": "BTC/USDT"}
     )
