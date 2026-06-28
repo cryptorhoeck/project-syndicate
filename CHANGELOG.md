@@ -2,6 +2,34 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Weave] - 2026-06-28 - JJ Signal Pack, Step 1 (pure technical-analysis tools)
+
+First step of folding the external "jj-bot" into Syndicate (see
+`projects/JJ Gorilla/jj-bot/WEAVE_PROPOSAL.md`). Adds jj-bot's genuinely sound
+analysis as advisory-only, pure-function tools. No execution, no exchange, no
+Warden, no agent wiring yet — that comes in later steps.
+
+### What changed
+
+- **New package `src/signals/`** — advisory technical-analysis providers. They
+  return a descriptive `TechnicalSignal` for agent reasoning to weigh; they never
+  place trades or touch the exchange/Warden (honours the "agents decide" design).
+- **New package `src/signals/jj/`**:
+  - `vwap.py` — VWAP-deviation engine **ported faithfully** from jj-bot's
+    `vwap_calculator.py` (typical price, rolling VWAP + deviation bands,
+    mean-reversion / trend-following logic, regime bias). This is jj-bot's real
+    jewel; the math is preserved exactly.
+  - `indicators.py` — RSI (Wilder), momentum, volume-breakout **rebuilt from
+    first principles**. Deliberately NOT ported from jj-bot's simulator versions,
+    which silently no-op on indicator keys the pipeline never populates.
+  - `signal_types.py` — `Direction` enum + frozen `TechnicalSignal` dataclass.
+- **New tests** `tests/test_jj_signals.py` (23 tests) — first-principles
+  validation incl. a hand-computed Wilder RSI (=87.5) and an explicit test
+  documenting the intentional divergence from jj-bot's broken no-op behaviour.
+
+### Validation
+- 23/23 new tests pass. Full suite: **1138 passed, 0 failed** (no regressions).
+
 ## [Phase 9B Tier A] - 2026-05-09 - Parameter Registry Read Path (Proof of Concept)
 
 Closes the read-path gap surfaced by the Phase 9A audit
