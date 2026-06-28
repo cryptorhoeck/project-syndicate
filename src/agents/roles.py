@@ -96,6 +96,13 @@ SURVIVAL_ACTIONS = {
             "tool_name": "str — name of saved tool",
         },
     },
+    "consult_tool": {
+        "description": "Consult a first-party analysis tool (deterministic, maintained in-tree). It returns advisory observations for you to weigh — it NEVER trades. The result arrives in your NEXT cycle's prompt. Available: 'jj_signals' (VWAP-deviation, RSI, momentum, volume-breakout read of a market). Small thinking-tax per consult.",
+        "params": {
+            "tool_name": "str — registered tool, e.g. 'jj_signals'",
+            "market": "str — symbol to analyze, e.g. 'BTC/USDT'",
+        },
+    },
     "modify_genome": {
         "description": "Update a parameter in your strategy genome. Max 2 per evaluation period. Only modify with concrete evidence.",
         "params": {

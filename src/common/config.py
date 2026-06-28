@@ -254,6 +254,9 @@ class SyndicateConfig(BaseSettings):
     sandbox_time_rate_usd_per_ms: float = 0.0001
     sandbox_max_tools_per_cycle: int = 3
     sandbox_max_pre_compute_tools: int = 3
+    # Weave: uniform thinking-tax per first-party tool consult (consult_tool).
+    # Tunable rail property (start small; selection finds the right consult rate).
+    consult_tool_cost_usd: float = 0.002
 
     # Phase 8C: Strategy Genome
     genome_mutation_rate: float = 0.15

@@ -2,6 +2,28 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Weave] - 2026-06-28 - Step 2b-2a: consult_tool action + handler (the wall)
+
+The agent-facing pull tool. Agents *choose* to consult; the handler writes a
+pending result row. Surfacing (ContextAssembler consume + prune) is 2b-2b.
+
+### What changed
+- **`config.consult_tool_cost_usd`** (0.002, env `CONSULT_TOOL_COST_USD`) — uniform,
+  tunable thinking-tax per consult (selection pressure; same for every tool).
+- **`consult_tool` action** in `roles.SURVIVAL_ACTIONS` (all roles) — params
+  {tool_name, market}; description states it's advisory and never trades.
+- **`_handle_consult_tool`** (`action_executor.py`) — builds a read-only MarketView
+  from `SandboxDataAPI`, runs `run_first_party_tool`, charges the uniform cost,
+  writes a `pending` `ToolConsultResult` row. **Never references self.trading or
+  self.warden** (it shares a module with `_handle_execute_trade`).
+- **`tests/test_consult_tool_handler.py`** (6) — THE BEHAVIOURAL WALL: mock
+  trading+warden → assert `mock_calls == []`; runs with both `None`; charges the
+  uniform cost; queues exactly one agent-scoped pending row; unknown tool / no
+  price history fail cleanly with no row.
+
+### Validation
+- 6/6 boundary tests pass (incl. the wall). Full suite: **1343 passed, 0 failed**.
+
 ## [Weave] - 2026-06-28 - Step 2b-1: tool_consult_results queue (schema foundation)
 
 Additive schema for the `consult_tool` single-cycle round-trip (DB-as-queue,
