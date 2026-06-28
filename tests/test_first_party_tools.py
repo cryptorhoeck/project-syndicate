@@ -8,6 +8,7 @@ a tool anything but read-only data, these fail.
 
 import dataclasses
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,25 @@ from src.signals.registry import (
 )
 
 SIGNALS_DIR = Path(__file__).resolve().parents[1] / "src" / "signals"
+
+# Execution layers a signal module must never import.
+EXECUTION_MODULES = ("src.trading", "src.common.exchange_service", "src.risk.warden")
+
+
+def _execution_imports(text: str) -> list[str]:
+    """Return execution modules that `text` imports via a real import statement.
+
+    Matches `import X`, `import X.y`, `import X as z`, and `from X[.y] import ...`
+    — but NOT prose mentions or string literals (so the guard can't false-positive
+    on a docstring, and — the point — can actually FAIL when a real import exists).
+    """
+    hits = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        for mod in EXECUTION_MODULES:
+            if re.match(rf"^(from|import)\s+{re.escape(mod)}(\.|\s|$)", stripped):
+                hits.append(mod)
+    return hits
 
 
 @pytest.fixture(autouse=True)
@@ -97,18 +117,39 @@ def test_tool_result_contains_no_callables():
 
 # ------------------------------------------ BOUNDARY INVARIANT: no execution route
 
+def test_import_guard_actually_bites():
+    """Positive control: prove the guard CAN fail (it isn't vacuous).
+
+    A safety test that can't fail is worse than no test. This asserts the matcher
+    flags real execution imports and ignores prose / string mentions.
+    """
+    # real imports in every form -> flagged
+    assert _execution_imports("from src.trading import x") == ["src.trading"]
+    assert _execution_imports("import src.risk.warden") == ["src.risk.warden"]
+    assert _execution_imports("import src.common.exchange_service as e") == ["src.common.exchange_service"]
+    assert _execution_imports("from src.trading.execution_service import S") == ["src.trading"]
+    # prose, strings, and look-alikes -> NOT flagged
+    assert _execution_imports("# talks to the trading service in prose") == []
+    assert _execution_imports("x = 'src.trading'  # a string literal") == []
+    assert _execution_imports("import src.trading_helpers") == []  # different module
+    assert _execution_imports("import numpy as np") == []
+
+
 def test_signals_package_does_not_import_execution_layers():
     """No module under src/signals/ may import the trading / exchange / Warden layers.
 
-    This is the structural guarantee that a consulted tool cannot place a trade.
+    The structural guarantee that a consulted tool cannot place a trade.
     """
-    forbidden = ("src.trading", "src.common.exchange_service", "src.risk.warden")
+    scanned = {p.name for p in SIGNALS_DIR.rglob("*.py")}
+    # NON-VACUITY: prove we actually scanned the real signal modules (a wrong path
+    # would otherwise pass this test against zero files).
+    assert {"registry.py", "vwap.py", "indicators.py", "tool.py", "signal_types.py"} <= scanned, (
+        f"guard scanned the wrong location; found only: {sorted(scanned)}"
+    )
     offenders = []
     for path in SIGNALS_DIR.rglob("*.py"):
-        text = path.read_text(encoding="utf-8")
-        for token in forbidden:
-            if f"import {token}" in text or f"from {token}" in text:
-                offenders.append(f"{path.name} -> {token}")
+        for mod in _execution_imports(path.read_text(encoding="utf-8")):
+            offenders.append(f"{path.name} -> {mod}")
     assert not offenders, f"signal layer must not reach execution: {offenders}"
 
 
