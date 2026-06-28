@@ -49,6 +49,19 @@ def _make_scenarios():
             low = close - noise
             volume = np.abs(rng.randn(n)) * 500 + 1000
             scenarios.append((f"{name}-{n}", high, low, close, volume))
+
+    # Edge cases (reviewer note): series shorter than the VWAP window, and a
+    # window of zero-volume bars (exercises the div-by-zero guard at parity).
+    for n in (5, 10, 15):
+        close = 100 + np.cumsum(rng.randn(n))
+        scenarios.append(
+            (f"short-{n}", close + 0.2, close - 0.2, close, np.abs(rng.randn(n)) * 500 + 1000)
+        )
+    n = 25
+    close = 100 + np.cumsum(rng.randn(n))
+    volume = np.concatenate([np.zeros(20), np.abs(rng.randn(5)) * 500 + 1000])
+    scenarios.append(("zerovol_warmup-25", close + 0.2, close - 0.2, close, volume))
+
     return scenarios
 
 
