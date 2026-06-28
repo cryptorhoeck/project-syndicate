@@ -2,6 +2,28 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Weave] - 2026-06-28 - Step 2a: First-party tool rail + JJ tool + boundary invariants
+
+The reusable rail the whole tools/knowledge catalogue plugs into. No agent core
+machinery touched yet — that's Step 2b (the `consult_tool` action + round-trip).
+
+### What changed
+- **`src/signals/registry.py`** — the first-party tool rail: a `MarketView`
+  read-only value object (frozen, tuple price series — data only, no handles),
+  `@register` decorator, `available_tools()`, `run_first_party_tool(name, view)`,
+  and `load_builtin_tools()`. Tools take only a `MarketView` and return JSON.
+- **`src/signals/jj/tool.py`** — registers `"jj_signals"`, the first first-party
+  tool: runs JJ's VWAP/RSI/momentum/volume analyses on a read-only view and
+  returns advisory observations. Template for the catalogue.
+- **`tests/test_first_party_tools.py`** (8 tests) — incl. BOUNDARY INVARIANTS:
+  `MarketView` is frozen/data-only, tool output is inert (no callables), and a
+  static check that NO module under `src/signals/` imports `src.trading`,
+  `src.common.exchange_service`, or `src.risk.warden`. "Can't reach execution"
+  is now enforced, not merely true.
+
+### Validation
+- 8/8 new tests pass. Full suite: **1336 passed, 0 failed** (no regressions).
+
 ## [Weave] - 2026-06-28 - JJ Signal Pack, Step 1 (pure technical-analysis tools)
 
 First step of folding the external "jj-bot" into Syndicate (see
