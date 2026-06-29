@@ -350,12 +350,24 @@ Respond ONLY in valid JSON matching this schema — no other text:
         if not genome_rec.genome_data:
             return ""
 
+        # Render ONLY the trading sections. The behavioral knobs (sip_propensity,
+        # communication_expressiveness, alliance_willingness, …) are NOT trading
+        # instincts and must not be shown — an agent should not see its own
+        # meta-behavioral profile (handled elsewhere, deliberately withheld).
+        trading = {
+            k: v
+            for k, v in genome_rec.genome_data.items()
+            if k in ("market_selection", "signal_generation", "plan_construction", "risk_management")
+        }
+        if not trading:
+            return ""
+
         from src.genome.genome_schema import genome_to_context_string
 
         return (
             "\n\nYOUR STRATEGY GENOME (your evolved trading instincts — let these "
             "bias your decisions):\n"
-            + genome_to_context_string(genome_rec.genome_data, agent.type, agent.generation)
+            + genome_to_context_string(trading, agent.type, agent.generation)
         )
 
     def _build_scout_directive(self, agent: Agent) -> str:

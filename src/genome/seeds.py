@@ -83,3 +83,22 @@ def seed_agent_genome(agent_id: int, genome_data: dict, role: str, db_session) -
     db_session.flush()
     logger.info("seeded preset genome for agent %s (role=%s)", agent_id, role)
     return clamped
+
+
+def enable_genome_context(agent_id: int, db_session) -> None:
+    """Turn ON the per-agent genome->prompt gate for ONE agent (Step 3c).
+
+    Sets only the per-agent flag. The genome still does NOT reach the prompt unless
+    the master switch `config.genome_context_enabled` is also True — so this is
+    inert until the deliberate master flip. Use to designate the single seeded JJ
+    Scout as the cohort-of-one. Offspring do NOT inherit this flag (see
+    `genome_manager.create_genome`), so the cohort stays a cohort of one.
+    """
+    rec = db_session.execute(
+        select(AgentGenome).where(AgentGenome.agent_id == agent_id)
+    ).scalar_one_or_none()
+    if rec is None:
+        raise ValueError(f"no genome row for agent {agent_id}; seed it first")
+    rec.context_enabled = True
+    db_session.flush()
+    logger.info("enabled genome->prompt gate for agent %s", agent_id)

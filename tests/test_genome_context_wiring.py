@@ -26,6 +26,7 @@ def _genome_rec(context_enabled=True, genome_data=None):
         context_enabled=context_enabled,
         genome_data=genome_data if genome_data is not None else {
             "signal_generation": {"rsi_oversold": 30, "rsi_overbought": 70},
+            "behavioral": {"communication_expressiveness": 0.6, "sip_propensity": 0.1},
         },
     )
 
@@ -60,7 +61,16 @@ def test_no_block_when_flag_off_even_though_master_on(master_on):
 def test_block_present_when_both_on(master_on):
     block = _assembler()._genome_context_block(_genome_rec(context_enabled=True), _agent())
     assert "YOUR STRATEGY GENOME" in block
-    assert "rsi_oversold" in block  # the genome's actual values are rendered
+    assert "rsi_oversold" in block  # the genome's trading values are rendered
+    # Behavioral knobs are excluded — not trading instincts; self-knowledge withheld.
+    assert "communication_expressiveness" not in block
+    assert "sip_propensity" not in block
+
+
+def test_no_block_when_only_behavioral_sections(master_on):
+    # A genome with no trading sections renders nothing (behavioral never shown).
+    rec = _genome_rec(context_enabled=True, genome_data={"behavioral": {"sip_propensity": 0.1}})
+    assert _assembler()._genome_context_block(rec, _agent()) == ""
 
 
 def test_no_block_when_genome_rec_none(master_on):

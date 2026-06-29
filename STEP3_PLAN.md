@@ -79,3 +79,62 @@ safety-gate weakening. The Warden wall is untouched.
 contrarian_bias 0.3 (VWAP mean-reversion lean). Plus reasonable `market_selection` (volume
 focus, crab-regime weight high for mean-reversion) and `behavioral` (tool_execution_frequency
 0.6 — JJ leans on its own analysis). All within `GENOME_BOUNDS`.
+
+## Step 3c — the deliberate flip (prepared; switch NOT thrown)
+
+3c provides the mechanics + the pre-flip checks; the actual master flip is an operational
+step taken when the colony runs, after this review.
+
+### (1) What the JJ Scout will actually see (the new prompt surface)
+
+The genome block renders **trading sections only** — the behavioral knobs
+(sip_propensity, communication_expressiveness, alliance_willingness, …) are excluded; an
+agent must not see its own meta-behavioral profile framed as trading instinct. Rendered:
+
+```
+YOUR STRATEGY GENOME (your evolved trading instincts — let these bias your decisions):
+  market_selection.volatility_preference: 0.500
+  market_selection.volume_threshold_multiplier: 2.000
+  market_selection.max_concurrent_markets: 3
+  market_selection.regime_weights.{bull,bear,crab,volatile}: 0.6/0.6/0.9/0.5
+  signal_generation.min_confidence_to_broadcast: 5
+  signal_generation.momentum_threshold_pct: 0.500
+  signal_generation.volume_spike_threshold: 2.000
+  signal_generation.rsi_oversold: 30
+  signal_generation.rsi_overbought: 70
+  signal_generation.contrarian_bias: 0.300
+```
+
+### (2) Cohort-of-one stays a cohort of one (tested invariant)
+
+`context_enabled` is a separate column, NOT in `genome_data`. `genome_manager.create_genome`
+builds offspring genomes without setting it → offspring default to `context_enabled=False`.
+So the JJ Scout's lineage inherits its *genome values* (JJ-flavored) but **not** the
+enabled flag — offspring stay dark. Locked by
+`test_offspring_do_not_inherit_context_enabled`. Enabling the master switch never silently
+grows the experiment.
+
+### (3) Revert criterion — the trip-wire (decided BEFORE the flip)
+
+Capture a baseline (the window: the JJ Scout's first ~3 evaluation cycles, or ~3 days),
+then flip and observe. **Flip the master switch back OFF and investigate if ANY:**
+- **Mechanical:** the JJ Scout's OODA output-validation failure rate is materially above
+  peers, or prompt-assembly exceptions reference the genome block.
+- **Behavioral:** the JJ Scout produces degenerate/incoherent actions (qualitative, from
+  the Agora) — e.g. spamming, ignoring the colony, nonsensical trades.
+- **Safety:** any Warden circuit-breaker / Black-Swan event coincident with the flip
+  (precautionary — flip off, then determine causation).
+- **Colony (matters when widening past the cohort-of-one):** behavioral diversity collapses
+  below `config.genome_diversity_low_threshold` (0.3) attributable to the change.
+
+**NOT a trip-wire:** a clean death-by-selection of the JJ Scout — that's a valid Darwinian
+outcome (the seeded genome simply wasn't fit), bounded to one agent's paper capital.
+
+Exact P&L thresholds calibrate against the captured baseline (the Arena has not yet run, so
+there is no historical baseline to set hard numbers against today).
+
+### 3c mechanics (bytes, inert until the master flip)
+- `seed_agent_genome(agent_id, jj_scout_genome(), "scout", db)` — clamp+validate+persist.
+- `enable_genome_context(agent_id, db)` — set the per-agent flag (inert while master OFF).
+- Operational flip (when ready): set `GENOME_CONTEXT_ENABLED=true`, observe against the
+  trip-wire, revert instantly by unsetting it.

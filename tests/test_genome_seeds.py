@@ -7,9 +7,16 @@ hand-authored seed must be clamped before persist, not stored raw.
 
 import copy
 
+import pytest
+
 from src.common.models import Agent, AgentGenome
 from src.genome.genome_schema import validate_genome
-from src.genome.seeds import JJ_SCOUT_GENOME, jj_scout_genome, seed_agent_genome
+from src.genome.seeds import (
+    JJ_SCOUT_GENOME,
+    enable_genome_context,
+    jj_scout_genome,
+    seed_agent_genome,
+)
 
 
 def _agent(session, name="JJ-Scout"):
@@ -80,3 +87,47 @@ def test_out_of_range_seed_is_clamped_not_stored_raw(db_session_factory):
     # And the persisted genome validates in-range (guard held).
     valid, violations = validate_genome(sg, "scout")
     assert valid, violations
+
+
+def test_enable_genome_context_sets_per_agent_flag(db_session_factory):
+    session = db_session_factory()
+    agent = _agent(session)
+    seed_agent_genome(agent.id, jj_scout_genome(), "scout", session)
+    rec = session.query(AgentGenome).filter_by(agent_id=agent.id).one()
+    assert rec.context_enabled is False  # default off
+    enable_genome_context(agent.id, session)
+    session.commit()
+    assert session.query(AgentGenome).filter_by(agent_id=agent.id).one().context_enabled is True
+
+
+def test_enable_requires_existing_genome(db_session_factory):
+    session = db_session_factory()
+    agent = _agent(session)
+    with pytest.raises(ValueError):
+        enable_genome_context(agent.id, session)  # no genome row seeded yet
+
+
+@pytest.mark.asyncio
+async def test_offspring_do_not_inherit_context_enabled(db_session_factory):
+    # Cohort-of-one invariant: an enabled JJ parent's offspring come out gated OFF,
+    # so enabling the master switch never silently grows the experimental cohort.
+    from src.genome.genome_manager import GenomeManager
+
+    session = db_session_factory()
+    parent = _agent(session, name="JJ-parent")
+    seed_agent_genome(parent.id, jj_scout_genome(), "scout", session)
+    enable_genome_context(parent.id, session)
+    session.commit()
+    parent_genome = session.query(AgentGenome).filter_by(agent_id=parent.id).one()
+    assert parent_genome.context_enabled is True
+
+    offspring = _agent(session, name="JJ-offspring")
+    await GenomeManager().create_genome(
+        agent_id=offspring.id, role="scout",
+        parent_genome_id=parent_genome.id,
+        parent_genome_data=parent_genome.genome_data,
+        db_session=session,
+    )
+    session.commit()
+    off = session.query(AgentGenome).filter_by(agent_id=offspring.id).one()
+    assert off.context_enabled is False  # gated OFF — cohort stays a cohort of one

@@ -2,6 +2,30 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Weave] - 2026-06-28 - Step 3c: flip mechanics + pre-flip checks (switch NOT thrown)
+
+Prepares the deliberate flip — the master switch stays OFF; this is mechanics + the
+three pre-flip checks. Nothing is activated.
+
+### What changed
+- **Genome block now renders TRADING SECTIONS ONLY** (`_genome_context_block`) —
+  behavioral knobs (sip_propensity, communication_expressiveness, …) excluded. Eyeballing
+  the real `genome_to_context_string` output revealed it dumped behavioral params framed
+  as "trading instincts" and leaked self-knowledge the personality system withholds.
+- **`enable_genome_context(agent_id, db)`** — sets the per-agent flag (inert while the
+  master switch is OFF). Designates the cohort-of-one JJ Scout.
+- **Cohort-of-one is a tested invariant** — `genome_manager.create_genome` builds offspring
+  without `context_enabled`, so offspring default OFF; locked by
+  `test_offspring_do_not_inherit_context_enabled`. Enabling the master never silently grows
+  the cohort.
+- **`STEP3_PLAN.md` Step 3c section** — the rendered (trading-only) block, the offspring
+  invariant, and the REVERT TRIP-WIRE (mechanical / behavioral / safety / colony-diversity
+  criteria decided before the flip; clean selection-death is NOT a trip-wire).
+
+### Validation
+- 8 new/updated tests (enable, offspring-gated-off, behavioral-exclusion). Full suite:
+  **1362 passed, 0 failed**. Master switch remains OFF — zero behavior change on merge.
+
 ## [Weave] - 2026-06-28 - Step 3b: gated genome->prompt wiring (default-OFF)
 
 The colony-wide flip — built dual-gated and default-OFF so merging it changes
