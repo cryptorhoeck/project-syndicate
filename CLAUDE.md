@@ -212,7 +212,7 @@ The colony's external data layer. Pulls from 8 free crypto + macro sources, dige
 - **OS:** Windows 11
 - **Shell:** Command Prompt (CMD) — always use CMD commands, never PowerShell
 - **Python:** 3.13.7 with .venv virtual environment
-- **Path:** E:\project syndicate
+- **Path:** E:\the lab\project syndicate
 - **Database:** PostgreSQL (local, 48 tables)
 - **Message Bus:** Redis-compatible (Memurai on Windows)
 - **Git Remote:** https://github.com/cryptorhoeck/project-syndicate.git
@@ -220,7 +220,7 @@ The colony's external data layer. Pulls from 8 free crypto + macro sources, dige
 ## Directory Structure
 
 ```
-E:\project syndicate\
+E:\the lab\project syndicate\
 ├── CLAUDE.md                    ← You are here
 ├── CHANGELOG.md                 ← Version history (update with every change)
 ├── CURRENT_STATUS.md            ← Session-by-session progress tracking
