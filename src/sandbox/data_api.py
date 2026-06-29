@@ -186,6 +186,16 @@ class SandboxDataAPI:
         """Returns current market regime."""
         return self._regime_cache
 
+    # Public read-only accessors (stable surface for first-party tools, so callers
+    # don't reach into the private _get_* methods).
+    def get_price_history(self, symbol: str = "BTC/USDT", timeframe: str = "1h", limit: int = 100) -> list:
+        """Read-only OHLCV (list of dicts: timestamp/open/high/low/close/volume)."""
+        return self._get_price_history(symbol, timeframe, limit)
+
+    def get_market_regime(self) -> dict:
+        """Read-only current market regime dict."""
+        return self._get_market_regime()
+
     def _capture_output(self, data):
         """Capture script output. Must be JSON-serializable. Max 10KB."""
         serialized = json.dumps(data)

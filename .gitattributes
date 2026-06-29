@@ -1,0 +1,3 @@
+# Normalize line endings: store LF in git, check out native. Silences the
+# "LF will be replaced by CRLF" noise on Windows.
+* text=auto

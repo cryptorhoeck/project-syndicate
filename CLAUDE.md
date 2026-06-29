@@ -152,7 +152,7 @@ See `CURRENT_STATUS.md` for detailed session-by-session progress.
 - **Parameter Registry** (`src/governance/parameter_registry.py`) — database-backed runtime config for SIP-modifiable parameters. 3 tiers: Open (Tier 1, 60% vote), Structural (Tier 2, 75% supermajority), Forbidden (Tier 3, immutable). Cumulative drift tracking.
 - **SIP Lifecycle Manager** (`src/governance/sip_lifecycle.py`) — full lifecycle state machine: DEBATE -> VOTING -> TALLIED -> GENESIS_REVIEW -> OWNER_REVIEW -> IMPLEMENTING -> IMPLEMENTED. Prestige-weighted voting, auto-implementation with eval weight validation.
 - **Vote Weights** (`src/governance/vote_weights.py`) — prestige-to-weight lookup (unproven=0.5, journeyman=1.0, expert=1.5, master=2.0, grandmaster=3.0)
-- **Parameter Reader** (`src/governance/param_reader.py`) — helper for system components: reads from registry with config fallback
+- **Parameter Reader** (`src/governance/param_reader.py`) — helper for system components: reads from registry with config fallback. **Read-pattern guide:** `docs/governance_read_pattern.md` (when to use `get_param`, hoist-up-one-level pattern for sync call sites, schema/tier conventions, how to add a new SIP-modifiable parameter)
 - **Seed Script** (`scripts/seed_parameter_registry.py`) — 24 seed parameters across evaluation, lifecycle, economics, timing, risk/governance
 - **New agent actions:** vote_on_sip, debate_sip, cosponsor_sip (+ updated propose_sip)
 - **Genesis ratification:** maturity-adaptive posture (permissive -> skeptical), public vetoes

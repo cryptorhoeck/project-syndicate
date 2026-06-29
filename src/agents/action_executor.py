@@ -115,6 +115,7 @@ class ActionExecutor:
             # Phase 8C: Sandbox actions
             "execute_analysis": self._handle_execute_analysis,
             "run_tool": self._handle_run_tool,
+            "consult_tool": self._handle_consult_tool,
             "modify_genome": self._handle_broadcast,
             # Phase 8B: Survival actions
             "propose_sip": self._handle_propose_sip,
@@ -1186,6 +1187,94 @@ class ActionExecutor:
         )
 
     # ── Phase 8C: Sandbox action handlers ───────────────────
+
+    async def _handle_consult_tool(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Consult a first-party analysis tool; queue its result for next cycle.
+
+        Read-only + advisory BY CONSTRUCTION. It builds a MarketView from the
+        read-only SandboxDataAPI, runs a registered first-party tool, charges a
+        uniform thinking-tax, and writes a 'pending' ToolConsultResult row that
+        ContextAssembler surfaces (once) on the agent's next cycle.
+
+        This handler NEVER references self.trading or self.warden — it has no path
+        to execution. That is asserted as a behavioural invariant in
+        tests/test_consult_tool_handler.py (the regex import-guard on src/signals/
+        does NOT cover this module, which shares a file with _handle_execute_trade).
+        """
+        from sqlalchemy import text as sa_text
+
+        from src.common.config import config as cfg
+        from src.common.models import ToolConsultResult
+        from src.sandbox.data_api import SandboxDataAPI
+        from src.signals.registry import (
+            MarketView,
+            available_tools,
+            load_builtin_tools,
+            run_first_party_tool,
+        )
+
+        load_builtin_tools()
+        tool_name = (params.get("tool_name") or "").strip()
+        market = (params.get("market") or "BTC/USDT").strip()
+
+        if tool_name not in available_tools():
+            return ActionResult(
+                success=False,
+                action_type=action_type,
+                details=f"Unknown tool '{tool_name}'. Available: {available_tools()}",
+            )
+
+        # Read-only market data (SELECT/Redis reads only — no execution surface).
+        watchlist = agent.watched_markets if getattr(agent, "watched_markets", None) else []
+        data_api = SandboxDataAPI(agent.id, watchlist)
+        await data_api.prefetch_all(self.db)
+        candles = data_api.get_price_history(market, "1h", 200)
+        if not candles:
+            return ActionResult(
+                success=False,
+                action_type=action_type,
+                details=f"No price history available for {market}",
+            )
+        regime = (data_api.get_market_regime() or {}).get("regime", "neutral")
+
+        view = MarketView.from_ohlcv(candles, symbol=market, regime=regime)
+        result_payload = run_first_party_tool(tool_name, view)
+
+        # Uniform thinking-tax for any first-party consult (D2: selection pressure
+        # so over-reliance is punished). Same budget mechanism as the sandbox path.
+        cost = float(cfg.consult_tool_cost_usd)
+        self.db.execute(
+            sa_text(
+                "UPDATE agents SET "
+                "thinking_budget_used_today = COALESCE(thinking_budget_used_today, 0) + :c, "
+                "total_api_cost = COALESCE(total_api_cost, 0) + :c "
+                "WHERE id = :aid"
+            ),
+            {"c": cost, "aid": agent.id},
+        )
+
+        # Queue the result for the single-cycle round-trip (ContextAssembler
+        # consumes it next cycle and marks it 'delivered').
+        row = ToolConsultResult(
+            requesting_agent_id=int(agent.id),
+            tool_name=tool_name,
+            market=market,
+            result_payload=result_payload,
+            status="pending",
+            attempt_count=0,
+        )
+        self.db.add(row)
+        self.db.commit()
+
+        n_signals = len(result_payload.get("signals", []))
+        return ActionResult(
+            success=True,
+            action_type=action_type,
+            details=f"Consulted {tool_name} on {market}: {n_signals} signals queued for next cycle",
+            cost=cost,
+        )
 
     async def _handle_execute_analysis(
         self, agent: Agent, action_type: str, params: dict

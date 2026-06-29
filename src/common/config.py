@@ -254,8 +254,15 @@ class SyndicateConfig(BaseSettings):
     sandbox_time_rate_usd_per_ms: float = 0.0001
     sandbox_max_tools_per_cycle: int = 3
     sandbox_max_pre_compute_tools: int = 3
+    # Weave: uniform thinking-tax per first-party tool consult (consult_tool).
+    # Tunable rail property (start small; selection finds the right consult rate).
+    consult_tool_cost_usd: float = 0.002
 
     # Phase 8C: Strategy Genome
+    # Weave Step 3b: master kill-switch for genome->prompt injection. DEFAULT OFF.
+    # Even when True, a genome reaches a prompt only for agents whose per-agent
+    # AgentGenome.context_enabled is also True (dual gate; drift stays dark).
+    genome_context_enabled: bool = False
     genome_mutation_rate: float = 0.15
     genome_mutation_strength: float = 0.10
     genome_structural_mutation_rate: float = 0.05

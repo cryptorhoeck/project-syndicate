@@ -179,6 +179,7 @@ def test_run_all_continues_when_one_method_raises(db_factory, caplog):
         "opportunities_expired": 0,  # failed -> 0
         "plans_cleaned": 7,
         "memory_pruned": 2,
+        "consult_rows_pruned": 0,  # no consult rows in this DB -> 0
     }
 
     # WARNING log captured the failed task name.

@@ -30,6 +30,7 @@ from src.common.models import (
 )
 from src.genesis.evaluation_assembler import EvaluationAssembler, EvaluationPackage
 from src.genesis.pipeline_analyzer import PipelineAnalyzer
+from src.governance.param_reader import get_param
 from src.personality.behavioral_profile import BehavioralProfileCalculator
 from src.personality.temperature_evolution import TemperatureEvolution
 from src.personality.divergence import DivergenceCalculator
@@ -635,7 +636,15 @@ The warning will be shown to the agent if they survive."""
         if final == "terminated":
             await self._terminate_agent(session, agent, result, evaluation)
         elif final == "probation":
-            self._apply_probation(session, agent, result, evaluation)
+            grace_cycles_default = int(await get_param(
+                "evaluation.probation_grace_cycles",
+                session,
+                fallback=config.probation_grace_cycles,
+            ))
+            self._apply_probation(
+                session, agent, result, evaluation,
+                grace_cycles_default=grace_cycles_default,
+            )
         else:
             self._apply_survival(session, agent, result, evaluation, pkg)
 
@@ -801,10 +810,17 @@ The warning will be shown to the agent if they survive."""
     def _apply_probation(
         self, session: Session, agent: Agent,
         result: EvaluationResult, evaluation: Evaluation,
+        *,
+        grace_cycles_default: int,
     ):
-        """Apply probation: shortened clock, budget cut, grace period."""
+        """Apply probation: shortened clock, budget cut, grace period.
+
+        grace_cycles_default is read by the async caller from the parameter
+        registry (evaluation.probation_grace_cycles) with fallback to
+        config.probation_grace_cycles. See docs/governance_read_pattern.md.
+        """
         agent.probation = True
-        agent.probation_grace_cycles = config.probation_grace_cycles
+        agent.probation_grace_cycles = grace_cycles_default
 
         # Shortened survival clock (half of original)
         if agent.survival_clock_end:

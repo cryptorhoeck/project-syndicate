@@ -137,6 +137,24 @@
 
 ---
 
+## PHASE 9B TIER B — Parameter Registry Read Path Continuation (Identified 2026-05-09)
+
+- [ ] **`_validate_eval_weights` scope is too broad**
+  - Surfaced during: Phase 9B Tier A integration testing
+  - Decision: defer narrowing to Tier B
+  - Rationale: Tier A constraint forbade modifying `sip_lifecycle.py`. The validator currently triggers on any `evaluation.*` SIP but only validates `_weight` summation against 1.0. Non-weight evaluation parameters (e.g., `probation_grace_cycles`, `first_eval_leniency`) are auto-rejected at the implementation step because the empty `_weight` row set sums to 0.0, which fails the `abs(total - 1.0) <= 0.01` check. This is why the Tier A headline integration test bypasses the lifecycle and calls `apply_change()` directly.
+  - Trigger to revisit: Tier B build, when this becomes blocking for full-lifecycle proof
+  - Data to gather before fix: catalog of all `evaluation.*` parameters in the registry seed list (current and proposed Tier B additions), classify into weight vs non-weight, design narrower validator scope. Two design options: (a) tighten predicate to `evaluation.%_weight` so non-weight params skip the check entirely; (b) treat the empty-weight-set case as a no-op early-return. Option (a) is cleaner; option (b) is more defensive against future seeding states.
+
+- [ ] **Validator does not enforce parameter domain**
+  - Surfaced during: Phase 9B Tier A boolean handling check
+  - Decision: defer to Tier B
+  - Rationale: `validate_proposed_change` uses `min_value` and `max_value` for range checking but does not enforce domain shape. Boolean-shaped parameters (`min=0, max=1`) accept fractional values like `0.5` because the validator treats them as float-with-bounds rather than enforcing integer-or-boolean semantics. The Tier A read site uses `int(await get_param(...))` to truncate, so the bug is masked at the consumer; tested explicitly in `test_probation_grace_cycles_truncates_fractional_value`.
+  - Trigger to revisit: when first non-trivially-typed parameter (boolean, enum, string) is migrated and tests catch domain violations, or sooner if Tier B catalogs reveal more typed parameters than expected
+  - Data to gather before fix: enumeration of parameter types actually in use across the seeded registry; design choice between (a) per-parameter validators registered in code, (b) a `domain` discriminator field on `ParameterRegistryEntry` (e.g., `"int" | "float" | "bool" | "enum"`), or (c) a Pydantic-style schema layer keyed by `parameter_key`. Option (b) keeps the registry self-describing; option (c) keeps logic out of the database.
+
+---
+
 ## OPERATOR HALT CONSUMER HOTFIX (Identified 2026-05-04)
 
 - [x] **Wire halt cross-process visibility (PRODUCTION GAP)** — RESOLVED 2026-05-01

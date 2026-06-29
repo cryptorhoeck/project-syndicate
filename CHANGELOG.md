@@ -2,6 +2,363 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Weave] - 2026-06-28 - Step 3c: flip mechanics + pre-flip checks (switch NOT thrown)
+
+Prepares the deliberate flip — the master switch stays OFF; this is mechanics + the
+three pre-flip checks. Nothing is activated.
+
+### What changed
+- **Genome block now renders TRADING SECTIONS ONLY** (`_genome_context_block`) —
+  behavioral knobs (sip_propensity, communication_expressiveness, …) excluded. Eyeballing
+  the real `genome_to_context_string` output revealed it dumped behavioral params framed
+  as "trading instincts" and leaked self-knowledge the personality system withholds.
+- **`enable_genome_context(agent_id, db)`** — sets the per-agent flag (inert while the
+  master switch is OFF). Designates the cohort-of-one JJ Scout.
+- **Cohort-of-one is a tested invariant** — `genome_manager.create_genome` builds offspring
+  without `context_enabled`, so offspring default OFF; locked by
+  `test_offspring_do_not_inherit_context_enabled`. Enabling the master never silently grows
+  the cohort.
+- **`STEP3_PLAN.md` Step 3c section** — the rendered (trading-only) block, the offspring
+  invariant, and the REVERT TRIP-WIRE (mechanical / behavioral / safety / colony-diversity
+  criteria decided before the flip; clean selection-death is NOT a trip-wire).
+
+### Validation
+- 8 new/updated tests (enable, offspring-gated-off, behavioral-exclusion). Full suite:
+  **1362 passed, 0 failed**. Master switch remains OFF — zero behavior change on merge.
+
+## [Weave] - 2026-06-28 - Step 3b: gated genome->prompt wiring (default-OFF)
+
+The colony-wide flip — built dual-gated and default-OFF so merging it changes
+nothing until a specific agent is deliberately enabled.
+
+### What changed
+- **`AgentGenome.context_enabled`** column + migration **`weave_3b_001`** (additive,
+  `server_default='false'`, NOT NULL → existing rows backfill to False; revises head
+  `weave_2b_001`, linear; tested up→down→up incl. backfill-to-False on SQLite).
+- **`config.genome_context_enabled`** master kill-switch, **default OFF**.
+- **`ContextAssembler._genome_context_block`** — dual-gated (master AND per-agent),
+  fail-safe (NULL/missing flag = disabled), wired into `_build_system_prompt` reusing
+  the genome record already fetched for `communication_expressiveness` (that existing
+  path is untouched).
+- **`tests/test_genome_context_wiring.py`** (7) — incl. THE LOAD-BEARING middle case
+  (master ON + per-agent flag OFF → no block: the drifted population stays dark when
+  the master flips), the NULL fail-safe, default-off, and None-safe.
+
+### Validation
+- 7/7 wiring tests pass. Migration up→down→up + backfill-to-False verified. Full
+  suite: **1358 passed, 0 failed** (default-off = zero behavior change).
+
+## [Weave] - 2026-06-28 - Step 3a: JJ genome seed + seed helper (inert)
+
+First step toward seeding a JJ-flavored agent. INERT by itself — a seeded genome
+influences nothing until the genome->prompt wiring (Step 3b, default-OFF) is enabled
+for that agent. See `STEP3_PLAN.md`.
+
+Coupling finding behind the plan: the genome's TRADING params are read by no
+machine/strategy/trading path today (only `communication_expressiveness` reaches
+behavior). So the prompt is the genome's first behavioral channel for trading, and
+current trading-genome values are unselected drift — which is why Step 3b ships
+default-OFF with per-agent gating (control group, not a blind colony-wide flip).
+
+### What changed
+- **`src/genome/seeds.py`** — `JJ_SCOUT_GENOME` (VWAP/RSI/momentum/volume style mapped
+  from jj-bot, all within `GENOME_BOUNDS`) + `seed_agent_genome(...)` which
+  CLAMPS + validates before persisting (out-of-range hand-authored values corrected,
+  never stored raw).
+- **`tests/test_genome_seeds.py`** (4) — incl. THE GUARD: an out-of-range seed
+  (`rsi_oversold=999`, `momentum=0.1`, …) is clamped to bounds before persist.
+- **`STEP3_PLAN.md`** — written record: the two-part realization (colony-wide Part A
+  vs scoped Part B), the coupling finding, the verified safety story, decisions D1–D4.
+
+### Validation
+- 4/4 seed tests pass (incl. clamp guard). Full suite: **1351 passed, 0 failed**.
+
+## [Weave] - 2026-06-28 - Step 2b-2b: consumer surfacing + prune (round-trip closed)
+
+JJ is now live in agents' reasoning: a consulted result is surfaced in the
+agent's NEXT prompt, exactly once. Closes the single-cycle round-trip.
+
+### What changed
+- **`ContextAssembler._consume_pending_consult_results`** — atomic consume-once
+  (mirrors `_consume_pending_archive_results`): render pending rows → mark
+  'delivered' in a separate committed transaction → return the block ONLY after
+  that commit. A crash between render and mark-delivered cannot double-surface
+  (rows stay 'pending', re-surface next cycle: at-least-once, used once). Injected
+  for ALL roles in `_build_priority_context` as `=== TOOL RESULTS YOU REQUESTED ===`.
+- **`attempt_count`/`failed` decision** — kept as a DEFENSIVE poison-pill (caps a
+  malformed/oversized payload so it can't sit 'pending' forever), documented as
+  effectively-never-fires for a deterministic in-tree tool. Not an inherited mystery.
+- **`MaintenanceService.prune_tool_consult_results`** (wired into `run_all`) —
+  deletes terminal (delivered/failed) rows older than TTL (bounded by count) and
+  expires stale 'pending' orphans by age → 'failed' (a terminated agent's request
+  can't linger or surface).
+- **Public accessors** `SandboxDataAPI.get_price_history` / `get_market_regime`;
+  the handler no longer reaches into private `_get_*`.
+- Updated two `run_all` tests for the new `consult_rows_pruned` task key.
+
+### Validation
+- `tests/test_consult_round_trip.py` (4): surfaced-once-then-consumed, **no
+  double-surface across a mark-delivered failure**, poison-pill cap, prune
+  (delete terminal + expire stale-pending orphan). Full suite: **1347 passed, 0
+  failed**.
+
+## [Weave] - 2026-06-28 - Step 2b-2a: consult_tool action + handler (the wall)
+
+The agent-facing pull tool. Agents *choose* to consult; the handler writes a
+pending result row. Surfacing (ContextAssembler consume + prune) is 2b-2b.
+
+### What changed
+- **`config.consult_tool_cost_usd`** (0.002, env `CONSULT_TOOL_COST_USD`) — uniform,
+  tunable thinking-tax per consult (selection pressure; same for every tool).
+- **`consult_tool` action** in `roles.SURVIVAL_ACTIONS` (all roles) — params
+  {tool_name, market}; description states it's advisory and never trades.
+- **`_handle_consult_tool`** (`action_executor.py`) — builds a read-only MarketView
+  from `SandboxDataAPI`, runs `run_first_party_tool`, charges the uniform cost,
+  writes a `pending` `ToolConsultResult` row. **Never references self.trading or
+  self.warden** (it shares a module with `_handle_execute_trade`).
+- **`tests/test_consult_tool_handler.py`** (6) — THE BEHAVIOURAL WALL: mock
+  trading+warden → assert `mock_calls == []`; runs with both `None`; charges the
+  uniform cost; queues exactly one agent-scoped pending row; unknown tool / no
+  price history fail cleanly with no row.
+
+### Validation
+- 6/6 boundary tests pass (incl. the wall). Full suite: **1343 passed, 0 failed**.
+
+## [Weave] - 2026-06-28 - Step 2b-1: tool_consult_results queue (schema foundation)
+
+Additive schema for the `consult_tool` single-cycle round-trip (DB-as-queue,
+mirrors archive_query_results). Agent wiring (handler + context surfacing) lands
+in 2b-2.
+
+### What changed
+- **`ToolConsultResult` model** (`src/common/models.py`) — pending/delivered/failed
+  queue scoped to `requesting_agent_id`. Indexes on (agent, status) and
+  (status, requested_at) — the latter serves both delivered-row pruning and
+  stale-pending expiry (orphan handling: a dead agent's request can't linger).
+- **Migration `weave_2b_001`** (revises head `phase_9b_tier_a_001`) — additive-only
+  (one new table, zero ALTERs), single linear head, real tested `downgrade()`.
+
+### Validation
+- `alembic heads` → single head `weave_2b_001`. Migration up→down→up verified on
+  SQLite (table + 10 cols + 2 indexes created, dropped clean, recreated). Full
+  suite: **1337 passed, 0 failed**.
+
+## [Weave] - 2026-06-28 - Step 2a: First-party tool rail + JJ tool + boundary invariants
+
+The reusable rail the whole tools/knowledge catalogue plugs into. No agent core
+machinery touched yet — that's Step 2b (the `consult_tool` action + round-trip).
+
+### What changed
+- **`src/signals/registry.py`** — the first-party tool rail: a `MarketView`
+  read-only value object (frozen, tuple price series — data only, no handles),
+  `@register` decorator, `available_tools()`, `run_first_party_tool(name, view)`,
+  and `load_builtin_tools()`. Tools take only a `MarketView` and return JSON.
+- **`src/signals/jj/tool.py`** — registers `"jj_signals"`, the first first-party
+  tool: runs JJ's VWAP/RSI/momentum/volume analyses on a read-only view and
+  returns advisory observations. Template for the catalogue.
+- **`tests/test_first_party_tools.py`** (8 tests) — incl. BOUNDARY INVARIANTS:
+  `MarketView` is frozen/data-only, tool output is inert (no callables), and a
+  static check that NO module under `src/signals/` imports `src.trading`,
+  `src.common.exchange_service`, or `src.risk.warden`. "Can't reach execution"
+  is now enforced, not merely true.
+
+### Validation
+- 8/8 new tests pass. Full suite: **1336 passed, 0 failed** (no regressions).
+
+## [Weave] - 2026-06-28 - JJ Signal Pack, Step 1 (pure technical-analysis tools)
+
+First step of folding the external "jj-bot" into Syndicate (see
+`projects/JJ Gorilla/jj-bot/WEAVE_PROPOSAL.md`). Adds jj-bot's genuinely sound
+analysis as advisory-only, pure-function tools. No execution, no exchange, no
+Warden, no agent wiring yet — that comes in later steps.
+
+### What changed
+
+- **New package `src/signals/`** — advisory technical-analysis providers. They
+  return a descriptive `TechnicalSignal` for agent reasoning to weigh; they never
+  place trades or touch the exchange/Warden (honours the "agents decide" design).
+- **New package `src/signals/jj/`**:
+  - `vwap.py` — VWAP-deviation engine **ported faithfully** from jj-bot's
+    `vwap_calculator.py` (typical price, rolling VWAP + deviation bands,
+    mean-reversion / trend-following logic, regime bias). This is jj-bot's real
+    jewel; the math is preserved exactly.
+  - `indicators.py` — RSI (Wilder), momentum, volume-breakout **rebuilt from
+    first principles**. Deliberately NOT ported from jj-bot's simulator versions,
+    which silently no-op on indicator keys the pipeline never populates.
+  - `signal_types.py` — `Direction` enum + frozen `TechnicalSignal` dataclass.
+- **New tests** `tests/test_jj_signals.py` (23 tests) — first-principles
+  validation incl. a hand-computed Wilder RSI (=87.5) and an explicit test
+  documenting the intentional divergence from jj-bot's broken no-op behaviour.
+- **Parity tests** `tests/test_jj_vwap_parity.py` (150 tests) — assert the ported
+  VWAP is byte-for-byte equivalent to the original across 15 OHLCV scenarios x
+  every strategy x regime (identical arrays + identical signal decisions). The
+  original is frozen verbatim in `tests/_reference/jj_vwap_calculator_original.py`
+  (blob 6ccba93). This guards against silent port drift — a port needs parity
+  validation, not just first-principles "reasonableness".
+- **`.gitattributes`** (`* text=auto`) — normalise line endings, silence CRLF noise.
+
+### Validation
+- 173/173 new tests pass (23 first-principles + 150 parity). Full suite:
+  **1288 passed, 0 failed** (no regressions).
+
+## [Phase 9B Tier A] - 2026-05-09 - Parameter Registry Read Path (Proof of Concept)
+
+Closes the read-path gap surfaced by the Phase 9A audit
+(`PHASE_9A_INTEGRATION_AUDIT.md`). Parameter-modifying SIPs targeting
+`evaluation.probation_grace_cycles` now have operational effect — the
+evaluation engine reads from the registry instead of `config`, with
+fallback to the config default when the registry is unseeded.
+
+This is a proof-of-concept scope. One read site is migrated; the seed
+list and Tier B kickoff will sweep the remaining sites in a follow-up.
+
+### What changed
+
+- **New migration** `phase_9b_tier_a_001` — seeds five parameters into
+  `parameter_registry`:
+  - `evaluation.probation_grace_cycles` (Tier 1, default 3, range 1-10)
+  - `evaluation.first_eval_leniency` (Tier 1, default 1, range 0-1)
+  - `colony.min_spawn_capital` (Tier 2, default 50, range 25-200)
+  - `colony.max_agents` (Tier 2, default 8, range 3-20)
+  - `colony.darwin_pressure_enabled` (Tier 3 forbidden, rejection
+    target only — no consumer)
+
+- **Read-site migration** at `src/genesis/evaluation_engine.py`:
+  - `_execute_decision` (async, line 569) now reads
+    `evaluation.probation_grace_cycles` once via `get_param` with
+    `config.probation_grace_cycles` fallback, threads
+    `grace_cycles_default: int` kwarg into `_apply_probation`
+  - `_apply_probation` (sync, line 801) now accepts the keyword-only
+    `grace_cycles_default` argument and uses it instead of the direct
+    `config` read at the former line 807
+
+  This is the **hoist-up-one-level pattern** — read once async at the
+  nearest async caller, pass the value down as a keyword-only kwarg.
+  Tier B will use this pattern across the rest of the read sites
+  (`accountant.py`, other `genesis.py` reads, etc.).
+
+- **Documentation** (`docs/governance_read_pattern.md`) — canonical
+  guide to the registry read pattern: when to use `get_param`, hoist
+  pattern, schema constraints (Float-only), tier conventions, how to
+  add a new SIP-modifiable parameter. CLAUDE.md gets a one-line
+  pointer to this guide.
+
+### Tests
+
+`tests/test_phase_9b_param_reader_loop.py` — 6 new tests:
+
+- `test_probation_grace_cycles_default_when_registry_seeded` —
+  production-path proof that seeded value (3) flows through the
+  evaluation engine to the agent's probation grace count.
+- `test_probation_grace_cycles_changed_after_sip_implementation` —
+  production-path proof that `apply_change(5)` updates the runtime
+  read value.
+- `test_probation_grace_cycles_falls_back_to_config_when_unseeded` —
+  proves fresh DBs continue to function pre-seed via the
+  `config.probation_grace_cycles` fallback.
+- `test_full_sip_loop_changes_probation_behavior` — integration
+  end-to-end: SIP record in `implementing` state → `apply_change` →
+  registry update → `_execute_decision` → assert agent receives the
+  new value (5, not the config default 3).
+- `test_get_param_actually_called_in_evaluation_engine` — AST
+  regression guard parsing `evaluation_engine.py` for the literal
+  `get_param("evaluation.probation_grace_cycles", ...)` call. Future
+  refactors that revert to direct `config` reads break this test.
+- `test_tier_3_parameter_rejected_at_validation` —
+  `colony.darwin_pressure_enabled` SIPs must be rejected with a
+  Tier 3 / Forbidden reason. Prevents the seed list from accidentally
+  permitting termination-disabling.
+
+### Findings surfaced during this build (deferred to Tier B / follow-ups)
+
+- **Validator does not enforce parameter domain.** A boolean-shaped
+  parameter (`min=0, max=1`) currently accepts fractional proposals
+  like `0.5`. Tier B should add per-parameter validators or a
+  `domain` discriminator on `ParameterRegistryEntry`.
+- **`_validate_eval_weights` in `sip_lifecycle.py` is overly broad.**
+  Triggers for any `evaluation.*` parameter even though it only
+  checks `_weight` summation. Non-weight evaluation parameters
+  (like `probation_grace_cycles`) are auto-rejected at the
+  implementation step if no `_weight` params are seeded. The headline
+  integration test in this build routes around it by calling
+  `apply_change` directly. Tier B should either tighten the predicate
+  to `evaluation.%_weight` or add an early-return for empty weight sets.
+- **Audit assertion correction.** The Phase 9A audit claimed "no tests
+  for `parameter_registry`." Incorrect — `tests/test_sip_voting.py`
+  contains a `TestParameterRegistry` class with ~10 tests covering
+  `get_value`, `validate_proposed_change`, `apply_change`, drift
+  summary, etc. The `maturity_tracker` is similarly covered by a
+  `TestColonyMaturity` class. The audit's "test coverage retrofit"
+  P2 item should narrow to the lifecycle advancement loop, not the
+  registry / maturity layers.
+
+### Constraints honored
+
+- No changes to `parameter_registry.py` or `sip_lifecycle.py` core logic.
+- No changes to the Risk Desk layer (`src/risk/`).
+- The Tier 3 row exists only as a rejection target — no production
+  code reads it.
+- Fallback semantics preserve current behavior on unseeded databases.
+
+### Iteration 3 corrections
+
+Three corrections from War Room + Critic iteration 3 review,
+consolidated with the iteration 2 carryover:
+
+- **Tier A is a read-pattern POC, not a full-loop POC.** Reframed test
+  docstring and module docstring to make this scope explicit: Tier A
+  demonstrates registry-to-consumer wiring; the production lifecycle
+  path (propose -> debate -> vote -> tally -> _validate_eval_weights ->
+  apply_change) is bypassed via direct apply_change() because
+  _validate_eval_weights auto-rejects non-weight evaluation.* SIPs.
+  Tier B narrows the validator scope. Until then, the integration test
+  proves: when apply_change() runs, the next consumer read sees the
+  new value.
+- **Flake regression fixed.** Branch produced 3 additional sandbox
+  flakes vs main (test_output_function, test_numpy_works,
+  test_data_api_functions_available) caused by asyncio event-loop
+  pollution from the @pytest.mark.asyncio tests. Same signature as
+  subsystems H and P fixed last session. Added autouse
+  `_restore_event_loop_after_test` fixture in
+  `tests/test_phase_9b_param_reader_loop.py`, copied verbatim from the
+  precedent files (`tests/test_eval_engine_async_bridge.py`,
+  `tests/test_genesis_regime_review_consumption.py`). After the
+  fixture, only `test_simple_math` remains as a flake — matching
+  parent commit (`bddf808`) and the existing pre-existing flake entry
+  in `DEFERRED_ITEMS_TRACKER.md:291`.
+- **Migration idempotency.** Refactored
+  `phase_9b_tier_a_seed_parameter_registry.py` to use a dialect-aware
+  upsert: `INSERT OR IGNORE` for SQLite, `INSERT ... ON CONFLICT
+  (parameter_key) DO NOTHING` for PostgreSQL. Unsupported dialects
+  raise `RuntimeError` rather than silently producing a non-idempotent
+  insert. New test `test_seed_migration_is_idempotent` runs
+  `_emit_seed_inserts` twice and asserts the registry has exactly 5
+  rows.
+- **Truncation behavior documented.** New test
+  `test_probation_grace_cycles_truncates_fractional_value` asserts
+  that `int(await get_param(...))` truncates 4.7 -> 4 (not rounds to
+  5). Documents intent. Domain enforcement to reject fractional
+  values for integer-semantic parameters is Tier B work (see
+  `DEFERRED_ITEMS_TRACKER.md` entry "Validator does not enforce
+  parameter domain").
+- **Two new entries added to `DEFERRED_ITEMS_TRACKER.md`** under a new
+  "Phase 9B Tier B — Parameter Registry Read Path Continuation"
+  section: `_validate_eval_weights` scope too broad, and validator
+  domain enforcement.
+
+### Manual smoke verification (Andrew's responsibility, after CC submits)
+
+Seed a Postgres dev DB with the new migration, propose a SIP via direct
+DB write, then call `parameter_registry.apply_change()` directly. The
+full lifecycle path is blocked by `_validate_eval_weights` for
+non-weight `evaluation.*` parameters; narrowing that validator is
+Tier B work.
+
+Observe the registry row update, then observe the next
+`_execute_decision` call reading the new value. CC does NOT do this —
+REPL-based smoke tests don't replay cleanly. CC's responsibility ends
+with the test suite passing.
+
 ## [Hotfix] - 2026-05-05 - Strategist/Critic Archive helpers (subsystems F + G) — Critic iteration 3
 
 One MEDIUM blocking finding + two truncation-artifact closures.

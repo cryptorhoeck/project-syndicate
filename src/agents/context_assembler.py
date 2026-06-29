@@ -283,6 +283,7 @@ Short, punchy messages. No corporate jargon. No bullet points. No structured dat
 dumps. Talk like a sharp trader, not a report generator."""
 
         # Genome-driven communication expressiveness
+        genome_rec = None  # bound outside the try so later code can reference it
         try:
             from src.common.models import AgentGenome
             genome_rec = self.db.execute(
@@ -298,6 +299,13 @@ dumps. Talk like a sharp trader, not a report generator."""
         except Exception:
             pass
 
+        # Genome trading-instinct block (Step 3b) — DUAL-GATED, default OFF. Reuses the
+        # genome_rec fetched above; adds nothing to the prompt unless explicitly enabled.
+        try:
+            genome_block = self._genome_context_block(genome_rec, agent)
+        except Exception:
+            genome_block = ""
+
         # Scout-specific anti-starvation directives
         scout_directive = ""
         if agent.type == "scout":
@@ -311,7 +319,7 @@ Cycle: {agent.cycle_count} | Budget remaining today: ${budget_remaining:.4f}
 YOUR ROLE: {role_def.description}
 
 {survival_reality}
-{comm_style}
+{comm_style}{genome_block}
 {scout_directive}{archive_directive}
 AVAILABLE ACTIONS:
 {action_list}
@@ -323,6 +331,44 @@ WARDEN LIMITS:
 
 Respond ONLY in valid JSON matching this schema — no other text:
 {{"situation": "...", "confidence": {{"score": N, "reasoning": "..."}}, "recent_pattern": "...", "action": {{"type": "...", "params": {{...}}}}, "reasoning": "...", "self_note": "..."}}{survival_directive}"""
+
+    def _genome_context_block(self, genome_rec, agent) -> str:
+        """Dual-gated genome->prompt block. Returns "" unless BOTH gates are open.
+
+        Gate 1 (master): config.genome_context_enabled (default OFF).
+        Gate 2 (per-agent): AgentGenome.context_enabled (default False).
+        Fail-safe: a missing / NULL per-agent flag reads as disabled. Because both
+        default off, this adds NOTHING to any prompt until deliberately enabled for a
+        specific agent — so the drifted population stays dark when the master flips.
+        """
+        from src.common.config import config as _cfg
+
+        if not getattr(_cfg, "genome_context_enabled", False):
+            return ""
+        if genome_rec is None or not getattr(genome_rec, "context_enabled", False):
+            return ""
+        if not genome_rec.genome_data:
+            return ""
+
+        # Render ONLY the trading sections. The behavioral knobs (sip_propensity,
+        # communication_expressiveness, alliance_willingness, …) are NOT trading
+        # instincts and must not be shown — an agent should not see its own
+        # meta-behavioral profile (handled elsewhere, deliberately withheld).
+        trading = {
+            k: v
+            for k, v in genome_rec.genome_data.items()
+            if k in ("market_selection", "signal_generation", "plan_construction", "risk_management")
+        }
+        if not trading:
+            return ""
+
+        from src.genome.genome_schema import genome_to_context_string
+
+        return (
+            "\n\nYOUR STRATEGY GENOME (your evolved trading instincts — let these "
+            "bias your decisions):\n"
+            + genome_to_context_string(trading, agent.type, agent.generation)
+        )
 
     def _build_scout_directive(self, agent: Agent) -> str:
         """Build Scout-specific anti-starvation directives.
@@ -610,6 +656,13 @@ Watched markets: {agent.watched_markets or []}""" + self._build_cold_start_notic
             consumed_text = self._consume_pending_archive_results(agent)
             if consumed_text:
                 sections.append(consumed_text)
+
+        # Pending first-party tool consults from prior cycles — ALL roles (every
+        # role has the consult_tool action). Single-cycle round-trip; atomic
+        # consume-once (see _consume_pending_consult_results docstring).
+        consult_text = self._consume_pending_consult_results(agent)
+        if consult_text:
+            sections.append(consult_text)
 
         # Recent cycle history (last 5 cycles with outcomes)
         recent_cycles = (
@@ -1391,6 +1444,151 @@ Review your recent performance and produce a reflection."""
             "=== PRIOR ARCHIVE QUERY RESULTS (delivered this cycle) ===\n"
             f"{body}\n"
             "=== END PRIOR ARCHIVE RESULTS ==="
+        )
+
+    def _consume_pending_consult_results(self, agent: Agent) -> str:
+        """Single-cycle consumer for first-party tool consults (all roles).
+
+        ATOMICITY (mirrors _consume_pending_archive_results): render the pending
+        rows, then mark them 'delivered' in a separate committed transaction, and
+        return the block ONLY after that commit succeeds. If mark-delivered fails,
+        return "" — the rows stay 'pending' and surface again next cycle
+        (at-least-once, used exactly once). A crash between render and
+        mark-delivered therefore CANNOT double-surface a result.
+
+        attempt_count / 'failed' (inherited poison-pill): for a DETERMINISTIC
+        in-tree tool the render cannot fail transiently — it formats a payload we
+        wrote — so this path is a DEFENSIVE guard for a malformed/oversized payload
+        and should effectively never fire. It is wired so such a row can't sit
+        'pending' forever (it caps to 'failed').
+        """
+        from src.common.models import ToolConsultResult as _TCR
+
+        MAX_ATTEMPTS = 3            # poison-pill cap (defensive; see docstring)
+        MAX_PER_CYCLE = 5           # render at most N pending rows per cycle
+
+        # ── PRE-FLIP PASS ── cap rows at the attempt limit so a malformed row
+        # can never sit 'pending' forever (invisible).
+        try:
+            cap_rows = (
+                self.db.query(_TCR)
+                .filter(
+                    _TCR.requesting_agent_id == int(agent.id),
+                    _TCR.status == "pending",
+                    _TCR.attempt_count >= MAX_ATTEMPTS,
+                )
+                .all()
+            )
+            for cap_row in cap_rows:
+                cap_row.status = "failed"
+                if not cap_row.last_error:
+                    cap_row.last_error = (
+                        f"exceeded max consult render attempts ({MAX_ATTEMPTS}) "
+                        f"without successful delivery"
+                    )
+            if cap_rows:
+                self.db.commit()
+        except Exception as exc:
+            logger.warning(
+                "consult_pre_flip_failed",
+                extra={"agent_id": agent.id, "error": str(exc)},
+            )
+
+        # ── CONSUME PASS ── render pending rows (attempt++ BEFORE render so the
+        # cap fires deterministically even if a render raises).
+        try:
+            rows = (
+                self.db.query(_TCR)
+                .filter(
+                    _TCR.requesting_agent_id == int(agent.id),
+                    _TCR.status == "pending",
+                    _TCR.attempt_count < MAX_ATTEMPTS,
+                )
+                .order_by(desc(_TCR.requested_at))
+                .limit(MAX_PER_CYCLE)
+                .all()
+            )
+        except Exception as exc:
+            logger.warning(
+                "consult_pending_query_failed",
+                extra={"agent_id": agent.id, "error": str(exc)},
+            )
+            return ""
+
+        if not rows:
+            return ""
+
+        delivered_ids: list[int] = []
+        sections: list[str] = []
+        for row in rows:
+            row.attempt_count = row.attempt_count + 1
+            try:
+                payload = row.result_payload or {}
+                signals = payload.get("signals") or []
+                lines = [
+                    f"--- {row.tool_name} on {row.market} "
+                    f"(regime: {payload.get('regime', '?')}):"
+                ]
+                if not signals:
+                    lines.append("    (no signals)")
+                else:
+                    for s in signals:
+                        lines.append(
+                            f"    {s.get('source')}: {s.get('direction')} "
+                            f"(confidence {s.get('confidence')}) — {s.get('reason', '')}"
+                        )
+                sections.append("\n".join(lines))
+                delivered_ids.append(int(row.id))
+            except Exception as exc:
+                row.last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "consult_row_render_failed",
+                    extra={
+                        "agent_id": agent.id,
+                        "row_id": getattr(row, "id", None),
+                        "error": str(exc),
+                    },
+                )
+
+        # Commit attempt_count increments (+ any per-row last_error). Mark-delivered
+        # runs as a SEPARATE transaction so it can't roll back the increments.
+        try:
+            self.db.commit()
+        except Exception as exc:
+            logger.warning(
+                "consult_consume_commit_failed",
+                extra={"agent_id": agent.id, "error": str(exc)},
+            )
+            return ""
+
+        if not sections:
+            return ""
+
+        # MARK-DELIVERED. Return the text ONLY after this commits — otherwise the
+        # agent re-sees these rows next cycle (at-least-once, never double-surface).
+        try:
+            self.db.execute(
+                _TCR.__table__.update()
+                .where(_TCR.id.in_(delivered_ids))
+                .values(status="delivered", delivered_at=datetime.now(timezone.utc))
+            )
+            self.db.commit()
+        except Exception as exc:
+            logger.warning(
+                "consult_mark_delivered_failed",
+                extra={
+                    "agent_id": agent.id,
+                    "delivered_ids": delivered_ids,
+                    "error": str(exc),
+                },
+            )
+            return ""
+
+        body = "\n\n".join(sections)
+        return (
+            "=== TOOL RESULTS YOU REQUESTED (delivered this cycle) ===\n"
+            f"{body}\n"
+            "=== END TOOL RESULTS ==="
         )
 
     def _build_pipeline_context(self, agent: Agent) -> str:

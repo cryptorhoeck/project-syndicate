@@ -57,6 +57,7 @@ class MaintenanceService:
             "opportunities_expired": 0,
             "plans_cleaned": 0,
             "memory_pruned": 0,
+            "consult_rows_pruned": 0,
         }
 
         try:
@@ -92,6 +93,18 @@ class MaintenanceService:
                 "maintenance_task_failed",
                 extra={
                     "task": "prune_terminated_agent_memory",
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+            )
+
+        try:
+            results["consult_rows_pruned"] = self.prune_tool_consult_results()
+        except Exception as exc:
+            logger.warning(
+                "maintenance_task_failed",
+                extra={
+                    "task": "prune_tool_consult_results",
                     "error": str(exc),
                     "error_type": type(exc).__name__,
                 },
@@ -172,6 +185,66 @@ class MaintenanceService:
                 session.commit()
                 logger.info(f"Cleaned up {count} stale plans")
 
+            return count
+
+    def prune_tool_consult_results(
+        self,
+        terminal_ttl_hours: int = 24,
+        pending_ttl_hours: int = 6,
+        max_delete: int = 5000,
+    ) -> int:
+        """Prune the consult round-trip queue (rides the hourly maintenance pass).
+
+        Two bounded operations:
+          1. DELETE terminal rows (delivered/failed) older than terminal_ttl_hours
+             (bounded by max_delete). Delivered rows only ever surface once, so
+             they're safe to drop after a grace period; keeps the table small.
+          2. EXPIRE stale 'pending' rows older than pending_ttl_hours -> 'failed'.
+             ORPHAN guard: an agent that queued a consult then was terminated
+             before its next cycle leaves a pending row that can never be consumed;
+             expiring it by age ensures it never lingers or surfaces.
+        """
+        from datetime import timedelta
+        from src.common.models import ToolConsultResult
+
+        now = datetime.now(timezone.utc)
+        with self.db_factory() as session:
+            # 1) Delete old terminal rows (delivered/failed), bounded by count.
+            old_terminal = session.execute(
+                select(ToolConsultResult)
+                .where(
+                    ToolConsultResult.status.in_(("delivered", "failed")),
+                    ToolConsultResult.requested_at
+                    < now - timedelta(hours=terminal_ttl_hours),
+                )
+                .limit(max_delete)
+            ).scalars().all()
+            for row in old_terminal:
+                session.delete(row)
+
+            # 2) Expire stale pending orphans -> failed.
+            stale_pending = session.execute(
+                select(ToolConsultResult).where(
+                    ToolConsultResult.status == "pending",
+                    ToolConsultResult.requested_at
+                    < now - timedelta(hours=pending_ttl_hours),
+                )
+            ).scalars().all()
+            for row in stale_pending:
+                row.status = "failed"
+                if not row.last_error:
+                    row.last_error = (
+                        "expired: pending past TTL (requesting agent likely "
+                        "terminated mid-handoff)"
+                    )
+
+            count = len(old_terminal) + len(stale_pending)
+            if count:
+                session.commit()
+                logger.info(
+                    f"Consult queue prune: deleted {len(old_terminal)} terminal, "
+                    f"expired {len(stale_pending)} stale-pending"
+                )
             return count
 
     def reset_daily_budgets(self) -> int:

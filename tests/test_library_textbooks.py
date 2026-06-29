@@ -18,12 +18,13 @@ def library():
 
 
 def test_list_textbooks(library):
-    """All 8 placeholder textbooks listed."""
+    """All textbooks listed (8 base + the VWAP Deviation Methodology weave entry)."""
     books = library.list_textbooks()
-    assert len(books) == 8
+    assert len(books) == 9
     titles = [b["title"] for b in books]
     assert "Market Mechanics" in titles
     assert "Thinking Efficiently" in titles
+    assert "VWAP Deviation Methodology" in titles
 
 
 def test_list_textbooks_status(library):
