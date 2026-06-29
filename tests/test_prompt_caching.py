@@ -98,7 +98,7 @@ class TestCacheControlConfig:
             client = ClaudeClient(api_key="test-key")
             # We can't easily test the actual API call structure without
             # mocking anthropic, but we verify the client initializes
-            assert client.model == "claude-sonnet-4-20250514"
+            assert client.model == "claude-sonnet-4-6"
 
     def test_caching_disabled_sends_string_system(self):
         """When caching is disabled, system prompt should be a plain string."""
@@ -109,4 +109,4 @@ class TestCacheControlConfig:
             mock_config.prompt_caching_enabled = False
 
             client = ClaudeClient(api_key="test-key")
-            assert client.model == "claude-sonnet-4-20250514"
+            assert client.model == "claude-sonnet-4-6"

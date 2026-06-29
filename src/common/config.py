@@ -200,7 +200,7 @@ class SyndicateConfig(BaseSettings):
     # Phase 3.5: Cost Optimization
     # Model routing
     model_default: str = "claude-haiku-4-5-20251001"
-    model_sonnet: str = "claude-sonnet-4-20250514"
+    model_sonnet: str = "claude-sonnet-4-6"
     model_routing_enabled: bool = True
 
     # Pricing (per million tokens)

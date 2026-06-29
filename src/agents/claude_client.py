@@ -99,7 +99,7 @@ class APIResponse:
 class ClaudeClient:
     """Wrapper around the Anthropic API for agent thinking cycles."""
 
-    DEFAULT_MODEL = "claude-sonnet-4-20250514"
+    DEFAULT_MODEL = "claude-sonnet-4-6"
     MAX_RETRIES = 2
     MAX_OUTPUT_TOKENS = 1024  # agent responses should be concise
 

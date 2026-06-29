@@ -51,7 +51,7 @@ async def get_sip_status(db: Session = Depends(get_db)):
         # Calculate time remaining
         time_remaining = None
         if sip.lifecycle_status == "debate" and sip.debate_ends_at:
-            delta = sip.debate_ends_at.replace(tzinfo=timezone.utc) - now
+            delta = sip.debate_ends_at.astimezone(timezone.utc) - now
             if delta.total_seconds() > 0:
                 hours = int(delta.total_seconds() // 3600)
                 mins = int((delta.total_seconds() % 3600) // 60)
@@ -59,7 +59,7 @@ async def get_sip_status(db: Session = Depends(get_db)):
             else:
                 time_remaining = "advancing..."
         elif sip.lifecycle_status == "voting" and sip.voting_ends_at:
-            delta = sip.voting_ends_at.replace(tzinfo=timezone.utc) - now
+            delta = sip.voting_ends_at.astimezone(timezone.utc) - now
             if delta.total_seconds() > 0:
                 hours = int(delta.total_seconds() // 3600)
                 mins = int((delta.total_seconds() % 3600) // 60)

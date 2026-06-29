@@ -52,7 +52,7 @@ def _build_agent_card_data(agent, session) -> dict:
     if agent.survival_clock_end:
         end = agent.survival_clock_end
         if end.tzinfo is None:
-            end = end.replace(tzinfo=timezone.utc)
+            end = end.astimezone(timezone.utc)
         remaining = (end - datetime.now(timezone.utc)).total_seconds() / 86400
         survival_days = max(0, remaining)
     if agent.status in ("terminated", "dead"):

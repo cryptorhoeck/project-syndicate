@@ -18,16 +18,17 @@ from src.common.models import Agent, SystemState
 
 
 def format_utc_timestamp(ts) -> str:
-    """Format a datetime as ISO 8601 with Z suffix for correct JS parsing.
+    """Format a datetime as ISO 8601 UTC ('Z') for correct JS parsing.
 
-    Database timestamps are stored as naive UTC. This ensures the browser's
-    ``new Date(isoStr)`` interprets them as UTC rather than local time.
+    Naive DB timestamps (``func.now()``) are stored in the server's LOCAL wall time,
+    NOT UTC. ``astimezone(timezone.utc)`` treats a naive value as local and converts it
+    to true UTC before we append 'Z'; aware values are converted directly. Without this,
+    the browser reads a local wall-time as UTC and shows a fixed timezone-offset skew
+    (e.g. everything "3h ago" for fresh events on a UTC-3 machine).
     """
     if ts is None:
         return ""
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def get_db(request: Request):
