@@ -21,6 +21,12 @@ import src.wire.models  # noqa: F401
 
 target_metadata = Base.metadata
 
+# Use the application's DATABASE_URL (from .env) rather than the static
+# sqlalchemy.url in alembic.ini — keeps DB credentials out of the tracked .ini
+# and keeps Alembic in sync with the app config.
+from src.common.config import config as _app_config
+config.set_main_option("sqlalchemy.url", _app_config.database_url)
+
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
 # my_important_option = config.get_main_option("my_important_option")
