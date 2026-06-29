@@ -283,6 +283,7 @@ Short, punchy messages. No corporate jargon. No bullet points. No structured dat
 dumps. Talk like a sharp trader, not a report generator."""
 
         # Genome-driven communication expressiveness
+        genome_rec = None  # bound outside the try so later code can reference it
         try:
             from src.common.models import AgentGenome
             genome_rec = self.db.execute(
@@ -298,6 +299,13 @@ dumps. Talk like a sharp trader, not a report generator."""
         except Exception:
             pass
 
+        # Genome trading-instinct block (Step 3b) — DUAL-GATED, default OFF. Reuses the
+        # genome_rec fetched above; adds nothing to the prompt unless explicitly enabled.
+        try:
+            genome_block = self._genome_context_block(genome_rec, agent)
+        except Exception:
+            genome_block = ""
+
         # Scout-specific anti-starvation directives
         scout_directive = ""
         if agent.type == "scout":
@@ -311,7 +319,7 @@ Cycle: {agent.cycle_count} | Budget remaining today: ${budget_remaining:.4f}
 YOUR ROLE: {role_def.description}
 
 {survival_reality}
-{comm_style}
+{comm_style}{genome_block}
 {scout_directive}{archive_directive}
 AVAILABLE ACTIONS:
 {action_list}
@@ -323,6 +331,32 @@ WARDEN LIMITS:
 
 Respond ONLY in valid JSON matching this schema — no other text:
 {{"situation": "...", "confidence": {{"score": N, "reasoning": "..."}}, "recent_pattern": "...", "action": {{"type": "...", "params": {{...}}}}, "reasoning": "...", "self_note": "..."}}{survival_directive}"""
+
+    def _genome_context_block(self, genome_rec, agent) -> str:
+        """Dual-gated genome->prompt block. Returns "" unless BOTH gates are open.
+
+        Gate 1 (master): config.genome_context_enabled (default OFF).
+        Gate 2 (per-agent): AgentGenome.context_enabled (default False).
+        Fail-safe: a missing / NULL per-agent flag reads as disabled. Because both
+        default off, this adds NOTHING to any prompt until deliberately enabled for a
+        specific agent — so the drifted population stays dark when the master flips.
+        """
+        from src.common.config import config as _cfg
+
+        if not getattr(_cfg, "genome_context_enabled", False):
+            return ""
+        if genome_rec is None or not getattr(genome_rec, "context_enabled", False):
+            return ""
+        if not genome_rec.genome_data:
+            return ""
+
+        from src.genome.genome_schema import genome_to_context_string
+
+        return (
+            "\n\nYOUR STRATEGY GENOME (your evolved trading instincts — let these "
+            "bias your decisions):\n"
+            + genome_to_context_string(genome_rec.genome_data, agent.type, agent.generation)
+        )
 
     def _build_scout_directive(self, agent: Agent) -> str:
         """Build Scout-specific anti-starvation directives.

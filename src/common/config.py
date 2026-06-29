@@ -259,6 +259,10 @@ class SyndicateConfig(BaseSettings):
     consult_tool_cost_usd: float = 0.002
 
     # Phase 8C: Strategy Genome
+    # Weave Step 3b: master kill-switch for genome->prompt injection. DEFAULT OFF.
+    # Even when True, a genome reaches a prompt only for agents whose per-agent
+    # AgentGenome.context_enabled is also True (dual gate; drift stays dark).
+    genome_context_enabled: bool = False
     genome_mutation_rate: float = 0.15
     genome_mutation_strength: float = 0.10
     genome_structural_mutation_rate: float = 0.05

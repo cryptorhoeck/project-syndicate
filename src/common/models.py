@@ -1608,6 +1608,12 @@ class AgentGenome(Base):
     mutations_applied: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     fitness_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     evaluations_with_genome: Mapped[int] = mapped_column(Integer, default=0)
+    # Weave Step 3b: per-agent gate for genome->prompt injection. Default False so
+    # existing/drifted agents stay dark when the master switch flips; only a
+    # deliberately-enabled agent (e.g. the seeded JJ Scout) gets genome-in-prompt.
+    context_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

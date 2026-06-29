@@ -2,6 +2,28 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Weave] - 2026-06-28 - Step 3b: gated genome->prompt wiring (default-OFF)
+
+The colony-wide flip — built dual-gated and default-OFF so merging it changes
+nothing until a specific agent is deliberately enabled.
+
+### What changed
+- **`AgentGenome.context_enabled`** column + migration **`weave_3b_001`** (additive,
+  `server_default='false'`, NOT NULL → existing rows backfill to False; revises head
+  `weave_2b_001`, linear; tested up→down→up incl. backfill-to-False on SQLite).
+- **`config.genome_context_enabled`** master kill-switch, **default OFF**.
+- **`ContextAssembler._genome_context_block`** — dual-gated (master AND per-agent),
+  fail-safe (NULL/missing flag = disabled), wired into `_build_system_prompt` reusing
+  the genome record already fetched for `communication_expressiveness` (that existing
+  path is untouched).
+- **`tests/test_genome_context_wiring.py`** (7) — incl. THE LOAD-BEARING middle case
+  (master ON + per-agent flag OFF → no block: the drifted population stays dark when
+  the master flips), the NULL fail-safe, default-off, and None-safe.
+
+### Validation
+- 7/7 wiring tests pass. Migration up→down→up + backfill-to-False verified. Full
+  suite: **1358 passed, 0 failed** (default-off = zero behavior change).
+
 ## [Weave] - 2026-06-28 - Step 3a: JJ genome seed + seed helper (inert)
 
 First step toward seeding a JJ-flavored agent. INERT by itself — a seeded genome
