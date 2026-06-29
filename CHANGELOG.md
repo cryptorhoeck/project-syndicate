@@ -2,6 +2,31 @@
 
 All notable changes to Project Syndicate will be documented in this file.
 
+## [Weave] - 2026-06-28 - Step 3a: JJ genome seed + seed helper (inert)
+
+First step toward seeding a JJ-flavored agent. INERT by itself — a seeded genome
+influences nothing until the genome->prompt wiring (Step 3b, default-OFF) is enabled
+for that agent. See `STEP3_PLAN.md`.
+
+Coupling finding behind the plan: the genome's TRADING params are read by no
+machine/strategy/trading path today (only `communication_expressiveness` reaches
+behavior). So the prompt is the genome's first behavioral channel for trading, and
+current trading-genome values are unselected drift — which is why Step 3b ships
+default-OFF with per-agent gating (control group, not a blind colony-wide flip).
+
+### What changed
+- **`src/genome/seeds.py`** — `JJ_SCOUT_GENOME` (VWAP/RSI/momentum/volume style mapped
+  from jj-bot, all within `GENOME_BOUNDS`) + `seed_agent_genome(...)` which
+  CLAMPS + validates before persisting (out-of-range hand-authored values corrected,
+  never stored raw).
+- **`tests/test_genome_seeds.py`** (4) — incl. THE GUARD: an out-of-range seed
+  (`rsi_oversold=999`, `momentum=0.1`, …) is clamped to bounds before persist.
+- **`STEP3_PLAN.md`** — written record: the two-part realization (colony-wide Part A
+  vs scoped Part B), the coupling finding, the verified safety story, decisions D1–D4.
+
+### Validation
+- 4/4 seed tests pass (incl. clamp guard). Full suite: **1351 passed, 0 failed**.
+
 ## [Weave] - 2026-06-28 - Step 2b-2b: consumer surfacing + prune (round-trip closed)
 
 JJ is now live in agents' reasoning: a consulted result is surfaced in the
