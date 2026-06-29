@@ -1668,7 +1668,7 @@ Review your recent performance and produce a reflection."""
                 for plan in pending:
                     lines.append(
                         f"  #{plan.id} {plan.plan_name} by {plan.strategist_agent_name} — "
-                        f"{plan.direction} {plan.market} ({plan.position_size_pct:.0%})"
+                        f"{plan.direction} {plan.market} ({plan.position_size_pct:.1f}%)"
                     )
                     lines.append(f"    Thesis: {plan.thesis[:200]}")
                     lines.append(f"    Entry: {plan.entry_conditions[:100]}")
@@ -1688,7 +1688,7 @@ Review your recent performance and produce a reflection."""
                 for plan in approved:
                     lines.append(
                         f"  #{plan.id} {plan.plan_name} — {plan.direction} {plan.market} "
-                        f"({plan.position_size_pct:.0%})"
+                        f"({plan.position_size_pct:.1f}%)"
                     )
                     if plan.critic_risk_notes:
                         lines.append(f"    Risk notes: {plan.critic_risk_notes[:150]}")
