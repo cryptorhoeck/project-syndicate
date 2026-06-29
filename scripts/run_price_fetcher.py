@@ -42,8 +42,12 @@ structlog.configure(
 )
 log = structlog.get_logger("price_fetcher")
 
-# Symbols to track — the core Arena markets
-SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"]
+# Symbols to track — MUST cover the agents' full tradeable universe, otherwise
+# market orders for uncovered symbols hang unfilled (no live price to fill against).
+# Sourced from the agents' watchlists (orientation.py) — the single source of truth —
+# so the price feed cannot silently drift out of sync with what agents actually trade.
+from src.agents.orientation import DEFAULT_WATCHLISTS as _WATCHLISTS
+SYMBOLS = sorted({s for _lst in _WATCHLISTS.values() for s in _lst})
 OHLCV_TIMEFRAMES = ["1h", "4h", "1d"]
 TICKER_INTERVAL = 15    # seconds between ticker fetches
 OHLCV_INTERVAL = 120    # seconds between OHLCV fetches
