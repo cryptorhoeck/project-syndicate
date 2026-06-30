@@ -116,7 +116,7 @@ class ActionExecutor:
             "execute_analysis": self._handle_execute_analysis,
             "run_tool": self._handle_run_tool,
             "consult_tool": self._handle_consult_tool,
-            "modify_genome": self._handle_broadcast,
+            "modify_genome": self._handle_modify_genome,
             # Phase 8B: Survival actions
             "propose_sip": self._handle_propose_sip,
             "vote_on_sip": self._handle_vote_on_sip,
@@ -1369,6 +1369,92 @@ class ActionExecutor:
                 details=f"Analysis failed: {result.error}",
                 cost=result.cost_usd,
             )
+
+    async def _handle_modify_genome(
+        self, agent: Agent, action_type: str, params: dict
+    ) -> ActionResult:
+        """Apply an agent-initiated genome modification through the REAL backend.
+
+        Previously this routed to ``_handle_broadcast``: it posted a chat message and
+        returned FAKE success while the genome never changed — quietly corrupting
+        agents' self-models. This wires the action to ``GenomeManager.modify_genome``
+        and reports HONESTLY: success only when the genome actually changed (and
+        persisted), with a SPECIFIC reason on every rejection. It also enforces the
+        promised cap of 2 modifications per evaluation period, which the backend does
+        not. The backend's signature/tests are untouched.
+        """
+        from sqlalchemy.orm.attributes import flag_modified
+        from src.genome.genome_manager import GenomeManager
+        from src.genome.genome_schema import GENOME_BOUNDS
+
+        parameter_path = params.get("parameter_path")
+        new_value = params.get("new_value")
+        evidence = params.get("evidence") or ""
+        confidence = params.get("confidence") or 0
+
+        # --- Honest, SPECIFIC rejection reasons. The backend collapses every failure
+        #     to None, so we derive the reason here WITHOUT changing the backend. ---
+        if not parameter_path:
+            return ActionResult(success=False, action_type=action_type,
+                                details="Genome modification rejected: no parameter_path provided")
+        if parameter_path not in GENOME_BOUNDS:
+            return ActionResult(success=False, action_type=action_type,
+                                details=f"Genome modification rejected: unknown parameter '{parameter_path}'")
+        low, high = GENOME_BOUNDS[parameter_path]
+        if isinstance(new_value, (int, float)) and (new_value < low or new_value > high):
+            return ActionResult(success=False, action_type=action_type,
+                                details=f"Genome modification rejected: value {new_value} out of range [{low}, {high}]")
+
+        gm = GenomeManager()
+        record = await gm.get_genome_record(agent.id, self.db)
+        if record is None:
+            return ActionResult(success=False, action_type=action_type,
+                                details="Genome modification rejected: agent has no genome on record")
+
+        # --- Cap: max 2 modifications per evaluation period (checked BEFORE applying).
+        #     Each applied mod is tagged with the agent's evaluation_count (the period
+        #     marker, bumped in evaluation_engine.py); counting this-period tags
+        #     self-resets when the next evaluation increments the counter. ---
+        period = agent.evaluation_count or 0
+        existing = record.mutations_applied or {}
+        mods_this_period = sum(
+            1 for v in existing.values()
+            if isinstance(v, dict) and v.get("period") == period
+        )
+        if mods_this_period >= 2:
+            return ActionResult(success=False, action_type=action_type,
+                                details="Genome modification rejected: modification limit reached this evaluation period (max 2)")
+
+        # Capture the old value so the success feedback is honest about what changed.
+        node = record.genome_data
+        parts = parameter_path.split(".")
+        for p in parts[:-1]:
+            node = node.get(p) if isinstance(node, dict) else None
+        old_value = node.get(parts[-1]) if isinstance(node, dict) else None
+        version_before = record.genome_version
+
+        # --- Apply via the REAL backend. ---
+        result = await gm.modify_genome(
+            agent.id, parameter_path, new_value, evidence, confidence, self.db
+        )
+        if result is None:
+            # Pre-validated above; if the backend still rejects, the genome did NOT
+            # change — so we must NOT report success.
+            return ActionResult(success=False, action_type=action_type,
+                                details=f"Genome modification rejected: {parameter_path} could not be applied")
+
+        # Tag the new mutation entry with the evaluation period (for the cap) and force
+        # persistence: genome_data / mutations_applied are plain JSON columns, so the
+        # backend's in-place edits are NOT change-tracked and would be lost on commit.
+        mod_key = f"agent_mod_v{version_before}"
+        if isinstance(record.mutations_applied, dict) and mod_key in record.mutations_applied:
+            record.mutations_applied[mod_key]["period"] = period
+        flag_modified(record, "genome_data")
+        flag_modified(record, "mutations_applied")
+        self.db.flush()
+
+        return ActionResult(success=True, action_type=action_type,
+                            details=f"Genome updated: {parameter_path}: {old_value} → {new_value}")
 
     async def _handle_run_tool(
         self, agent: Agent, action_type: str, params: dict
