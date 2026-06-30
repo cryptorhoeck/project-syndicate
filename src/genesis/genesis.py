@@ -21,6 +21,7 @@ from sqlalchemy.orm import sessionmaker
 from src.agora.schemas import MessageType
 from src.common.base_agent import BaseAgent
 from src.common.config import config
+from src.genome.seeds import ensure_jj_scout
 from src.common.models import (
     Agent,
     DailyReport,
@@ -244,6 +245,20 @@ class GenesisAgent(BaseAgent):
             boot_result = await self._maybe_run_boot_sequence()
             if boot_result:
                 cycle_report["boot_sequence"] = boot_result
+
+            # 0b. JJ SCOUT DESIGNATION — hands-off, self-healing, cohort-of-one.
+            # Keeps exactly one active scout carrying the JJ genome gate whenever the
+            # master switch (config.genome_context_enabled) is ON; a pure no-op when
+            # it's OFF. Self-heals if the JJ scout dies. Side helper — must never take
+            # down the cycle.
+            try:
+                with self.db_session_factory() as jj_session:
+                    jj_id = ensure_jj_scout(jj_session, config)
+                    jj_session.commit()
+                if jj_id is not None:
+                    cycle_report["jj_scout_id"] = jj_id
+            except Exception as exc:
+                self.log.warning("ensure_jj_scout_failed", error=str(exc))
 
             # 1. HEALTH CHECK
             health = self._health_check()

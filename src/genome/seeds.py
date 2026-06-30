@@ -16,7 +16,7 @@ import logging
 
 from sqlalchemy import select
 
-from src.common.models import AgentGenome
+from src.common.models import Agent, AgentGenome
 from src.genome.genome_schema import clamp_genome, validate_genome
 
 logger = logging.getLogger(__name__)
@@ -102,3 +102,53 @@ def enable_genome_context(agent_id: int, db_session) -> None:
     rec.context_enabled = True
     db_session.flush()
     logger.info("enabled genome->prompt gate for agent %s", agent_id)
+
+
+def ensure_jj_scout(db_session, config) -> int | None:
+    """Hands-off, self-healing JJ designation — keeps exactly one JJ scout alive.
+
+    Called every Genesis cycle. If the master switch is ON and no active scout
+    currently carries the JJ genome gate, this designates the longest-lived active
+    scout as the JJ scout (seed JJ genome + enable its per-agent gate). It is:
+
+    - **Master-switch-gated** — returns None (no-op) when
+      ``config.genome_context_enabled`` is False, so the whole feature stays a
+      single ``.env`` flip away from off.
+    - **Cohort-of-one** — does nothing if an active JJ scout already exists, so it
+      never enables a second one. Offspring don't inherit the flag
+      (``genome_manager.create_genome``), so the cohort can't grow on its own.
+    - **Self-healing** — if the JJ scout dies, the next cycle re-designates a fresh
+      one, so the colony always has exactly one JJ scout without manual action.
+
+    Returns the JJ scout's agent_id (existing or newly designated), or None.
+    """
+    if not getattr(config, "genome_context_enabled", False):
+        return None
+    # Already have a live JJ scout? Then we're done (cohort-of-one, idempotent).
+    existing = db_session.execute(
+        select(Agent.id)
+        .join(AgentGenome, AgentGenome.agent_id == Agent.id)
+        .where(
+            Agent.type == "scout",
+            Agent.status == "active",
+            AgentGenome.context_enabled.is_(True),
+        )
+    ).first()
+    if existing is not None:
+        return existing[0]
+    # Otherwise designate the longest-lived active scout as the JJ scout.
+    scout = (
+        db_session.execute(
+            select(Agent)
+            .where(Agent.type == "scout", Agent.status == "active")
+            .order_by(Agent.id)
+        )
+        .scalars()
+        .first()
+    )
+    if scout is None:
+        return None  # no active scout yet (pre-spawn) — try again next cycle
+    seed_agent_genome(scout.id, jj_scout_genome(), JJ_SEED_ROLE, db_session)
+    enable_genome_context(scout.id, db_session)
+    logger.info("ensure_jj_scout: auto-designated agent %s as the JJ scout", scout.id)
+    return scout.id

@@ -14,6 +14,7 @@ from src.genome.genome_schema import validate_genome
 from src.genome.seeds import (
     JJ_SCOUT_GENOME,
     enable_genome_context,
+    ensure_jj_scout,
     jj_scout_genome,
     seed_agent_genome,
 )
@@ -131,3 +132,71 @@ async def test_offspring_do_not_inherit_context_enabled(db_session_factory):
     session.commit()
     off = session.query(AgentGenome).filter_by(agent_id=offspring.id).one()
     assert off.context_enabled is False  # gated OFF — cohort stays a cohort of one
+
+
+# ---------------------------------------------------------------------------
+# ensure_jj_scout — hands-off, self-healing, cohort-of-one auto-designation.
+# ---------------------------------------------------------------------------
+
+class _Cfg:
+    """Minimal stand-in for the app config (only the master switch matters here)."""
+    def __init__(self, on: bool):
+        self.genome_context_enabled = on
+
+
+def _active_enabled_scouts(session) -> int:
+    return (
+        session.query(AgentGenome)
+        .join(Agent, Agent.id == AgentGenome.agent_id)
+        .filter(Agent.status == "active", AgentGenome.context_enabled.is_(True))
+        .count()
+    )
+
+
+def test_ensure_jj_scout_noop_when_master_off(db_session_factory):
+    session = db_session_factory()
+    _agent(session, name="Scout-1")
+    assert ensure_jj_scout(session, _Cfg(False)) is None  # master OFF -> no-op
+    assert _active_enabled_scouts(session) == 0
+
+
+def test_ensure_jj_scout_noop_without_scouts(db_session_factory):
+    session = db_session_factory()
+    assert ensure_jj_scout(session, _Cfg(True)) is None  # nothing to designate yet
+
+
+def test_ensure_jj_scout_designates_longest_lived_scout(db_session_factory):
+    session = db_session_factory()
+    first = _agent(session, name="Scout-1")
+    _agent(session, name="Scout-2")
+    jid = ensure_jj_scout(session, _Cfg(True))
+    session.commit()
+    assert jid == first.id  # longest-lived (lowest id)
+    rec = session.query(AgentGenome).filter_by(agent_id=first.id).one()
+    assert rec.context_enabled is True
+    assert rec.genome_data["signal_generation"]["rsi_oversold"] == 30  # JJ genome
+    assert _active_enabled_scouts(session) == 1  # cohort-of-one
+
+
+def test_ensure_jj_scout_is_idempotent(db_session_factory):
+    session = db_session_factory()
+    first = _agent(session, name="Scout-1")
+    _agent(session, name="Scout-2")
+    a = ensure_jj_scout(session, _Cfg(True)); session.commit()
+    b = ensure_jj_scout(session, _Cfg(True)); session.commit()
+    assert a == b == first.id  # never enables a second one
+    assert _active_enabled_scouts(session) == 1
+
+
+def test_ensure_jj_scout_self_heals_when_jj_scout_dies(db_session_factory):
+    session = db_session_factory()
+    first = _agent(session, name="Scout-1")
+    second = _agent(session, name="Scout-2")
+    assert ensure_jj_scout(session, _Cfg(True)) == first.id
+    session.commit()
+    first.status = "terminated"  # the JJ scout dies
+    session.commit()
+    healed = ensure_jj_scout(session, _Cfg(True))
+    session.commit()
+    assert healed == second.id  # re-designated the surviving scout
+    assert _active_enabled_scouts(session) == 1  # still exactly one among the living
