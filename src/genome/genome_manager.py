@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select, desc
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from src.common.config import config
 from src.common.models import AgentGenome
@@ -130,6 +131,14 @@ class GenomeManager:
 
         record.genome_version += 1
         record.updated_at = datetime.now(timezone.utc)
+
+        # genome_data and mutations_applied are plain JSON columns — SQLAlchemy does
+        # NOT change-track in-place edits, so without flag_modified these writes are
+        # silently dropped on commit. That made every successful-looking modification a
+        # fake-success: the return value reflects the change but the DB never sees it.
+        # Flag both so a non-None return genuinely means the genome persisted.
+        flag_modified(record, "genome_data")
+        flag_modified(record, "mutations_applied")
         db_session.flush()
 
         return record.genome_data

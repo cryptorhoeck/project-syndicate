@@ -204,6 +204,45 @@ class TestGenomeManager:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_modify_genome_persists_across_session(self):
+        """Persistence guard: a modification must survive commit AND a fresh session.
+
+        The backend edits ``genome_data`` in place on a plain ``JSON`` column, which
+        SQLAlchemy does NOT change-track — without ``flag_modified`` the write is
+        silently dropped on commit (the second layer of fake-success underneath the
+        modify_genome wiring). The other modify tests check only the in-memory return
+        and never reload, which is exactly how that bug survived. This reloads in a
+        BRAND-NEW session on the same engine to prove the value actually stuck.
+        """
+        from sqlalchemy.orm import sessionmaker
+        from src.genome.genome_manager import GenomeManager
+
+        db = _make_db()
+        db.add(Agent(id=1, name="S1", type="scout", status="active",
+                     reputation_score=100, generation=1))
+        db.commit()
+
+        mgr = GenomeManager()
+        await mgr.create_genome(1, "scout", db_session=db)
+        db.commit()
+        await mgr.modify_genome(
+            1, "signal_generation.rsi_oversold", 25, "Works better at 25", 8, db
+        )
+        db.commit()
+
+        engine = db.get_bind()
+        db.close()
+
+        # Fresh session on the SAME engine — did the in-place edit actually persist?
+        fresh = sessionmaker(bind=engine)()
+        reloaded = await mgr.get_genome(1, fresh)
+        assert reloaded["signal_generation"]["rsi_oversold"] == 25, (
+            "genome modification did not persist across a fresh session — the "
+            "in-place JSON edit was dropped on commit (flag_modified missing)."
+        )
+        fresh.close()
+
+    @pytest.mark.asyncio
     async def test_fitness_increases_with_age(self):
         """Fitness bonus grows with evaluations_with_genome."""
         from src.genome.genome_manager import GenomeManager

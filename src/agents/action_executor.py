@@ -1443,15 +1443,15 @@ class ActionExecutor:
             return ActionResult(success=False, action_type=action_type,
                                 details=f"Genome modification rejected: {parameter_path} could not be applied")
 
-        # Tag the new mutation entry with the evaluation period (for the cap) and force
-        # persistence: genome_data / mutations_applied are plain JSON columns, so the
-        # backend's in-place edits are NOT change-tracked and would be lost on commit.
+        # Tag the new mutation entry with the evaluation period (for the cap). The
+        # backend now persists genome_data + the mutation entry itself (flag_modified);
+        # this period tag is our own nested edit, so flag_modified it too — plain JSON
+        # columns don't change-track in-place writes.
         mod_key = f"agent_mod_v{version_before}"
         if isinstance(record.mutations_applied, dict) and mod_key in record.mutations_applied:
             record.mutations_applied[mod_key]["period"] = period
-        flag_modified(record, "genome_data")
-        flag_modified(record, "mutations_applied")
-        self.db.flush()
+            flag_modified(record, "mutations_applied")
+            self.db.flush()
 
         return ActionResult(success=True, action_type=action_type,
                             details=f"Genome updated: {parameter_path}: {old_value} → {new_value}")
