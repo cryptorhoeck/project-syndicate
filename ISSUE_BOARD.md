@@ -25,7 +25,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 | 1  | 🔴 | **`clean_slate` is leaky** — the foundation | **DONE** | ✅ `e21d057` | ✅ byte-verified |
 | 4+7 | 🔴🟡 | **DB-rebuild wound** — broken migration chain + no `init_fresh_db.py` (one problem) | **DONE** | ✅ `1c58d83` | ✅ byte-verified |
 | 2  | 🔴 | **Opportunity `expires_at` never set** — structured pipeline path is dead | **DONE** | ✅ `889a6c9` | ✅ byte-verified |
-| 5  | 🔷 | **Conditional-entry execution** — operator was blind to conditions + no trigger machinery (cure (b): drop the fiction) | FIX-PENDING-VERIFY | ✅ `fix/operator-sees-conditions` | ⏳ |
+| 5  | 🔷 | **Conditional-entry execution** — operator was blind to conditions + no trigger machinery (cure (b): drop the fiction) | **DONE** | ✅ `49c159d` | ✅ byte-verified |
 | 6  | 🟡 | **JSON-persistence audit** — zero `MutableDict` columns model-wide | OPEN | — | — |
 | 3  | 🔴 | **Critic budget-burn / verbosity** — Arbiter talks itself broke, hibernates pre-trade | OPEN | — | — |
 | 8  | 🟡 | **Informal pre-approval / pipeline enforcement** — re-check now clock/roster fixed | OPEN | — | — |
@@ -35,7 +35,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 | 12 | 🟢 | **`test_master_switch_defaults_off`** — the session-long "1 failed" red; resolve, don't shrug | OPEN | — | — |
 | 13 | 🟢 | Roster "slow operator" header caveat | **DONE** | ✅ cd1fb37 | ✅ byte-read |
 
-**Live: 7 open · 1 pending-verify (#5) · 4 done.**  *(live-boot confirm for #1, #4, #5 batched into the end-of-cleanup re-fly)*
+**Live: 7 open · 5 done.**  *(live-boot / behavioral confirm for #1, #4, #5 batched into the end-of-cleanup re-fly)*
 
 ---
 
