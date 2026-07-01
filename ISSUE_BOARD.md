@@ -26,7 +26,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 | 4+7 | 🔴🟡 | **DB-rebuild wound** — broken migration chain + no `init_fresh_db.py` (one problem) | **DONE** | ✅ `1c58d83` | ✅ byte-verified |
 | 2  | 🔴 | **Opportunity `expires_at` never set** — structured pipeline path is dead | **DONE** | ✅ `889a6c9` | ✅ byte-verified |
 | 5  | 🔷 | **Conditional-entry execution** — operator was blind to conditions + no trigger machinery (cure (b): drop the fiction) | **DONE** | ✅ `49c159d` | ✅ byte-verified |
-| 6  | 🟡 | **JSON-persistence audit** — swept 27 JSON cols; 1 real bug (temperature_history) | FIX-PENDING-VERIFY | ✅ `fix/temperature-history-persist` | ⏳ |
+| 6  | 🟡 | **JSON-persistence audit** — swept 27 JSON cols; 1 real bug (temperature_history) | **DONE** | ✅ `b9765bc` | ✅ byte-verified |
 | 3  | 🔴 | **Critic budget-burn / verbosity** — Arbiter talks itself broke, hibernates pre-trade | OPEN | — | — |
 | 8  | 🟡 | **Informal pre-approval / pipeline enforcement** — re-check now clock/roster fixed | OPEN | — | — |
 | 9  | 🟡 | **Governance/SIP follow-through** — do passed SIPs change behavior? | OPEN | — | — |
@@ -35,7 +35,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 | 12 | 🟢 | **`test_master_switch_defaults_off`** — the session-long "1 failed" red; resolve, don't shrug | OPEN | — | — |
 | 13 | 🟢 | Roster "slow operator" header caveat | **DONE** | ✅ cd1fb37 | ✅ byte-read |
 
-**Live: 6 open · 1 pending-verify (#6) · 5 done.**  *(live-boot / behavioral confirm for #1, #4, #5 batched into the end-of-cleanup re-fly)*
+**Live: 6 open · 6 done.**  *(live-boot / behavioral confirm for #1, #4, #5 batched into the end-of-cleanup re-fly)*
 
 ---
 
