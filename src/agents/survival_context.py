@@ -280,7 +280,9 @@ class SurvivalContextAssembler:
 
         lines = [
             "COLONY ROSTER — who is active right now. Route to these teammates by "
-            "name; do NOT assume a role is empty just because it is quiet:"
+            "name; do NOT assume a role is empty just because it is quiet. Roles cycle "
+            "at different rates — a teammate last active minutes ago is normal and "
+            "healthy, not absent or lagging:"
         ]
         for role in roles:
             members = by_role[role]
