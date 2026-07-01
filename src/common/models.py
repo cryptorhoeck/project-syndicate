@@ -36,6 +36,11 @@ from sqlalchemy.orm import (
     relationship,
 )
 
+# Side-effect import: registers the global connect-time listener that pins every
+# Postgres connection to a UTC session timezone (naive timestamps == UTC everywhere).
+# Imported here because models.py loads before any engine is used for DB work.
+from src.common import db_timezone  # noqa: F401,E402
+
 # ---------------------------------------------------------------------------
 # Database URL configuration
 # ---------------------------------------------------------------------------

@@ -121,15 +121,22 @@ def _preflight_checks() -> bool:
     """Verify all subsystems are operational before launch."""
     checks_passed = True
 
-    # Database
+    # Database + UTC session guard.
+    # The session MUST be UTC: naive timestamps are stored UTC everywhere and every
+    # age computation assumes it. If the session drifts to local time (the OS-locale
+    # default that caused the maiden-launch 3h skew), refuse to boot loudly rather
+    # than silently skewing. The suite can't catch this — it runs on SQLite — so this
+    # boot-time assertion is the durable guard.
     try:
         from sqlalchemy import create_engine, text
         from src.common.config import config
+        from src.common.db_timezone import assert_session_utc
         engine = create_engine(config.database_url, pool_pre_ping=True)
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
+            session_tz = assert_session_utc(conn)  # raises if not UTC
         engine.dispose()
-        log.info("preflight_db", status="OK")
+        log.info("preflight_db", status="OK", session_tz=session_tz)
     except Exception as e:
         log.error("preflight_db", status="FAIL", error=str(e))
         checks_passed = False

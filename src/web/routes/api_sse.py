@@ -82,8 +82,8 @@ def _format_event(msg) -> dict:
     now = datetime.now(timezone.utc)
     ts = msg.timestamp
     if ts and ts.tzinfo is None:
-        # Naive DB timestamps are LOCAL (func.now()); convert local -> true UTC.
-        ts = ts.astimezone(timezone.utc)
+        # Naive DB timestamps are UTC (session pinned; see src.common.db_timezone).
+        ts = ts.replace(tzinfo=timezone.utc)
     if ts:
         delta = (now - ts).total_seconds()
         if delta < 60:

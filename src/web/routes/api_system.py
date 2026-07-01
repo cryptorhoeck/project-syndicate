@@ -86,7 +86,7 @@ async def system_processes(request: Request):
         if dt is None:
             return "never"
         if dt.tzinfo is None:
-            dt = dt.astimezone(timezone.utc)
+            dt = dt.replace(tzinfo=timezone.utc)
         diff = now - dt
         secs = int(diff.total_seconds())
         if secs < 60:
@@ -99,7 +99,7 @@ async def system_processes(request: Request):
         if dt is None:
             return False
         if dt.tzinfo is None:
-            dt = dt.astimezone(timezone.utc)
+            dt = dt.replace(tzinfo=timezone.utc)
         return (now - dt).total_seconds() < max_seconds
 
     processes = [
