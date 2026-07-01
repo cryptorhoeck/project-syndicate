@@ -47,6 +47,7 @@ class SurvivalContextAssembler:
         sections.append(self._build_countdown(agent))
         sections.append(self._build_standing(agent, db_session))
         sections.append(self._build_competition(agent, db_session))
+        sections.append(self._build_colony_roster(db_session))
         sections.append(self._build_death_feed(db_session))
         sections.append(self._build_ecosystem_pulse(db_session))
 
@@ -240,6 +241,72 @@ class SurvivalContextAssembler:
             )
 
         return "\n".join(lines)
+
+    def _build_colony_roster(self, db_session: Session) -> str:
+        """The full active roster — every teammate by role, name, and recency.
+
+        Agents otherwise see only their SAME-role peers (``_build_competition``) and a
+        bare head count (``_build_ecosystem_pulse``), so they cannot tell whether other
+        roles are staffed and infer 'no operator / execution unmanned' from Agora
+        silence. This states the real roster plainly so agents route to real teammates
+        by name instead of broadcasting into the void.
+        """
+        try:
+            agents = list(
+                db_session.execute(
+                    select(Agent)
+                    .where(Agent.status == "active", Agent.id != 0)
+                    .order_by(Agent.type, Agent.name)
+                ).scalars().all()
+            )
+        except Exception:
+            return ""
+        if not agents:
+            return ""
+
+        now = datetime.now(timezone.utc)
+        role_order = ["scout", "strategist", "critic", "operator"]
+        by_role: dict[str, list] = {}
+        for a in agents:
+            by_role.setdefault(a.type, []).append(a)
+        roles = [r for r in role_order if r in by_role] + [
+            r for r in sorted(by_role) if r not in role_order
+        ]
+
+        lines = [
+            "COLONY ROSTER — who is active right now. Route to these teammates by "
+            "name; do NOT assume a role is empty just because it is quiet:"
+        ]
+        for role in roles:
+            members = by_role[role]
+            lines.append(f"  {role.capitalize()}s ({len(members)}):")
+            for a in members:
+                recency = self._format_recency(a.last_cycle_at, now)
+                lines.append(f"    - {a.name} — last active {recency}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_recency(ts, now) -> str:
+        """Human 'X ago' for a last-active timestamp.
+
+        ``last_cycle_at`` is written from ``datetime.now(timezone.utc)`` and stored in a
+        naive column, so a naive value is UTC wall-time — re-attaching UTC is correct
+        (matches this file's existing convention for ``updated_at``).
+        """
+        if ts is None:
+            return "not yet (still initializing)"
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        secs = (now - ts).total_seconds()
+        if secs < 0:
+            return "just now"
+        if secs < 90:
+            return f"{int(secs)}s ago"
+        if secs < 5400:
+            return f"{int(secs // 60)}m ago"
+        if secs < 172800:
+            return f"{int(secs // 3600)}h ago"
+        return f"{int(secs // 86400)}d ago"
 
     def _build_death_feed(self, db_session: Session) -> str:
         """Build recent deaths section."""

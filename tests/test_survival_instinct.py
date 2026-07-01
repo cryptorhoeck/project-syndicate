@@ -123,7 +123,13 @@ class TestSurvivalContextAssembler:
         db.close()
 
     def test_competition_lists_same_role(self):
-        """Competition shows only agents of the same role."""
+        """The COMPETITION section shows only agents of the same role.
+
+        Asserted against ``_build_competition`` directly, not the whole assembled
+        context: the full context now also includes a COLONY ROSTER that lists ALL
+        roles by design (the 'no-operator' self-awareness fix), so a cross-role name
+        legitimately appears elsewhere in ``assemble()`` — just not in competition.
+        """
         from src.agents.survival_context import SurvivalContextAssembler
 
         db = _make_db()
@@ -132,10 +138,10 @@ class TestSurvivalContextAssembler:
         _make_agent(db, id=3, name="Strategist-A", type="strategist")
 
         sca = SurvivalContextAssembler()
-        result = sca.assemble(agent, db)
+        competition = sca._build_competition(agent, db)
 
-        assert "Scout-B" in result
-        assert "Strategist-A" not in result
+        assert "Scout-B" in competition
+        assert "Strategist-A" not in competition
         db.close()
 
     def test_competition_sorted_by_score(self):
