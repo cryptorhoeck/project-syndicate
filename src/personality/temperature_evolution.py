@@ -15,6 +15,7 @@ from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from src.common.config import config
 from src.common.models import Agent, AgentCycle
@@ -129,6 +130,12 @@ class TemperatureEvolution:
             "timestamp": period_end.isoformat(),
         })
         agent.temperature_history = history
+        # temperature_history is a plain JSON column (no MutableDict). When it already had
+        # entries, `history` is the SAME object we just mutated, so the reassignment above is
+        # a no-op for change tracking and the append is silently lost on flush — an agent
+        # would keep only its FIRST history entry. Force the dirty flag so every evolution's
+        # entry persists (same mechanism as the modify_genome fix in genome_manager).
+        flag_modified(agent, "temperature_history")
         session.add(agent)
 
         self.log.info(

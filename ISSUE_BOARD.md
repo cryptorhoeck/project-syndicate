@@ -26,7 +26,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 | 4+7 | 🔴🟡 | **DB-rebuild wound** — broken migration chain + no `init_fresh_db.py` (one problem) | **DONE** | ✅ `1c58d83` | ✅ byte-verified |
 | 2  | 🔴 | **Opportunity `expires_at` never set** — structured pipeline path is dead | **DONE** | ✅ `889a6c9` | ✅ byte-verified |
 | 5  | 🔷 | **Conditional-entry execution** — operator was blind to conditions + no trigger machinery (cure (b): drop the fiction) | **DONE** | ✅ `49c159d` | ✅ byte-verified |
-| 6  | 🟡 | **JSON-persistence audit** — zero `MutableDict` columns model-wide | OPEN | — | — |
+| 6  | 🟡 | **JSON-persistence audit** — swept 27 JSON cols; 1 real bug (temperature_history) | FIX-PENDING-VERIFY | ✅ `fix/temperature-history-persist` | ⏳ |
 | 3  | 🔴 | **Critic budget-burn / verbosity** — Arbiter talks itself broke, hibernates pre-trade | OPEN | — | — |
 | 8  | 🟡 | **Informal pre-approval / pipeline enforcement** — re-check now clock/roster fixed | OPEN | — | — |
 | 9  | 🟡 | **Governance/SIP follow-through** — do passed SIPs change behavior? | OPEN | — | — |
@@ -35,7 +35,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 | 12 | 🟢 | **`test_master_switch_defaults_off`** — the session-long "1 failed" red; resolve, don't shrug | OPEN | — | — |
 | 13 | 🟢 | Roster "slow operator" header caveat | **DONE** | ✅ cd1fb37 | ✅ byte-read |
 
-**Live: 7 open · 5 done.**  *(live-boot / behavioral confirm for #1, #4, #5 batched into the end-of-cleanup re-fly)*
+**Live: 6 open · 1 pending-verify (#6) · 5 done.**  *(live-boot / behavioral confirm for #1, #4, #5 batched into the end-of-cleanup re-fly)*
 
 ---
 
@@ -134,6 +134,20 @@ silently fail to persist (the `modify_genome` class we caught + fixed). *Action:
 all in-place JSON writes; `flag_modified` at each mutation site (not `MutableDict` —
 it doesn't track nested edits).
 
+> **AUDIT (co-signed by CW) + CC FIX-PENDING-VERIFY (branch `fix/temperature-history-persist`).**
+> Swept all **27** JSON columns (23 models.py + 4 wire) — **zero `MutableDict`-wrapped**.
+> Classified every writer across three failure patterns: (a) in-place `.field[k]=v`/`.append`
+> — only **2 sites** (`mutations_applied`), both already `flag_modified`'d (the modify_genome
+> fix); (b) reassign-**new**-object (`watched_markets` `list(set(...))`, `lineage_manager:45`
+> fresh param, `seeds:77` `clamp_genome` result, `orientation:513` fresh watchlist) — safe;
+> (c) reassign-**same**-object — **1 real bug: `temperature_evolution.py:121-131`**
+> (`temperature_history` kept only its FIRST entry; proven empirically, reproduced by CW).
+> Everything else is write-once/read-only. modify_genome was NOT unique but NOT endemic — one
+> other instance. *Fix (CW's call: `flag_modified` over the list-copy — explicit intent vs
+> identity side-effect):* `flag_modified(agent, "temperature_history")` after the reassign.
+> Test `tests/test_temperature_history_persist.py` calls the **real** `evolve()` 3× across
+> separate sessions → **1→2→3** (fail-before: stalls at 1). Full suite 1394 passed, +0 new.
+
 ### 3 · 🔴 Critic budget-burn / verbosity
 Arbiter re-posts approval criteria ~5× and hibernates on budget before a trade fires.
 Clock's fixed, so this is now a genuine pacing bug, not a staleness symptom. *Fix:* tune
@@ -178,3 +192,9 @@ alembic `.env` (`d4238eb`) · `syndicate.bat` path · dead Sonnet model id + web
   pretended-done): parse `entry_conditions` into evaluable predicates, watch live
   volume/VWAP/RSI, fire `execute_trade` when a plan's condition is met. Real conditional
   execution — a substantial new subsystem. Only build if/when true triggered entry is wanted.
+- **JSON mutation-tracking root fix** (from #6, CW's flag — a *consideration*, not scheduled):
+  27 plain JSON columns + zero `MutableDict` wrapping is a standing invitation for the
+  silent-drop bug class to recur on every new in-place JSON edit. We've now fixed 2 instances
+  reactively (modify_genome, temperature_history). Durable option: wrap the high-churn JSON
+  columns in `MutableDict.as_mutable(JSON)` (+ `MutableList`) so tracking is automatic. Bigger
+  call (touches column types); logged so it's a decision, not a default.
