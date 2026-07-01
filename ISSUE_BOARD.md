@@ -23,7 +23,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 | # | Sev | Item | Status | CC ✓ | CW ✓ |
 |---|-----|------|--------|------|------|
 | 1  | 🔴 | **`clean_slate` is leaky** — the foundation | **DONE** | ✅ `e21d057` | ✅ byte-verified |
-| 4+7 | 🔴🟡 | **DB-rebuild wound** — broken migration chain + no `init_fresh_db.py` (one problem) | OPEN | — | — |
+| 4+7 | 🔴🟡 | **DB-rebuild wound** — broken migration chain + no `init_fresh_db.py` (one problem) | FIX-PENDING-VERIFY | ✅ `fix/init-fresh-db` | ⏳ |
 | 2  | 🔴 | **Opportunity `expires_at` never set** — structured pipeline path is dead | OPEN | — | — |
 | 5  | 🔷 | **Conditional-entry execution** — can the operator fire an armed plan, or does it sit forever? *(trace early)* | OPEN | — | — |
 | 6  | 🟡 | **JSON-persistence audit** — zero `MutableDict` columns model-wide | OPEN | — | — |
@@ -35,7 +35,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 | 12 | 🟢 | **`test_master_switch_defaults_off`** — the session-long "1 failed" red; resolve, don't shrug | OPEN | — | — |
 | 13 | 🟢 | Roster "slow operator" header caveat | **DONE** | ✅ cd1fb37 | ✅ byte-read |
 
-**Live: 11 open · 2 done.**
+**Live: 10 open · 1 pending-verify (#4+7) · 2 done.**
 
 ---
 
@@ -66,6 +66,23 @@ corrupt**, so a fresh DB needs `create_all` + manual seeding. #7 (no `init_fresh
 is the same wound. *Fix:* repair the chain to a single linear head **or** author a
 first-class `init_fresh_db.py` (create_all + seed system_state/wire_sources/
 parameter_registry/agora_channels + `ALTER DATABASE … SET timezone TO 'UTC'`), tested.
+
+> **CC — FIX-PENDING-VERIFY (branch `fix/init-fresh-db`).** Trace settled it: the chain is
+> structurally linear but never builds from base — **7** live tables have no `create_table`
+> migration (agent_genomes, system_improvement_proposals, agent_alliances, agent_tools,
+> intel_accuracy_tracking, intel_challenges, sandbox_executions); `Base.metadata` (create_all's
+> output) is a **perfect set-match with the live DB, 60=60, zero drift**. Cure =
+> `scripts/init_fresh_db.py`: `create_all` + `ALTER DATABASE … UTC` + the seeds it owns
+> (parameter_registry, wire_sources+health, the 10 agora_channels incl the 3 boot-required
+> system channels) + stamp head (resolved dynamically, written directly — env.py forces the
+> app URL) + no-clobber guard + a header naming the "migrations retired as build path"
+> decision. **Seed ownership resolved in the bytes:** init owns the data-migration seeds;
+> boot get-or-creates `system_state` + Genesis (disjoint, no collision). Test
+> `tests/test_init_fresh_db.py` builds a *separate* temp DB from nothing, asserts
+> complete+seeded+UTC-born+stamped, tears it down in `finally` (opt-in `RUN_INIT_FRESH_PG=1`;
+> passed, temp DB confirmed gone). Full suite +0 new. **Going-forward discipline (separate
+> call, not a #4 blocker):** CW's lean = create_all is the build path, hand-written ALTERs
+> for rare live changes, migrations stay historical.
 
 ### 2 · 🔴 Opportunity `expires_at` never set
 `action_executor.py:149` creates `Opportunity` with no `expires_at` (→ `None`), so the
