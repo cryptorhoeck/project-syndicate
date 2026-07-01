@@ -22,7 +22,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 
 | # | Sev | Item | Status | CC ✓ | CW ✓ |
 |---|-----|------|--------|------|------|
-| 1  | 🔴 | **`clean_slate` is leaky** — the foundation | FIX-PENDING-VERIFY | ✅ `fix/clean-slate-complete` | ⏳ |
+| 1  | 🔴 | **`clean_slate` is leaky** — the foundation | **DONE** | ✅ `e21d057` | ✅ byte-verified |
 | 4+7 | 🔴🟡 | **DB-rebuild wound** — broken migration chain + no `init_fresh_db.py` (one problem) | OPEN | — | — |
 | 2  | 🔴 | **Opportunity `expires_at` never set** — structured pipeline path is dead | OPEN | — | — |
 | 5  | 🔷 | **Conditional-entry execution** — can the operator fire an armed plan, or does it sit forever? *(trace early)* | OPEN | — | — |
@@ -35,7 +35,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 | 12 | 🟢 | **`test_master_switch_defaults_off`** — the session-long "1 failed" red; resolve, don't shrug | OPEN | — | — |
 | 13 | 🟢 | Roster "slow operator" header caveat | **DONE** | ✅ cd1fb37 | ✅ byte-read |
 
-**Live: 12 open · 1 done.**
+**Live: 11 open · 2 done.**
 
 ---
 
