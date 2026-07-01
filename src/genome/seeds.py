@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from src.common.models import Agent, AgentGenome
 from src.genome.genome_schema import clamp_genome, validate_genome
@@ -124,6 +124,14 @@ def ensure_jj_scout(db_session, config) -> int | None:
     """
     if not getattr(config, "genome_context_enabled", False):
         return None
+    # Defensive depth: never let JJ designation hang a Genesis cycle. Even with the
+    # boot-sequence genome race fixed, a hard per-statement timeout means lock
+    # contention aborts this step (caught + logged by the caller) rather than freezing
+    # the colony, as it did on the maiden launch.
+    try:
+        db_session.execute(text("SET LOCAL statement_timeout = '5000'"))  # 5s (Postgres)
+    except Exception:
+        pass  # non-Postgres backend (e.g. SQLite in tests) — best effort
     # Already have a live JJ scout? Then we're done (cohort-of-one, idempotent).
     existing = db_session.execute(
         select(Agent.id)

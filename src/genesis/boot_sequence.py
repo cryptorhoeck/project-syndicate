@@ -318,31 +318,25 @@ class BootSequenceOrchestrator:
         session.add(lineage)
         session.flush()
 
-        # Phase 8C: Create initial genome for Gen 1 agent
+        # Phase 8C: Create the Gen 1 agent's initial genome SYNCHRONOUSLY, in this same
+        # session, so it commits atomically with the wave (see _process_wave).
+        #
+        # The prior asyncio.ensure_future(create_genome(...)) path fire-and-forgot an
+        # un-awaited coroutine that shared this session and never committed on that path:
+        # the genome INSERT sat 'idle in transaction' holding locks and deadlocked
+        # concurrent genome writers (the maiden-launch freeze; those were the
+        # "coroutine was never awaited" RuntimeWarnings). Warm-start is moot at a cold
+        # boot (get_highest_fitness_genome finds nothing on a zero-agent start), so a
+        # fresh random genome is behaviour-equivalent here, minus the hazard.
         try:
-            from src.genome.genome_manager import GenomeManager
-            import asyncio
-            genome_mgr = GenomeManager()
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # Schedule as task — will run in the current event loop
-                    asyncio.ensure_future(genome_mgr.create_genome(
-                        agent_id=agent.id, role=agent.type, db_session=session,
-                    ))
-                else:
-                    loop.run_until_complete(genome_mgr.create_genome(
-                        agent_id=agent.id, role=agent.type, db_session=session,
-                    ))
-            except RuntimeError:
-                # No event loop — create genome synchronously
-                from src.genome.genome_schema import create_random_genome
-                from src.common.models import AgentGenome
-                genome_data = create_random_genome(agent.type)
-                session.add(AgentGenome(
-                    agent_id=agent.id, genome_version=1, genome_data=genome_data,
-                ))
-                session.flush()
+            from src.genome.genome_schema import create_random_genome
+            from src.common.models import AgentGenome
+            session.add(AgentGenome(
+                agent_id=agent.id,
+                genome_version=1,
+                genome_data=create_random_genome(agent.type),
+            ))
+            session.flush()
         except Exception as e:
             logger.warning(f"Genome creation failed for {agent.name}: {e}")
 
