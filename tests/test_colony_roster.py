@@ -108,3 +108,34 @@ def test_scout_full_context_now_names_the_operator(session):
 
     assert "COLONY ROSTER" in ctx
     assert "Operator-Genesis" in ctx
+
+
+# ── Compressed (SURVIVAL_MODE) roster ──────────────────────────────────────────
+
+def test_compressed_roster_counts_roles_including_operator(session):
+    _colony(session)
+    line = SurvivalContextAssembler()._build_roster_compact(session)
+    assert line.startswith("Roster:")
+    assert "2 scout" in line
+    assert "1 operator" in line  # the phantom-killer, even in danger-mode
+    assert "1 strategist" in line and "1 critic" in line
+
+
+def test_compressed_roster_excludes_genesis(session):
+    _colony(session)
+    line = SurvivalContextAssembler()._build_roster_compact(session)
+    assert "genesis" not in line  # id=0 overseer is not counted
+
+
+def test_compressed_roster_empty_when_only_genesis(session):
+    _add(session, 0, "Genesis", "genesis")
+    assert SurvivalContextAssembler()._build_roster_compact(session) == ""
+
+
+def test_compressed_context_tells_struggling_agent_the_operator_exists(session):
+    """SURVIVAL_MODE: even the stripped ~50-token context now states the operator
+    is staffed, so a struggling agent can't relapse into the 'no operator' phantom."""
+    _colony(session)
+    scout = session.get(Agent, 1)
+    compressed = SurvivalContextAssembler().assemble_compressed(scout, session)
+    assert "operator" in compressed

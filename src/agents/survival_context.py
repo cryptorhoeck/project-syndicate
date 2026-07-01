@@ -70,6 +70,11 @@ class SurvivalContextAssembler:
         if agent.probation:
             parts.append("STATUS: PROBATION")
 
+        # Compact roster — which roles are staffed (kills 'no operator' in danger-mode)
+        roster = self._build_roster_compact(db_session)
+        if roster:
+            parts.append(roster)
+
         return " | ".join(parts)
 
     def build_pressure_addenda(self, agent: Agent, db_session: Session) -> str:
@@ -307,6 +312,31 @@ class SurvivalContextAssembler:
         if secs < 172800:
             return f"{int(secs // 3600)}h ago"
         return f"{int(secs // 86400)}d ago"
+
+    def _build_roster_compact(self, db_session: Session) -> str:
+        """One-line role-count roster for SURVIVAL_MODE.
+
+        The full named roster (``_build_colony_roster``) is omitted from compressed
+        mode to save tokens, but an agent in danger still needs to know which roles
+        are STAFFED — above all that an operator exists — so it doesn't fall back into
+        the 'no operator / execution unmanned' phantom. Counts only, no names.
+        """
+        try:
+            rows = db_session.execute(
+                select(Agent.type, func.count())
+                .where(Agent.status == "active", Agent.id != 0)
+                .group_by(Agent.type)
+            ).all()
+        except Exception:
+            return ""
+        if not rows:
+            return ""
+        counts = {t: c for t, c in rows}
+        role_order = ["scout", "strategist", "critic", "operator"]
+        ordered = [r for r in role_order if r in counts] + [
+            r for r in sorted(counts) if r not in role_order
+        ]
+        return "Roster: " + " · ".join(f"{counts[r]} {r}" for r in ordered)
 
     def _build_death_feed(self, db_session: Session) -> str:
         """Build recent deaths section."""
