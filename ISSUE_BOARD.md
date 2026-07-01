@@ -25,7 +25,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 | 1  | 🔴 | **`clean_slate` is leaky** — the foundation | **DONE** | ✅ `e21d057` | ✅ byte-verified |
 | 4+7 | 🔴🟡 | **DB-rebuild wound** — broken migration chain + no `init_fresh_db.py` (one problem) | **DONE** | ✅ `1c58d83` | ✅ byte-verified |
 | 2  | 🔴 | **Opportunity `expires_at` never set** — structured pipeline path is dead | **DONE** | ✅ `889a6c9` | ✅ byte-verified |
-| 5  | 🔷 | **Conditional-entry execution** — can the operator fire an armed plan, or does it sit forever? *(trace early)* | OPEN | — | — |
+| 5  | 🔷 | **Conditional-entry execution** — operator was blind to conditions + no trigger machinery (cure (b): drop the fiction) | **DONE** | ✅ `49c159d` | ✅ byte-verified |
 | 6  | 🟡 | **JSON-persistence audit** — zero `MutableDict` columns model-wide | OPEN | — | — |
 | 3  | 🔴 | **Critic budget-burn / verbosity** — Arbiter talks itself broke, hibernates pre-trade | OPEN | — | — |
 | 8  | 🟡 | **Informal pre-approval / pipeline enforcement** — re-check now clock/roster fixed | OPEN | — | — |
@@ -35,7 +35,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 | 12 | 🟢 | **`test_master_switch_defaults_off`** — the session-long "1 failed" red; resolve, don't shrug | OPEN | — | — |
 | 13 | 🟢 | Roster "slow operator" header caveat | **DONE** | ✅ cd1fb37 | ✅ byte-read |
 
-**Live: 8 open · 4 done.**  *(live-boot confirm for #1 and #4 batched into the end-of-cleanup re-fly)*
+**Live: 7 open · 5 done.**  *(live-boot / behavioral confirm for #1, #4, #5 batched into the end-of-cleanup re-fly)*
 
 ---
 
@@ -109,6 +109,25 @@ Unconfirmed but potentially critical: does the operator have machinery to fire a
 If it can't, the treasury can never move regardless of everything else. *Action:*
 byte-trace the operator/execution path early; classify (bug vs works) before it buries.
 
+> **DIAGNOSIS (co-signed by CW) — the mystery solved.** There is **no** conditional-trigger
+> machinery. `entry_conditions` is free text, evaluated **nowhere**; the operator's context
+> showed approved plans **without** the conditions (structurally blind); `execute_trade` is
+> market-or-limit only (only a **price** limit is deferred — nothing watches volume/VWAP/RSI).
+> So every "beautiful conditional plan" that never fired was walking into a dead end — the
+> real reason the treasury has never moved. NOT a total block: immediate `execute_market_order`
+> works (`test_paper_trade_lands...`). This is the `modify_genome` class: a capability agents
+> are told to use that the execution layer silently can't honor.
+>
+> **CC — FIX-PENDING-VERIFY, cure (b) "drop the fiction" (branch `fix/operator-sees-conditions`).**
+> (1) Surface `Entry:`/`Exit:` in the operator's "APPROVED PLANS" context section (was blind).
+> (2) Operator mandate now carries the **condition→order mapping**: approval IS the timing
+> decision — price-ish condition → LIMIT at that price; non-price signal it can't monitor →
+> execute at MARKET now; never sit waiting for a trigger nothing monitors. First step was the
+> read-only check for counteracting "wait for trigger" language — **none found**. Test
+> `tests/test_operator_sees_conditions.py` (fail-before/pass-after: stash → operator blind,
+> test fails; restore → passes). Full suite 1393 passed, +0 new. **#5's REAL proof is the
+> re-fly observation: do plans now fire?** — batched into the end-of-cleanup re-fly.
+
 ### 6 · 🟡 JSON-persistence audit
 Zero `MutableDict`-wrapped JSON columns model-wide → any in-place JSON edit anywhere can
 silently fail to persist (the `modify_genome` class we caught + fixed). *Action:* sweep
@@ -155,3 +174,7 @@ alembic `.env` (`d4238eb`) · `syndicate.bat` path · dead Sonnet model id + web
   `thinking_budget_used_today`; add budget-remaining bar, cost/cycle, session vs lifetime).
   *Depends on #1 — session accumulator must reset on `clean_slate`.*
 - Optional: make `modify_genome` `evidence` hard-required in the validator.
+- **#5(a) — true entry-condition trigger engine** (deferred from #5, deliberately named not
+  pretended-done): parse `entry_conditions` into evaluable predicates, watch live
+  volume/VWAP/RSI, fire `execute_trade` when a plan's condition is met. Real conditional
+  execution — a substantial new subsystem. Only build if/when true triggered entry is wanted.

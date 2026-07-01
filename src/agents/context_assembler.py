@@ -1690,6 +1690,11 @@ Review your recent performance and produce a reflection."""
                         f"  #{plan.id} {plan.plan_name} — {plan.direction} {plan.market} "
                         f"({plan.position_size_pct:.1f}%)"
                     )
+                    # The operator must SEE the entry/exit conditions to render them into a
+                    # market-vs-limit order (see the operator mandate in roles.py). Without
+                    # these lines it acted blind — the #5 "drop the fiction" fix.
+                    lines.append(f"    Entry: {plan.entry_conditions[:150]}")
+                    lines.append(f"    Exit: {plan.exit_conditions[:150]}")
                     if plan.critic_risk_notes:
                         lines.append(f"    Risk notes: {plan.critic_risk_notes[:150]}")
 
