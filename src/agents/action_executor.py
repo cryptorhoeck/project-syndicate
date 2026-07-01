@@ -15,7 +15,7 @@ __version__ = "1.2.0"
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -145,7 +145,12 @@ class ActionExecutor:
         if isinstance(confidence, dict):
             confidence = confidence.get("score", 5)
 
-        # Create opportunity record
+        # Create opportunity record. expires_at MUST be set: the strategist's
+        # "AVAILABLE OPPORTUNITIES" query filters on ``expires_at > now``, so an
+        # opportunity born NULL (the prior bug) is silently dropped and never reaches
+        # a strategist. Give it the configured TTL from creation.
+        from src.common.config import config
+
         opp = Opportunity(
             scout_agent_id=agent.id,
             scout_agent_name=agent.name,
@@ -155,6 +160,8 @@ class ActionExecutor:
             urgency=urgency,
             confidence=min(10, max(1, int(confidence))),
             status="new",
+            expires_at=datetime.now(timezone.utc)
+            + timedelta(hours=config.opportunity_ttl_hours),
         )
         self.db.add(opp)
         self.db.flush()

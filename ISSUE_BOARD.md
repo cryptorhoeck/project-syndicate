@@ -24,7 +24,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 |---|-----|------|--------|------|------|
 | 1  | 🔴 | **`clean_slate` is leaky** — the foundation | **DONE** | ✅ `e21d057` | ✅ byte-verified |
 | 4+7 | 🔴🟡 | **DB-rebuild wound** — broken migration chain + no `init_fresh_db.py` (one problem) | **DONE** | ✅ `1c58d83` | ✅ byte-verified |
-| 2  | 🔴 | **Opportunity `expires_at` never set** — structured pipeline path is dead | OPEN | — | — |
+| 2  | 🔴 | **Opportunity `expires_at` never set** — structured pipeline path is dead | FIX-PENDING-VERIFY | ✅ `fix/opportunity-expires-at` | ⏳ |
 | 5  | 🔷 | **Conditional-entry execution** — can the operator fire an armed plan, or does it sit forever? *(trace early)* | OPEN | — | — |
 | 6  | 🟡 | **JSON-persistence audit** — zero `MutableDict` columns model-wide | OPEN | — | — |
 | 3  | 🔴 | **Critic budget-burn / verbosity** — Arbiter talks itself broke, hibernates pre-trade | OPEN | — | — |
@@ -35,7 +35,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 | 12 | 🟢 | **`test_master_switch_defaults_off`** — the session-long "1 failed" red; resolve, don't shrug | OPEN | — | — |
 | 13 | 🟢 | Roster "slow operator" header caveat | **DONE** | ✅ cd1fb37 | ✅ byte-read |
 
-**Live: 9 open · 3 done.**  *(live-boot confirm for #1 and #4 batched into the end-of-cleanup re-fly)*
+**Live: 8 open · 1 pending-verify (#2) · 3 done.**  *(live-boot confirm for #1 and #4 batched into the end-of-cleanup re-fly)*
 
 ---
 
@@ -91,6 +91,17 @@ structured opportunity. `config.opportunity_ttl_hours = 6` exists but is never a
 Confirmed live. Same family as the just-fixed staleness bug (a timestamp/filter mismatch
 starving the pipeline). *Fix:* set `expires_at = created_at + opportunity_ttl_hours` at
 creation; test the strategist then sees fresh opps.
+
+> **CC — FIX-PENDING-VERIFY (branch `fix/opportunity-expires-at`).** Confirmed in the bytes:
+> `action_executor.py:149` is the **only** `Opportunity(...)` creation site; the column has
+> **no default** masking it. Fix = set `expires_at = datetime.now(utc) +
+> timedelta(hours=config.opportunity_ttl_hours)` at creation (the config value, not a
+> hardcoded 6). **Filter left untouched** (it correctly drops genuinely-expired opps).
+> Test `tests/test_opportunity_expiry.py`: opportunity created through the **real handler**
+> now survives the **real** `ContextAssembler.assemble` strategist filter (end-to-end), and
+> a NULL-expiry opp still (correctly) does not. **Non-vacuous proven:** stash the fix → test
+> fails (opp NULL, never reaches strategist); restore → passes. Full suite 1391 passed,
+> +0 new.
 
 ### 5 · 🔷 Conditional-entry execution *(investigate FIRST — could be a hard blocker)*
 Unconfirmed but potentially critical: does the operator have machinery to fire an
