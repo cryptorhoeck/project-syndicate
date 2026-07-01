@@ -23,7 +23,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 | # | Sev | Item | Status | CC ✓ | CW ✓ |
 |---|-----|------|--------|------|------|
 | 1  | 🔴 | **`clean_slate` is leaky** — the foundation | **DONE** | ✅ `e21d057` | ✅ byte-verified |
-| 4+7 | 🔴🟡 | **DB-rebuild wound** — broken migration chain + no `init_fresh_db.py` (one problem) | FIX-PENDING-VERIFY | ✅ `fix/init-fresh-db` | ⏳ |
+| 4+7 | 🔴🟡 | **DB-rebuild wound** — broken migration chain + no `init_fresh_db.py` (one problem) | **DONE** | ✅ `1c58d83` | ✅ byte-verified |
 | 2  | 🔴 | **Opportunity `expires_at` never set** — structured pipeline path is dead | OPEN | — | — |
 | 5  | 🔷 | **Conditional-entry execution** — can the operator fire an armed plan, or does it sit forever? *(trace early)* | OPEN | — | — |
 | 6  | 🟡 | **JSON-persistence audit** — zero `MutableDict` columns model-wide | OPEN | — | — |
@@ -35,7 +35,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 | 12 | 🟢 | **`test_master_switch_defaults_off`** — the session-long "1 failed" red; resolve, don't shrug | OPEN | — | — |
 | 13 | 🟢 | Roster "slow operator" header caveat | **DONE** | ✅ cd1fb37 | ✅ byte-read |
 
-**Live: 10 open · 1 pending-verify (#4+7) · 2 done.**
+**Live: 9 open · 3 done.**  *(live-boot confirm for #1 and #4 batched into the end-of-cleanup re-fly)*
 
 ---
 
