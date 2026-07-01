@@ -22,7 +22,7 @@ open item below is **DONE**. This board is the reconciled master list (CC + CW),
 
 | # | Sev | Item | Status | CC ✓ | CW ✓ |
 |---|-----|------|--------|------|------|
-| 1  | 🔴 | **`clean_slate` is leaky** — the foundation | OPEN | — | — |
+| 1  | 🔴 | **`clean_slate` is leaky** — the foundation | FIX-PENDING-VERIFY | ✅ `fix/clean-slate-complete` | ⏳ |
 | 4+7 | 🔴🟡 | **DB-rebuild wound** — broken migration chain + no `init_fresh_db.py` (one problem) | OPEN | — | — |
 | 2  | 🔴 | **Opportunity `expires_at` never set** — structured pipeline path is dead | OPEN | — | — |
 | 5  | 🔷 | **Conditional-entry execution** — can the operator fire an armed plan, or does it sit forever? *(trace early)* | OPEN | — | — |
@@ -47,6 +47,17 @@ Confirmed misses across the session: `agora_channels.message_count` (the ticker 
 (cascade wipes it; boot re-registers), `parameter_registry` (cascade wipes it; re-seeded
 every run). **Also verify** the per-session cost accumulator resets (blocks the future
 cost-HUD feature). *Fix:* make the canonical reset genuinely complete + tested.
+
+> **CC — FIX-PENDING-VERIFY (branch `fix/clean-slate-complete`).** Rewrote `clean_slate.py`
+> self-maintaining: wipe set = live schema − explicit `PRESERVE_ENTIRELY`/`RESET_IN_PLACE`
+> allow-lists; protected→wipe FKs derived + nulled + those tables DELETE-shielded from
+> CASCADE. **Live Postgres proof (fail-before/pass-after):** wiped 54 op tables (was ~32),
+> `agent_genomes` 5→0, `agora_channels.message_count` 1089→0, `parameter_registry`
+> **stays 23** (was CASCADE-dropped → no more manual re-seed), `alembic_version` intact,
+> Genesis kept. Guard raises loud on a bad allow-list. Tests `tests/test_clean_slate.py`
+> (1 SQLite-safe + 2 opt-in Postgres via `RUN_CLEAN_SLATE_PG=1`) green; full suite +0 new.
+> **Open acceptance for CW:** "boots clean, zero manual re-seed" end-to-end (seeds are
+> preserved so the byte-condition holds; a live boot is the final confirm).
 
 ### 4 + 7 · 🔴🟡 The DB-rebuild wound
 `alembic upgrade head` cannot build a DB from base — dies at Phase 9A (`relation
